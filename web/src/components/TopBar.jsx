@@ -51,10 +51,10 @@ export default function TopBar({
   javTab,
   onSwitchJavTab,
   favoriteEntityType = 'idol',
-  idolFavoriteGroups = [],
-  idolFavoriteGroupsLoading = false,
-  idolFavoriteGroupsError = null,
-  idolSelectedFavoriteGroupId = null,
+  favoriteGroups = [],
+  favoriteGroupsLoading = false,
+  favoriteGroupsError = null,
+  selectedFavoriteGroupId = null,
   idolFavoriteEditorOpen = false,
   buildIdolFavoriteGroupUrl,
   onOpenIdolFavoriteGroups,
@@ -67,6 +67,9 @@ export default function TopBar({
   enabledDirectoryIds = [],
   onEnabledDirectoryIdsChange,
   hostPathPrefixEnabled = false,
+  selectedCount = 0,
+  onOpenSelectionOps,
+  onClearSelection,
 }) {
   const headerRef = useRef(null)
   const directoryMenuRef = useRef(null)
@@ -95,12 +98,19 @@ export default function TopBar({
   const enabledDirectoryCount = activeDirectoryIds.filter((id) =>
     enabledDirectorySet.has(id)
   ).length
+  const selectedVideoCount = Number(selectedCount)
+  const hasVideoSelection =
+    !isJavMode && Number.isFinite(selectedVideoCount) && selectedVideoCount > 0
+  const headerBodyClassName = [
+    'flex w-full flex-wrap items-start gap-3 py-2 pl-[6.5rem]',
+    hasVideoSelection ? 'pr-[27rem]' : 'pr-[18rem]',
+  ].join(' ')
   const idolSelectedFavoriteGroupName = useMemo(() => {
-    const selectedId = Number(idolSelectedFavoriteGroupId)
+    const selectedId = Number(selectedFavoriteGroupId)
     if (!Number.isFinite(selectedId) || selectedId <= 0) return ''
-    const group = (idolFavoriteGroups || []).find((item) => Number(item?.id) === selectedId)
+    const group = (favoriteGroups || []).find((item) => Number(item?.id) === selectedId)
     return String(group?.name || '').trim()
-  }, [idolFavoriteGroups, idolSelectedFavoriteGroupId])
+  }, [favoriteGroups, selectedFavoriteGroupId])
   const favoriteLabel = useMemo(() => {
     switch (favoriteEntityType) {
       case 'jav':
@@ -346,7 +356,7 @@ export default function TopBar({
           </Button>
         </div>
       ) : null}
-      <div className="flex w-full flex-wrap items-start gap-3 py-2 pl-[6.5rem] pr-[18rem]">
+      <div className={headerBodyClassName}>
         <div className="flex min-w-0 flex-wrap items-center gap-3">
           <div className="relative flex min-w-0 items-center gap-3">
             <button
@@ -455,10 +465,10 @@ export default function TopBar({
                         <IdolFavoriteGroupMenu
                           title={favoriteLabel}
                           allLabel={favoriteAllLabel}
-                          groups={idolFavoriteGroups}
-                          selectedGroupId={idolSelectedFavoriteGroupId}
-                          loading={idolFavoriteGroupsLoading}
-                          error={idolFavoriteGroupsError}
+                          groups={favoriteGroups}
+                          selectedGroupId={selectedFavoriteGroupId}
+                          loading={favoriteGroupsLoading}
+                          error={favoriteGroupsError}
                           buildGroupUrl={buildIdolFavoriteGroupUrl}
                           onSelect={(groupId) => {
                             onIdolFavoriteGroupSelect?.(groupId)
@@ -613,6 +623,29 @@ export default function TopBar({
             </div>
           ) : null}
           <div ref={directoryMenuRef} className="relative inline-flex gap-2">
+            {hasVideoSelection ? (
+              <div className="inline-flex items-center gap-1 rounded-full border border-sky-100 bg-sky-50 px-1.5 py-1">
+                <span className="whitespace-nowrap px-1.5 text-xs font-medium text-sky-700">
+                  {zh(`已选 ${selectedVideoCount} 项`, `${selectedVideoCount} selected`)}
+                </span>
+                <Button
+                  variant="outlined"
+                  size="small"
+                  onClick={onOpenSelectionOps}
+                  className="topbar-selection-action"
+                >
+                  {zh('操作', 'Actions')}
+                </Button>
+                <Button
+                  variant="text"
+                  size="small"
+                  onClick={onClearSelection}
+                  className="topbar-selection-action"
+                >
+                  {zh('清空', 'Clear')}
+                </Button>
+              </div>
+            ) : null}
             <Tooltip title={zh('全局设置', 'Global settings')} arrow>
               <Button
                 variant="outlined"

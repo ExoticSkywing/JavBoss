@@ -44,7 +44,6 @@ let seriesLoadMoreSeq = 0
 let lastVideoFetchKey = null
 let lastJavFetchKey = null
 let lastIdolFetchKey = null
-let lastIdolFavoriteGroupFetchKey = null
 const lastFavoriteGroupFetchKeys = {}
 let lastStudioFetchKey = null
 let lastSeriesFetchKey = null
@@ -260,9 +259,6 @@ export const useStore = create((set, get) => ({
   idolLoading: false,
   idolLoadingMore: false,
   idolError: null,
-  idolFavoriteGroups: [],
-  idolFavoriteGroupsLoading: false,
-  idolFavoriteGroupsError: null,
   favoriteGroupsByType: {
     jav: [],
     idol: [],
@@ -311,9 +307,6 @@ export const useStore = create((set, get) => ({
     const parsed = Number(id)
     const next = Number.isFinite(parsed) && parsed > 0 ? parsed : null
     set({ idolFavoriteGroupId: next, idolTempSort: '', idolPage: 1 })
-  },
-  setIdolFavoriteGroups: (groups) => {
-    set({ idolFavoriteGroups: Array.isArray(groups) ? groups : [] })
   },
   setJavFavoriteGroupId: (id) => {
     const parsed = Number(id)
@@ -1013,31 +1006,6 @@ export const useStore = create((set, get) => ({
       }
     }
   },
-  loadJavIdolFavoriteGroups: async (options = {}) => {
-    const directoryIds = directoryQueryIds(get())
-    const key = `jav-favorite-groups|idol|${directoryIds.join(',')}`
-    if (!options.force && key === lastIdolFavoriteGroupFetchKey) {
-      return get().idolFavoriteGroups || []
-    }
-    lastIdolFavoriteGroupFetchKey = key
-    set({ idolFavoriteGroupsLoading: true, idolFavoriteGroupsError: null })
-    try {
-      const groups = await fetchJavFavoriteGroups('idol', { directoryIds })
-      set((state) => ({
-        idolFavoriteGroups: groups || [],
-        favoriteGroupsByType: { ...(state.favoriteGroupsByType || {}), idol: groups || [] },
-      }))
-      return groups || []
-    } catch (e) {
-      set({
-        idolFavoriteGroupsError:
-          e.message || zh('加载女优收藏夹失败', 'Failed to load idol favorite groups'),
-      })
-      return get().idolFavoriteGroups || []
-    } finally {
-      set({ idolFavoriteGroupsLoading: false })
-    }
-  },
   loadJavFavoriteGroups: async (entityType = 'idol', options = {}) => {
     const type = ['jav', 'idol', 'studio', 'series'].includes(entityType) ? entityType : 'idol'
     const directoryIds = directoryQueryIds(get())
@@ -1054,14 +1022,14 @@ export const useStore = create((set, get) => ({
       const groups = await fetchJavFavoriteGroups(type, { directoryIds })
       set((state) => ({
         favoriteGroupsByType: { ...(state.favoriteGroupsByType || {}), [type]: groups || [] },
-        ...(type === 'idol' ? { idolFavoriteGroups: groups || [] } : {}),
       }))
       return groups || []
     } catch (e) {
+      const message = e.message || zh('加载收藏夹失败', 'Failed to load favorite groups')
       set((state) => ({
         favoriteGroupsErrorByType: {
           ...(state.favoriteGroupsErrorByType || {}),
-          [type]: e.message || zh('加载收藏夹失败', 'Failed to load favorite groups'),
+          [type]: message,
         },
       }))
       return get().favoriteGroupsByType?.[type] || []

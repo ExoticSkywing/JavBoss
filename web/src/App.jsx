@@ -184,12 +184,8 @@ export default function App() {
     idolLoading,
     idolLoadingMore,
     idolError,
-    idolFavoriteGroups,
-    idolFavoriteGroupsLoading,
-    idolFavoriteGroupsError,
     loadJavIdols,
     loadMoreJavIdols,
-    loadJavIdolFavoriteGroups,
     studioPage,
     setStudioPage,
     studioPageSize,
@@ -1340,7 +1336,7 @@ export default function App() {
     if (!hydrated || !configLoaded || !isJavMode) return
     if (javTab === 'idol') {
       loadJavIdols()
-      loadJavIdolFavoriteGroups()
+      loadJavFavoriteGroups('idol')
     } else if (javTab === 'studio') {
       loadJavStudios()
       loadJavFavoriteGroups('studio')
@@ -1382,7 +1378,6 @@ export default function App() {
     directoryFilterMode,
     loadJavs,
     loadJavIdols,
-    loadJavIdolFavoriteGroups,
     loadJavFavoriteGroups,
     loadJavStudios,
     loadJavSeries,
@@ -1399,7 +1394,7 @@ export default function App() {
       if (!hydrated || !configLoaded) return
       if (tab === 'idol') {
         loadJavIdols({ force: true })
-        loadJavIdolFavoriteGroups({ force: true })
+        loadJavFavoriteGroups('idol', { force: true })
       } else if (tab === 'studio') {
         loadJavStudios({ force: true })
         loadJavFavoriteGroups('studio', { force: true })
@@ -1414,7 +1409,6 @@ export default function App() {
     [
       configLoaded,
       hydrated,
-      loadJavIdolFavoriteGroups,
       loadJavFavoriteGroups,
       loadJavIdols,
       loadJavSeries,
@@ -1958,6 +1952,21 @@ export default function App() {
     setSelectionTagChoices([])
   }, [selectedCount])
 
+  const handleRemoveSelectedVideo = useCallback((key) => {
+    if (!key) return
+    useStore.setState((state) => {
+      const normalizedKey = String(key)
+      const nextIds = new Set(state.selectedVideoIds || [])
+      const nextMeta = { ...(state.selectedVideoMeta || {}) }
+      nextIds.delete(normalizedKey)
+      delete nextMeta[normalizedKey]
+      return {
+        selectedVideoIds: nextIds,
+        selectedVideoMeta: nextMeta,
+      }
+    })
+  }, [])
+
   const handleDeleteSelection = useCallback(async () => {
     if (selectionDeleting) return
     const targets = selectedList
@@ -2239,8 +2248,6 @@ export default function App() {
         selectedTags: [],
         searchTerm: '',
         page: 1,
-        selectedVideoIds: new Set(),
-        selectedVideoMeta: {},
       })
       setSearchInput('')
       forceReloadVideos()
@@ -2349,9 +2356,7 @@ export default function App() {
       try {
         const [selectedIds] = await Promise.all([
           fetchJavFavoriteSelection(type, id),
-          type === 'idol'
-            ? loadJavIdolFavoriteGroups({ force: true })
-            : loadJavFavoriteGroups(type, { force: true }),
+          loadJavFavoriteGroups(type, { force: true }),
         ])
         setIdolFavoriteSelectedIds(
           (selectedIds || []).map((value) => Number(value)).filter((value) => value > 0)
@@ -2362,7 +2367,7 @@ export default function App() {
         setIdolFavoriteModalLoading(false)
       }
     },
-    [loadJavFavoriteGroups, loadJavIdolFavoriteGroups]
+    [loadJavFavoriteGroups]
   )
 
   const handleOpenIdolFavoriteModal = useCallback(
@@ -2383,29 +2388,24 @@ export default function App() {
   const reloadFavoriteData = useCallback(
     async (entityType) => {
       const type = ['jav', 'idol', 'studio', 'series'].includes(entityType) ? entityType : 'idol'
+      const tabByType = { jav: 'list', idol: 'idol', studio: 'studio', series: 'series' }
+      const reloadByType = {
+        jav: loadJavs,
+        idol: loadJavIdols,
+        studio: loadJavStudios,
+        series: loadJavSeries,
+      }
+      const shouldReloadCurrentList = isJavMode && javTab === tabByType[type]
+      const reloadCurrentList = shouldReloadCurrentList ? reloadByType[type] : null
       await Promise.all([
-        type === 'idol'
-          ? loadJavIdolFavoriteGroups({ force: true })
-          : loadJavFavoriteGroups(type, { force: true }),
-        isJavMode && javTab === 'list' && type === 'jav'
-          ? loadJavs({ force: true })
-          : Promise.resolve(),
-        isJavMode && javTab === 'idol' && type === 'idol'
-          ? loadJavIdols({ force: true })
-          : Promise.resolve(),
-        isJavMode && javTab === 'studio' && type === 'studio'
-          ? loadJavStudios({ force: true })
-          : Promise.resolve(),
-        isJavMode && javTab === 'series' && type === 'series'
-          ? loadJavSeries({ force: true })
-          : Promise.resolve(),
+        loadJavFavoriteGroups(type, { force: true }),
+        reloadCurrentList ? reloadCurrentList({ force: true }) : Promise.resolve(),
       ])
     },
     [
       isJavMode,
       javTab,
       loadJavFavoriteGroups,
-      loadJavIdolFavoriteGroups,
       loadJavIdols,
       loadJavSeries,
       loadJavStudios,
@@ -2456,19 +2456,72 @@ export default function App() {
     ]
   )
 
+  const patchFavoriteCountInCurrentList = useCallback(
+    (entityType, entityID, groupIds) => {
+      const type = ['jav', 'idol', 'studio', 'series'].includes(entityType) ? entityType : 'idol'
+      const id = Number(entityID)
+      if (!Number.isFinite(id) || id <= 0) return
+
+      const nextGroupIds = Array.from(
+        new Set((groupIds || []).map((value) => Number(value)).filter((value) => value > 0))
+      )
+      const nextGroupSet = new Set(nextGroupIds)
+      const activeGroupID = Number(activeFavoriteGroupId(type))
+      const removeFromCurrentList =
+        Number.isFinite(activeGroupID) && activeGroupID > 0
+          ? !nextGroupSet.has(activeGroupID)
+          : false
+      const listKey =
+        type === 'jav'
+          ? 'javItems'
+          : type === 'studio'
+            ? 'studioItems'
+            : type === 'series'
+              ? 'seriesItems'
+              : 'idolItems'
+      const totalKey =
+        type === 'jav'
+          ? 'javTotal'
+          : type === 'studio'
+            ? 'studioTotal'
+            : type === 'series'
+              ? 'seriesTotal'
+              : 'idolTotal'
+
+      useStore.setState((state) => {
+        const items = Array.isArray(state[listKey]) ? state[listKey] : []
+        let changed = false
+        const nextItems = removeFromCurrentList
+          ? items.filter((item) => {
+              const keep = Number(item?.id) !== id
+              if (!keep) changed = true
+              return keep
+            })
+          : items.map((item) => {
+              if (Number(item?.id) !== id) return item
+              changed = true
+              return { ...item, favorite_count: nextGroupIds.length }
+            })
+        if (!changed) return {}
+        return {
+          [listKey]: nextItems,
+          ...(removeFromCurrentList
+            ? { [totalKey]: Math.max(0, Number(state[totalKey] || 0) - 1) }
+            : {}),
+        }
+      })
+    },
+    [activeFavoriteGroupId]
+  )
+
   const handleCreateFavoriteGroup = useCallback(
     async (name, entityType = favoriteModalEntityType) => {
       const type = ['jav', 'idol', 'studio', 'series'].includes(entityType) ? entityType : 'idol'
       const group = await createJavFavoriteGroup(type, name)
       useStore.setState((state) => {
-        const current =
-          type === 'idol'
-            ? Array.isArray(state.idolFavoriteGroups)
-              ? state.idolFavoriteGroups
-              : []
-            : Array.isArray(state.favoriteGroupsByType?.[type])
-              ? state.favoriteGroupsByType[type]
-              : []
+        const current = Array.isArray(state.favoriteGroupsByType?.[type])
+          ? state.favoriteGroupsByType[type]
+          : []
         const exists = current.some((item) => Number(item?.id) === Number(group?.id))
         const next = exists ? current : [...current, { ...group, count: group?.count || 0 }]
         next.sort((a, b) => {
@@ -2478,7 +2531,6 @@ export default function App() {
           return String(a?.name || '').localeCompare(String(b?.name || ''))
         })
         return {
-          ...(type === 'idol' ? { idolFavoriteGroups: next } : {}),
           favoriteGroupsByType: { ...(state.favoriteGroupsByType || {}), [type]: next },
         }
       })
@@ -2496,18 +2548,24 @@ export default function App() {
       setIdolFavoriteModalError('')
       try {
         await replaceJavFavoriteGroups(type, entityID, groupIds)
+        patchFavoriteCountInCurrentList(type, entityID, groupIds)
         setIdolFavoriteModalOpen(false)
         setIdolFavoriteModalItem(null)
         setFavoriteModalEntityType('idol')
         setIdolFavoriteSelectedIds([])
-        await reloadFavoriteData(type)
+        await loadJavFavoriteGroups(type, { force: true })
       } catch (err) {
         setIdolFavoriteModalError(err.message || zh('保存收藏夹失败', 'Failed to save favorites'))
       } finally {
         setIdolFavoriteModalSaving(false)
       }
     },
-    [favoriteModalEntityType, idolFavoriteModalItem, reloadFavoriteData]
+    [
+      favoriteModalEntityType,
+      idolFavoriteModalItem,
+      loadJavFavoriteGroups,
+      patchFavoriteCountInCurrentList,
+    ]
   )
 
   const handleSaveIdolFavoriteGroups = handleSaveFavoriteGroups
@@ -2516,13 +2574,9 @@ export default function App() {
     async (groupIds) => {
       const type = favoriteManageEntityType || 'idol'
       await reorderJavFavoriteGroups(type, groupIds)
-      if (type === 'idol') {
-        await loadJavIdolFavoriteGroups({ force: true })
-      } else {
-        await loadJavFavoriteGroups(type, { force: true })
-      }
+      await loadJavFavoriteGroups(type, { force: true })
     },
-    [favoriteManageEntityType, loadJavFavoriteGroups, loadJavIdolFavoriteGroups]
+    [favoriteManageEntityType, loadJavFavoriteGroups]
   )
 
   const handleRenameIdolFavoriteGroup = useCallback(
@@ -2530,13 +2584,6 @@ export default function App() {
       const type = favoriteManageEntityType || 'idol'
       await renameJavFavoriteGroup(type, groupId, name)
       useStore.setState((state) => ({
-        ...(type === 'idol'
-          ? {
-              idolFavoriteGroups: (state.idolFavoriteGroups || []).map((group) =>
-                Number(group.id) === Number(groupId) ? { ...group, name } : group
-              ),
-            }
-          : {}),
         favoriteGroupsByType: {
           ...(state.favoriteGroupsByType || {}),
           [type]: (state.favoriteGroupsByType?.[type] || []).map((group) =>
@@ -2544,10 +2591,9 @@ export default function App() {
           ),
         },
       }))
-      if (type === 'idol') await loadJavIdolFavoriteGroups({ force: true })
-      else await loadJavFavoriteGroups(type, { force: true })
+      await loadJavFavoriteGroups(type, { force: true })
     },
-    [favoriteManageEntityType, loadJavFavoriteGroups, loadJavIdolFavoriteGroups]
+    [favoriteManageEntityType, loadJavFavoriteGroups]
   )
 
   const handleDeleteIdolFavoriteGroup = useCallback(
@@ -2864,18 +2910,11 @@ export default function App() {
         : javTab === 'idol'
           ? 'idol'
           : 'jav'
-  const activeFavoriteGroups =
-    activeFavoriteEntityType === 'idol'
-      ? idolFavoriteGroups
-      : favoriteGroupsByType?.[activeFavoriteEntityType] || []
-  const activeFavoriteGroupsLoading =
-    activeFavoriteEntityType === 'idol'
-      ? idolFavoriteGroupsLoading
-      : Boolean(favoriteGroupsLoadingByType?.[activeFavoriteEntityType])
-  const activeFavoriteGroupsError =
-    activeFavoriteEntityType === 'idol'
-      ? idolFavoriteGroupsError
-      : favoriteGroupsErrorByType?.[activeFavoriteEntityType] || null
+  const activeFavoriteGroups = favoriteGroupsByType?.[activeFavoriteEntityType] || []
+  const activeFavoriteGroupsLoading = Boolean(
+    favoriteGroupsLoadingByType?.[activeFavoriteEntityType]
+  )
+  const activeFavoriteGroupsError = favoriteGroupsErrorByType?.[activeFavoriteEntityType] || null
   const activeSelectedFavoriteGroupId = activeFavoriteGroupId(activeFavoriteEntityType)
 
   return (
@@ -2914,10 +2953,10 @@ export default function App() {
         javTab={javTab}
         onSwitchJavTab={handleSwitchJavTab}
         favoriteEntityType={activeFavoriteEntityType}
-        idolFavoriteGroups={activeFavoriteGroups}
-        idolFavoriteGroupsLoading={activeFavoriteGroupsLoading}
-        idolFavoriteGroupsError={activeFavoriteGroupsError}
-        idolSelectedFavoriteGroupId={activeSelectedFavoriteGroupId}
+        favoriteGroups={activeFavoriteGroups}
+        favoriteGroupsLoading={activeFavoriteGroupsLoading}
+        favoriteGroupsError={activeFavoriteGroupsError}
+        selectedFavoriteGroupId={activeSelectedFavoriteGroupId}
         idolFavoriteEditorOpen={idolFavoriteManageOpen}
         buildIdolFavoriteGroupUrl={(groupId) =>
           buildJavUrl({
@@ -2929,9 +2968,7 @@ export default function App() {
           })
         }
         onOpenIdolFavoriteGroups={() =>
-          activeFavoriteEntityType === 'idol'
-            ? loadJavIdolFavoriteGroups({ force: true })
-            : loadJavFavoriteGroups(activeFavoriteEntityType, { force: true })
+          loadJavFavoriteGroups(activeFavoriteEntityType, { force: true })
         }
         onIdolFavoriteGroupSelect={(groupId) =>
           setActiveFavoriteGroupId(activeFavoriteEntityType, groupId)
@@ -2952,6 +2989,9 @@ export default function App() {
         enabledDirectoryIds={enabledDirectoryIds}
         onEnabledDirectoryIdsChange={setEnabledDirectoryIds}
         hostPathPrefixEnabled={hostPathPrefixEnabled}
+        selectedCount={selectedCount}
+        onOpenSelectionOps={() => setSelectionOpsOpen(true)}
+        onClearSelection={clearSelection}
       />
 
       <main className="page-main w-full pb-6 pt-0">
@@ -3087,9 +3127,6 @@ export default function App() {
           />
         ) : (
           <VideoRoute
-            selectedCount={selectedCount}
-            clearSelection={clearSelection}
-            setSelectionOpsOpen={setSelectionOpsOpen}
             page={page}
             lastPage={lastPage}
             totalItems={total}
@@ -3235,26 +3272,14 @@ export default function App() {
         open={idolFavoriteModalOpen}
         entityType={favoriteModalEntityType}
         idol={idolFavoriteModalItem}
-        groups={
-          favoriteModalEntityType === 'idol'
-            ? idolFavoriteGroups
-            : favoriteGroupsByType?.[favoriteModalEntityType] || []
-        }
+        groups={favoriteGroupsByType?.[favoriteModalEntityType] || []}
         selectedIds={idolFavoriteSelectedIds}
         loading={
           idolFavoriteModalLoading ||
-          (favoriteModalEntityType === 'idol'
-            ? idolFavoriteGroupsLoading
-            : Boolean(favoriteGroupsLoadingByType?.[favoriteModalEntityType]))
+          Boolean(favoriteGroupsLoadingByType?.[favoriteModalEntityType])
         }
         saving={idolFavoriteModalSaving}
-        error={
-          idolFavoriteModalError ||
-          (favoriteModalEntityType === 'idol'
-            ? idolFavoriteGroupsError
-            : favoriteGroupsErrorByType?.[favoriteModalEntityType]) ||
-          ''
-        }
+        error={idolFavoriteModalError || favoriteGroupsErrorByType?.[favoriteModalEntityType] || ''}
         onClose={handleCloseIdolFavoriteModal}
         onCreateGroup={(name) => handleCreateFavoriteGroup(name, favoriteModalEntityType)}
         onSave={handleSaveIdolFavoriteGroups}
@@ -3265,18 +3290,10 @@ export default function App() {
       <JavIdolFavoriteManageModal
         open={idolFavoriteManageOpen}
         entityType={favoriteManageEntityType}
-        groups={
-          favoriteManageEntityType === 'idol'
-            ? idolFavoriteGroups
-            : favoriteGroupsByType?.[favoriteManageEntityType] || []
-        }
+        groups={favoriteGroupsByType?.[favoriteManageEntityType] || []}
         selectedGroupId={activeFavoriteGroupId(favoriteManageEntityType)}
         initialEditGroupId={idolFavoriteManageEditGroupId}
-        loading={
-          favoriteManageEntityType === 'idol'
-            ? idolFavoriteGroupsLoading
-            : Boolean(favoriteGroupsLoadingByType?.[favoriteManageEntityType])
-        }
+        loading={Boolean(favoriteGroupsLoadingByType?.[favoriteManageEntityType])}
         onClose={() => {
           setIdolFavoriteManageOpen(false)
           setIdolFavoriteManageEditGroupId(null)
@@ -3325,6 +3342,7 @@ export default function App() {
         selectedList={selectedList}
         selectedCount={selectedCount}
         deleting={selectionDeleting}
+        onRemoveSelected={handleRemoveSelectedVideo}
         onOpenTags={() => {
           loadTags()
           setSelectionTagAction('add')
