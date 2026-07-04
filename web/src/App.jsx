@@ -1389,6 +1389,61 @@ export default function App() {
     loadVideos({ force: true })
   }, [configLoaded, hydrated, loadVideos])
 
+  const handleVideoCoverChanged = useCallback(
+    (updated) => {
+      const targetID = Number(updated?.id || screenshotsVideo?.id || 0)
+      if (!targetID) return
+      const coverScreenshotName =
+        typeof updated?.cover_screenshot_name === 'string' ? updated.cover_screenshot_name : ''
+      const updatedAt = updated?.updated_at || new Date().toISOString()
+
+      if (screenshotsVideo?.id === targetID) {
+        setScreenshotsVideo((current) =>
+          current?.id === targetID
+            ? {
+                ...current,
+                ...(updated || {}),
+                cover_screenshot_name: coverScreenshotName,
+                updated_at: updatedAt,
+              }
+            : current
+        )
+      }
+      useStore.setState((state) => ({
+        videos: Array.isArray(state.videos)
+          ? state.videos.map((video) =>
+              video?.id === targetID
+                ? {
+                    ...video,
+                    ...(updated || {}),
+                    cover_screenshot_name: coverScreenshotName,
+                    updated_at: updatedAt,
+                  }
+                : video
+            )
+          : state.videos,
+        javItems: Array.isArray(state.javItems)
+          ? state.javItems.map((item) => {
+              if (!Array.isArray(item?.videos)) return item
+              let changed = false
+              const nextVideos = item.videos.map((video) => {
+                if (video?.id !== targetID) return video
+                changed = true
+                return {
+                  ...video,
+                  ...(updated || {}),
+                  cover_screenshot_name: coverScreenshotName,
+                  updated_at: updatedAt,
+                }
+              })
+              return changed ? { ...item, videos: nextVideos } : item
+            })
+          : state.javItems,
+      }))
+    },
+    [screenshotsVideo?.id]
+  )
+
   const forceReloadJavByTab = useCallback(
     (tab) => {
       if (!hydrated || !configLoaded) return
@@ -3199,6 +3254,7 @@ export default function App() {
         playerHotkeys={config?.player_hotkeys}
         onClose={() => setScreenshotsVideo(null)}
         onPlayAtTime={playVideoFromTime}
+        onCoverChanged={handleVideoCoverChanged}
       />
 
       <PlayerModal
