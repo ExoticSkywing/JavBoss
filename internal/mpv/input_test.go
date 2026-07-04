@@ -24,6 +24,15 @@ func TestBuildConfigContentIncludesRequiredDefaults(t *testing.T) {
 	if !strings.Contains(content, "keep-open=yes\n") {
 		t.Fatalf("expected keep-open=yes in mpv config, got %q", content)
 	}
+	if !strings.Contains(content, "keepaspect-window=no\n") {
+		t.Fatalf("expected keepaspect-window=no in mpv config, got %q", content)
+	}
+	if !strings.Contains(content, "save-position-on-quit=yes\n") {
+		t.Fatalf("expected save-position-on-quit=yes in mpv config, got %q", content)
+	}
+	if !strings.Contains(content, "resume-playback=yes\n") {
+		t.Fatalf("expected resume-playback=yes in mpv config, got %q", content)
+	}
 	if !strings.Contains(content, "osc=no\n") {
 		t.Fatalf("expected osc=no in mpv config, got %q", content)
 	}
@@ -33,14 +42,14 @@ func TestBuildConfigContentIncludesRequiredDefaults(t *testing.T) {
 	if !strings.Contains(content, "auto-window-resize=no\n") {
 		t.Fatalf("expected auto-window-resize=no in fixed-size mpv config, got %q", content)
 	}
-	if !strings.Contains(content, "ontop=yes\n") {
-		t.Fatalf("expected ontop=yes in mpv config, got %q", content)
+	if !strings.Contains(content, "ontop=no\n") {
+		t.Fatalf("expected ontop=no in mpv config, got %q", content)
 	}
 	if !strings.Contains(content, "osd-playing-msg-duration=5000\n") {
 		t.Fatalf("expected osd-playing-msg-duration=5000 in mpv config, got %q", content)
 	}
-	if !strings.Contains(content, "video-align-y=1\n") {
-		t.Fatalf("expected video-align-y=1 in mpv config, got %q", content)
+	if !strings.Contains(content, "video-align-y=0\n") {
+		t.Fatalf("expected video-align-y=0 in mpv config, got %q", content)
 	}
 	if !strings.Contains(content, "video-margin-ratio-bottom=0.125\n") {
 		t.Fatalf("expected video-margin-ratio-bottom=0.125 in mpv config, got %q", content)
@@ -77,8 +86,68 @@ func TestBuildInputConfContentIncludesDefaultScreenshotKey(t *testing.T) {
 	if !strings.Contains(content, "SPACE cycle pause\n") {
 		t.Fatalf("expected SPACE cycle pause in mpv input config, got %q", content)
 	}
+	if !strings.Contains(content, "ESC write-watch-later-config; stop; set window-minimized yes\n") {
+		t.Fatalf("expected ESC to write watch-later before stop in mpv input config, got %q", content)
+	}
+}
+
+func TestBuildInputConfContentQuitsWhenReuseWindowDisabled(t *testing.T) {
+	openConfigTestDB(t)
+	if err := dbpkg.UpsertConfig(context.Background(), map[string]string{
+		playerReuseWindowConfigKey: "false",
+	}); err != nil {
+		t.Fatalf("upsert config: %v", err)
+	}
+
+	content, err := buildInputConfContent()
+	if err != nil {
+		t.Fatalf("buildInputConfContent returned error: %v", err)
+	}
+
 	if !strings.Contains(content, "ESC quit\n") {
 		t.Fatalf("expected ESC quit in mpv input config, got %q", content)
+	}
+	if strings.Contains(content, "ESC stop; set window-minimized yes\n") {
+		t.Fatalf("expected ESC stop/minimize to be disabled, got %q", content)
+	}
+}
+
+func TestBuildInputConfContentWritesWatchLaterWhenResumeEnabled(t *testing.T) {
+	openConfigTestDB(t)
+	if err := dbpkg.UpsertConfig(context.Background(), map[string]string{
+		playerResumePlaybackConfigKey: "true",
+	}); err != nil {
+		t.Fatalf("upsert config: %v", err)
+	}
+
+	content, err := buildInputConfContent()
+	if err != nil {
+		t.Fatalf("buildInputConfContent returned error: %v", err)
+	}
+
+	if !strings.Contains(content, "ESC write-watch-later-config; stop; set window-minimized yes\n") {
+		t.Fatalf("expected ESC to write watch-later before stop, got %q", content)
+	}
+}
+
+func TestBuildInputConfContentSkipsWatchLaterWhenResumeDisabled(t *testing.T) {
+	openConfigTestDB(t)
+	if err := dbpkg.UpsertConfig(context.Background(), map[string]string{
+		playerResumePlaybackConfigKey: "false",
+	}); err != nil {
+		t.Fatalf("upsert config: %v", err)
+	}
+
+	content, err := buildInputConfContent()
+	if err != nil {
+		t.Fatalf("buildInputConfContent returned error: %v", err)
+	}
+
+	if !strings.Contains(content, "ESC stop; set window-minimized yes\n") {
+		t.Fatalf("expected ESC stop/minimize without watch-later, got %q", content)
+	}
+	if strings.Contains(content, "write-watch-later-config") {
+		t.Fatalf("expected watch-later write to be disabled, got %q", content)
 	}
 }
 
@@ -101,13 +170,34 @@ func TestBuildStartupHotkeyHintIncludesDefaultHotkeys(t *testing.T) {
 		"w：音量 +5%",
 		"e：截图",
 		"空格：暂停/继续",
-		"ESC：退出",
+		"ESC：停止播放并最小化",
 		"你可在「全局设置 → MPV播放器 → 基础设置」里关闭此信息显示",
 	}
 	for _, line := range expected {
 		if !strings.Contains(content, line) {
 			t.Fatalf("expected %q in mpv hotkey hint, got %q", line, content)
 		}
+	}
+}
+
+func TestBuildStartupHotkeyHintQuitsWhenReuseWindowDisabled(t *testing.T) {
+	openConfigTestDB(t)
+	if err := dbpkg.UpsertConfig(context.Background(), map[string]string{
+		playerReuseWindowConfigKey: "false",
+	}); err != nil {
+		t.Fatalf("upsert config: %v", err)
+	}
+
+	content, err := buildStartupHotkeyHint()
+	if err != nil {
+		t.Fatalf("buildStartupHotkeyHint returned error: %v", err)
+	}
+
+	if !strings.Contains(content, "ESC：退出播放器") {
+		t.Fatalf("expected ESC quit hint, got %q", content)
+	}
+	if strings.Contains(content, "ESC：停止播放并最小化") {
+		t.Fatalf("expected ESC stop/minimize hint to be disabled, got %q", content)
 	}
 }
 
@@ -132,7 +222,7 @@ func TestBuildStartupHotkeyHintCanBeDisabled(t *testing.T) {
 func TestBuildConfigContentRespectsConfiguredOntop(t *testing.T) {
 	openConfigTestDB(t)
 	if err := dbpkg.UpsertConfig(context.Background(), map[string]string{
-		playerOntopConfigKey: "false",
+		playerOntopConfigKey: "true",
 	}); err != nil {
 		t.Fatalf("upsert config: %v", err)
 	}
@@ -142,8 +232,72 @@ func TestBuildConfigContentRespectsConfiguredOntop(t *testing.T) {
 		t.Fatalf("buildConfigContent returned error: %v", err)
 	}
 
-	if !strings.Contains(content, "ontop=no\n") {
-		t.Fatalf("expected ontop=no in mpv config, got %q", content)
+	if !strings.Contains(content, "ontop=yes\n") {
+		t.Fatalf("expected ontop=yes in mpv config, got %q", content)
+	}
+}
+
+func TestBuildConfigContentEnablesResumePlayback(t *testing.T) {
+	openConfigTestDB(t)
+	if err := dbpkg.UpsertConfig(context.Background(), map[string]string{
+		playerResumePlaybackConfigKey: "true",
+	}); err != nil {
+		t.Fatalf("upsert config: %v", err)
+	}
+
+	content, err := buildConfigContent()
+	if err != nil {
+		t.Fatalf("buildConfigContent returned error: %v", err)
+	}
+
+	if !strings.Contains(content, "save-position-on-quit=yes\n") {
+		t.Fatalf("expected save-position-on-quit=yes in mpv config, got %q", content)
+	}
+}
+
+func TestBuildConfigContentDisablesResumePlaybackLoading(t *testing.T) {
+	openConfigTestDB(t)
+	if err := dbpkg.UpsertConfig(context.Background(), map[string]string{
+		playerResumePlaybackConfigKey: "false",
+	}); err != nil {
+		t.Fatalf("upsert config: %v", err)
+	}
+
+	content, err := buildConfigContent()
+	if err != nil {
+		t.Fatalf("buildConfigContent returned error: %v", err)
+	}
+
+	if !strings.Contains(content, "save-position-on-quit=no\n") {
+		t.Fatalf("expected save-position-on-quit=no in mpv config, got %q", content)
+	}
+	if !strings.Contains(content, "resume-playback=no\n") {
+		t.Fatalf("expected resume-playback=no in mpv config, got %q", content)
+	}
+}
+
+func TestLoadConfiguredPlayerReuseWindowDefaultsToTrue(t *testing.T) {
+	prevDB := common.DB
+	common.DB = nil
+	defer func() {
+		common.DB = prevDB
+	}()
+
+	if !loadConfiguredPlayerReuseWindow() {
+		t.Fatal("expected player reuse window to default to true")
+	}
+}
+
+func TestLoadConfiguredPlayerReuseWindowCanBeDisabled(t *testing.T) {
+	openConfigTestDB(t)
+	if err := dbpkg.UpsertConfig(context.Background(), map[string]string{
+		playerReuseWindowConfigKey: "false",
+	}); err != nil {
+		t.Fatalf("upsert config: %v", err)
+	}
+
+	if loadConfiguredPlayerReuseWindow() {
+		t.Fatal("expected player reuse window to be disabled")
 	}
 }
 
@@ -163,30 +317,6 @@ func TestBuildConfigContentCentersConfiguredWindowSize(t *testing.T) {
 
 	if !strings.Contains(content, "geometry=80%x60%+50%+50%\n") {
 		t.Fatalf("expected centered configured geometry in mpv config, got %q", content)
-	}
-}
-
-func TestBuildConfigContentUsesOnlyAutofitForAutomaticWindowSize(t *testing.T) {
-	openConfigTestDB(t)
-	if err := dbpkg.UpsertConfig(context.Background(), map[string]string{
-		playerWindowUseAutofitConfigKey: "true",
-	}); err != nil {
-		t.Fatalf("upsert config: %v", err)
-	}
-
-	content, err := buildConfigContent()
-	if err != nil {
-		t.Fatalf("buildConfigContent returned error: %v", err)
-	}
-
-	if !strings.Contains(content, "autofit=80%x80%\n") {
-		t.Fatalf("expected default autofit size in mpv config, got %q", content)
-	}
-	if strings.Contains(content, "auto-window-resize=no\n") {
-		t.Fatalf("expected autofit mpv config to leave automatic window resize enabled, got %q", content)
-	}
-	if strings.Contains(content, "geometry=") {
-		t.Fatalf("expected autofit mpv config to omit fixed geometry, got %q", content)
 	}
 }
 

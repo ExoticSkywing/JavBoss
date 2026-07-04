@@ -18,16 +18,19 @@ const playerHotkeysConfigKey = "player_hotkeys"
 const playerWindowSizeConfigKey = "player_window_size"
 const playerWindowWidthConfigKey = "player_window_width"
 const playerWindowHeightConfigKey = "player_window_height"
-const playerWindowUseAutofitConfigKey = "player_window_use_autofit"
 const playerVolumeConfigKey = "player_volume"
 const playerOntopConfigKey = "player_ontop"
+const playerReuseWindowConfigKey = "player_reuse_window"
+const playerResumePlaybackConfigKey = "player_resume_playback"
 const playerShowHotkeyHintConfigKey = "player_show_hotkey_hint"
 
 const (
 	defaultWindowWidth  = 80
 	defaultWindowHeight = 80
 	defaultVolume       = 70
-	defaultOntop        = true
+	defaultOntop        = false
+	defaultReuseWindow  = true
+	defaultResume       = true
 	startupHintDuration = 5000
 )
 
@@ -144,8 +147,18 @@ func buildInputConfContent() (string, error) {
 	}
 
 	lines = append(lines, "SPACE cycle pause")
-	lines = append(lines, "ESC quit")
+	lines = append(lines, buildEscapeHotkeyBinding())
 	return strings.Join(lines, "\n") + "\n", nil
+}
+
+func buildEscapeHotkeyBinding() string {
+	if loadConfiguredPlayerReuseWindow() {
+		if loadConfiguredPlayerResumePlayback() {
+			return "ESC write-watch-later-config; stop; set window-minimized yes"
+		}
+		return "ESC stop; set window-minimized yes"
+	}
+	return "ESC quit"
 }
 
 func buildStartupHotkeyHint() (string, error) {
@@ -178,9 +191,16 @@ func buildStartupHotkeyHint() (string, error) {
 		}
 	}
 	parts = append(parts, "空格：暂停/继续")
-	parts = append(parts, "ESC：退出")
+	parts = append(parts, buildEscapeHotkeyHint())
 	parts = append(parts, "你可在「全局设置 → MPV播放器 → 基础设置」里关闭此信息显示")
 	return strings.Join(parts, "\n"), nil
+}
+
+func buildEscapeHotkeyHint() string {
+	if loadConfiguredPlayerReuseWindow() {
+		return "ESC：停止播放并最小化"
+	}
+	return "ESC：退出播放器"
 }
 
 func loadConfiguredHotkeys() ([]hotkeyConfig, error) {
@@ -375,29 +395,29 @@ func writeConfig() (string, error) {
 }
 
 func buildConfigContent() (string, error) {
-	windowWidth, windowHeight, useAutofit, volume, ontop, err := loadConfiguredPlayerBaseSettings()
+	windowWidth, windowHeight, volume, ontop, err := loadConfiguredPlayerBaseSettings()
 	if err != nil {
 		return "", err
 	}
+	resumePlayback := loadConfiguredPlayerResumePlayback()
 
 	lines := []string{
 		"osc=no",
 		"input-default-bindings=no",
 		"keep-open=yes",
+		"keepaspect-window=no",
+		fmt.Sprintf("save-position-on-quit=%s", mpvBool(resumePlayback)),
+		fmt.Sprintf("resume-playback=%s", mpvBool(resumePlayback)),
 		fmt.Sprintf("ontop=%s", mpvBool(ontop)),
 		fmt.Sprintf("osd-playing-msg-duration=%d", startupHintDuration),
-		"video-align-y=1",
+		"video-align-y=0",
 		"video-margin-ratio-bottom=0.125",
 		"watch-later-options-remove=sub-pos,osd-margin-y",
 	}
-	if useAutofit {
-		lines = append(lines, fmt.Sprintf("autofit=%d%%x%d%%", windowWidth, windowHeight))
-	} else {
-		lines = append(lines,
-			"auto-window-resize=no",
-			"geometry="+centeredWindowGeometry(windowWidth, windowHeight),
-		)
-	}
+	lines = append(lines,
+		"auto-window-resize=no",
+		"geometry="+centeredWindowGeometry(windowWidth, windowHeight),
+	)
 	lines = append(lines, fmt.Sprintf("volume=%d", volume))
 
 	return strings.Join(lines, "\n") + "\n", nil
@@ -407,15 +427,15 @@ func centeredWindowGeometry(width, height int) string {
 	return fmt.Sprintf("%d%%x%d%%+50%%+50%%", width, height)
 }
 
-func loadConfiguredPlayerBaseSettings() (int, int, bool, int, bool, error) {
+func loadConfiguredPlayerBaseSettings() (int, int, int, bool, error) {
 	if common.DB == nil {
-		return defaultWindowWidth, defaultWindowHeight, false, defaultVolume, defaultOntop, nil
+		return defaultWindowWidth, defaultWindowHeight, defaultVolume, defaultOntop, nil
 	}
 
 	cfg, err := dbpkg.ListConfig(context.Background())
 	if err != nil {
 		logging.Error("list player base config failed, using defaults: %v", err)
-		return defaultWindowWidth, defaultWindowHeight, false, defaultVolume, defaultOntop, nil
+		return defaultWindowWidth, defaultWindowHeight, defaultVolume, defaultOntop, nil
 	}
 
 	windowWidth := defaultWindowWidth
@@ -437,16 +457,6 @@ func loadConfiguredPlayerBaseSettings() (int, int, bool, int, bool, error) {
 		}
 	}
 
-	useAutofit := false
-	if raw := strings.TrimSpace(cfg[playerWindowUseAutofitConfigKey]); raw != "" {
-		switch strings.ToLower(raw) {
-		case "0", "false", "no", "off":
-			useAutofit = false
-		case "1", "true", "yes", "on":
-			useAutofit = true
-		}
-	}
-
 	volume := defaultVolume
 	if raw := strings.TrimSpace(cfg[playerVolumeConfigKey]); raw != "" {
 		if parsed, err := strconv.Atoi(raw); err == nil && parsed >= 0 && parsed <= 130 {
@@ -464,7 +474,57 @@ func loadConfiguredPlayerBaseSettings() (int, int, bool, int, bool, error) {
 		}
 	}
 
-	return windowWidth, windowHeight, useAutofit, volume, ontop, nil
+	return windowWidth, windowHeight, volume, ontop, nil
+}
+
+func loadConfiguredPlayerReuseWindow() bool {
+	if common.DB == nil {
+		return defaultReuseWindow
+	}
+
+	cfg, err := dbpkg.ListConfig(context.Background())
+	if err != nil {
+		logging.Error("list player reuse window config failed, using default: %v", err)
+		return defaultReuseWindow
+	}
+
+	raw := strings.TrimSpace(cfg[playerReuseWindowConfigKey])
+	if raw == "" {
+		return defaultReuseWindow
+	}
+	switch strings.ToLower(raw) {
+	case "0", "false", "no", "off":
+		return false
+	case "1", "true", "yes", "on":
+		return true
+	default:
+		return defaultReuseWindow
+	}
+}
+
+func loadConfiguredPlayerResumePlayback() bool {
+	if common.DB == nil {
+		return defaultResume
+	}
+
+	cfg, err := dbpkg.ListConfig(context.Background())
+	if err != nil {
+		logging.Error("list player resume playback config failed, using default: %v", err)
+		return defaultResume
+	}
+
+	raw := strings.TrimSpace(cfg[playerResumePlaybackConfigKey])
+	if raw == "" {
+		return defaultResume
+	}
+	switch strings.ToLower(raw) {
+	case "0", "false", "no", "off":
+		return false
+	case "1", "true", "yes", "on":
+		return true
+	default:
+		return defaultResume
+	}
 }
 
 func loadConfiguredPlayerShowHotkeyHint() (bool, error) {

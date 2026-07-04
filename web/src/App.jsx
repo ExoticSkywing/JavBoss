@@ -3535,18 +3535,25 @@ export default function App() {
           Number.parseInt(config?.player_window_size, 10) ||
           80
         }
-        playerWindowUseAutofit={
-          config?.player_window_use_autofit == null
-            ? false
-            : !['0', 'false', 'no', 'off'].includes(
-                String(config.player_window_use_autofit).trim().toLowerCase()
-              )
-        }
         playerOntop={
           config?.player_ontop == null
-            ? true
+            ? false
             : !['0', 'false', 'no', 'off'].includes(
                 String(config.player_ontop).trim().toLowerCase()
+              )
+        }
+        playerReuseWindow={
+          config?.player_reuse_window == null
+            ? true
+            : !['0', 'false', 'no', 'off'].includes(
+                String(config.player_reuse_window).trim().toLowerCase()
+              )
+        }
+        playerResumePlayback={
+          config?.player_resume_playback == null
+            ? true
+            : !['0', 'false', 'no', 'off'].includes(
+                String(config.player_resume_playback).trim().toLowerCase()
               )
         }
         playerVolume={

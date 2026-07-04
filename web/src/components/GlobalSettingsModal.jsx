@@ -31,8 +31,9 @@ const SETTINGS_SECTIONS = [
 const PLAYER_BASIC_DEFAULTS = {
   windowWidth: 80,
   windowHeight: 80,
-  windowUseAutofit: false,
-  ontop: true,
+  ontop: false,
+  reuseWindow: true,
+  resumePlayback: true,
   volume: 70,
   showHotkeyHint: true,
 }
@@ -63,8 +64,9 @@ export default function GlobalSettingsModal({
   onSaveInitialViewMode,
   playerWindowWidth,
   playerWindowHeight,
-  playerWindowUseAutofit,
   playerOntop,
+  playerReuseWindow,
+  playerResumePlayback,
   playerVolume,
   playerShowHotkeyHint,
   onSavePlayerBasicSettings,
@@ -93,8 +95,9 @@ export default function GlobalSettingsModal({
   const [savingPlayerBasic, setSavingPlayerBasic] = useState(false)
   const [playerWindowWidthInput, setPlayerWindowWidthInput] = useState('')
   const [playerWindowHeightInput, setPlayerWindowHeightInput] = useState('')
-  const [playerWindowUseAutofitInput, setPlayerWindowUseAutofitInput] = useState(false)
-  const [playerOntopInput, setPlayerOntopInput] = useState(true)
+  const [playerOntopInput, setPlayerOntopInput] = useState(false)
+  const [playerReuseWindowInput, setPlayerReuseWindowInput] = useState(true)
+  const [playerResumePlaybackInput, setPlayerResumePlaybackInput] = useState(true)
   const [playerVolumeInput, setPlayerVolumeInput] = useState('')
   const [playerShowHotkeyHintInput, setPlayerShowHotkeyHintInput] = useState(true)
 
@@ -103,8 +106,9 @@ export default function GlobalSettingsModal({
   const resetPlayerBasicInputs = () => {
     setPlayerWindowWidthInput(String(PLAYER_BASIC_DEFAULTS.windowWidth))
     setPlayerWindowHeightInput(String(PLAYER_BASIC_DEFAULTS.windowHeight))
-    setPlayerWindowUseAutofitInput(PLAYER_BASIC_DEFAULTS.windowUseAutofit)
     setPlayerOntopInput(PLAYER_BASIC_DEFAULTS.ontop)
+    setPlayerReuseWindowInput(PLAYER_BASIC_DEFAULTS.reuseWindow)
+    setPlayerResumePlaybackInput(PLAYER_BASIC_DEFAULTS.resumePlayback)
     setPlayerVolumeInput(String(PLAYER_BASIC_DEFAULTS.volume))
     setPlayerShowHotkeyHintInput(PLAYER_BASIC_DEFAULTS.showHotkeyHint)
     setPlayerBasicError('')
@@ -129,10 +133,9 @@ export default function GlobalSettingsModal({
       setPlayerBasicSuccess('')
       setPlayerWindowWidthInput(String(playerWindowWidth ?? PLAYER_BASIC_DEFAULTS.windowWidth))
       setPlayerWindowHeightInput(String(playerWindowHeight ?? PLAYER_BASIC_DEFAULTS.windowHeight))
-      setPlayerWindowUseAutofitInput(
-        playerWindowUseAutofit ?? PLAYER_BASIC_DEFAULTS.windowUseAutofit
-      )
       setPlayerOntopInput(playerOntop ?? PLAYER_BASIC_DEFAULTS.ontop)
+      setPlayerReuseWindowInput(playerReuseWindow ?? PLAYER_BASIC_DEFAULTS.reuseWindow)
+      setPlayerResumePlaybackInput(playerResumePlayback ?? PLAYER_BASIC_DEFAULTS.resumePlayback)
       setPlayerVolumeInput(String(playerVolume ?? PLAYER_BASIC_DEFAULTS.volume))
       setPlayerShowHotkeyHintInput(playerShowHotkeyHint ?? PLAYER_BASIC_DEFAULTS.showHotkeyHint)
     }
@@ -145,8 +148,9 @@ export default function GlobalSettingsModal({
     initialViewMode,
     playerWindowWidth,
     playerWindowHeight,
-    playerWindowUseAutofit,
     playerOntop,
+    playerReuseWindow,
+    playerResumePlayback,
     playerVolume,
     playerShowHotkeyHint,
     mpvEnabled,
@@ -576,10 +580,10 @@ export default function GlobalSettingsModal({
                     {zh('初始窗口大小', 'Initial Window Size')}
                   </h4>
                   <div className="flex flex-col gap-3">
-                    <div className="grid gap-3 md:max-w-xl md:grid-cols-2">
+                    <div className="flex flex-wrap gap-4">
                       <label className="flex items-center gap-2 text-xs font-medium text-zinc-500">
                         <span className="shrink-0">{zh('宽度', 'Width')}</span>
-                        <div className="flex min-w-0 flex-1 items-center gap-2">
+                        <div className="flex items-center gap-2">
                           <input
                             value={playerWindowWidthInput}
                             onChange={(e) => {
@@ -588,7 +592,7 @@ export default function GlobalSettingsModal({
                               setPlayerBasicSuccess('')
                             }}
                             inputMode="numeric"
-                            className="w-full min-w-0 rounded-xl border border-zinc-200 bg-white px-3 py-2 text-sm text-zinc-800"
+                            className="w-28 rounded-xl border border-zinc-200 bg-white px-3 py-2 text-sm text-zinc-800"
                           />
                           <span className="text-sm text-zinc-500">%</span>
                         </div>
@@ -596,7 +600,7 @@ export default function GlobalSettingsModal({
 
                       <label className="flex items-center gap-2 text-xs font-medium text-zinc-500">
                         <span className="shrink-0">{zh('高度', 'Height')}</span>
-                        <div className="flex min-w-0 flex-1 items-center gap-2">
+                        <div className="flex items-center gap-2">
                           <input
                             value={playerWindowHeightInput}
                             onChange={(e) => {
@@ -605,39 +609,19 @@ export default function GlobalSettingsModal({
                               setPlayerBasicSuccess('')
                             }}
                             inputMode="numeric"
-                            className="w-full min-w-0 rounded-xl border border-zinc-200 bg-white px-3 py-2 text-sm text-zinc-800"
+                            className="w-28 rounded-xl border border-zinc-200 bg-white px-3 py-2 text-sm text-zinc-800"
                           />
                           <span className="text-sm text-zinc-500">%</span>
                         </div>
                       </label>
                     </div>
 
-                    <div className="flex flex-wrap items-center gap-3">
-                      <label className="flex items-center gap-3 text-sm font-medium text-zinc-600">
-                        <input
-                          type="checkbox"
-                          checked={playerWindowUseAutofitInput}
-                          onChange={(e) => {
-                            setPlayerWindowUseAutofitInput(e.target.checked)
-                            setPlayerBasicError('')
-                            setPlayerBasicSuccess('')
-                          }}
-                          className="h-4 w-4 rounded"
-                        />
-                        <span>{zh('自动调节窗口大小', 'Automatically adjust window size')}</span>
-                      </label>
-                      <span className="text-xs text-zinc-500">
-                        {playerWindowUseAutofitInput
-                          ? zh(
-                              '开启后按最大宽高限制窗口，并保持视频纵横比。',
-                              'When enabled, the window is limited by max width and height while preserving aspect ratio.'
-                            )
-                          : zh(
-                              '默认关闭，强制使用指定宽高。',
-                              'Disabled by default and forces the specified width and height.'
-                            )}
-                      </span>
-                    </div>
+                    <p className="text-xs text-zinc-500">
+                      {zh(
+                        '设置 mpv 启动时的宽高占据屏幕宽高的比例。',
+                        'Set the percentage of screen width and height used by the mpv window on startup.'
+                      )}
+                    </p>
                   </div>
                 </section>
 
@@ -646,7 +630,7 @@ export default function GlobalSettingsModal({
                     <h4 className="text-sm font-semibold text-zinc-800">
                       {zh('初始音量', 'Initial Volume')}
                     </h4>
-                    <div className="flex w-full items-center gap-2 md:max-w-sm">
+                    <div className="flex items-center gap-2">
                       <input
                         value={playerVolumeInput}
                         onChange={(e) => {
@@ -655,7 +639,7 @@ export default function GlobalSettingsModal({
                           setPlayerBasicSuccess('')
                         }}
                         inputMode="numeric"
-                        className="w-full rounded-xl border border-zinc-200 bg-white px-3 py-2 text-sm text-zinc-800"
+                        className="w-28 rounded-xl border border-zinc-200 bg-white px-3 py-2 text-sm text-zinc-800"
                       />
                       <span className="text-sm text-zinc-500">%</span>
                     </div>
@@ -684,8 +668,57 @@ export default function GlobalSettingsModal({
                   </label>
                   <p className="text-xs text-zinc-500">
                     {zh(
-                      '默认开启，使 mpv 播放器窗口保持置顶。',
-                      'Enabled by default to keep the mpv player window on top.'
+                      '默认关闭。开启后，mpv 播放器窗口会保持置顶。',
+                      'Disabled by default. When enabled, the mpv player window stays on top.'
+                    )}
+                  </p>
+                </section>
+
+                <section className="space-y-3 border-t border-zinc-200 pt-5">
+                  <label className="flex items-center gap-3 text-sm font-semibold text-zinc-800">
+                    <input
+                      type="checkbox"
+                      checked={playerReuseWindowInput}
+                      onChange={(e) => {
+                        setPlayerReuseWindowInput(e.target.checked)
+                        setPlayerBasicError('')
+                        setPlayerBasicSuccess('')
+                      }}
+                      className="h-4 w-4 rounded"
+                    />
+                    <span>
+                      {zh(
+                        '播放新视频时尽可能使用已有播放器窗口',
+                        'Reuse Existing Player Window When Possible'
+                      )}
+                    </span>
+                  </label>
+                  <p className="text-xs text-zinc-500">
+                    {zh(
+                      '默认开启。关闭后，每次播放都会启动新的 mpv 播放器进程。',
+                      'Enabled by default. When disabled, each playback starts a new mpv player process.'
+                    )}
+                  </p>
+                </section>
+
+                <section className="space-y-3 border-t border-zinc-200 pt-5">
+                  <label className="flex items-center gap-3 text-sm font-semibold text-zinc-800">
+                    <input
+                      type="checkbox"
+                      checked={playerResumePlaybackInput}
+                      onChange={(e) => {
+                        setPlayerResumePlaybackInput(e.target.checked)
+                        setPlayerBasicError('')
+                        setPlayerBasicSuccess('')
+                      }}
+                      className="h-4 w-4 rounded"
+                    />
+                    <span>{zh('从上次结束位置播放', 'Resume From Last Position')}</span>
+                  </label>
+                  <p className="text-xs text-zinc-500">
+                    {zh(
+                      '默认开启。mpv 会记住每个视频的播放位置，下次播放同一文件时自动恢复。',
+                      'Enabled by default. mpv remembers each video position and resumes the same file automatically.'
                     )}
                   </p>
                 </section>
@@ -761,8 +794,9 @@ export default function GlobalSettingsModal({
                       await onSavePlayerBasicSettings?.({
                         player_window_width: width,
                         player_window_height: height,
-                        player_window_use_autofit: playerWindowUseAutofitInput,
                         player_ontop: playerOntopInput,
+                        player_reuse_window: playerReuseWindowInput,
+                        player_resume_playback: playerResumePlaybackInput,
                         player_volume: volume,
                         player_show_hotkey_hint: playerShowHotkeyHintInput,
                       })
