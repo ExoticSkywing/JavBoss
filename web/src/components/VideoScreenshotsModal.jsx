@@ -88,7 +88,7 @@ export default function VideoScreenshotsModal({
       .replace(/^mpv_/, '')
     const match = stem.match(/^(\d{2})-(\d{2})-(\d{2})(\.\d+)?$/)
     if (!match) return stem || name
-    return `${match[1]}:${match[2]}:${match[3]}${match[4] || ''}`
+    return `${match[1]}:${match[2]}:${match[3]}`
   }
 
   const screenshotStartTime = (name) => {
