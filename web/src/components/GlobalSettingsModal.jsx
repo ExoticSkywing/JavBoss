@@ -49,8 +49,6 @@ export default function GlobalSettingsModal({
   directoryPickerEnabled = true,
   hostPathPrefixEnabled = false,
   mpvEnabled = true,
-  enabledDirectoryIds,
-  onEnabledDirectoryIdsChange,
   onCreateDirectory,
   onUpdateDirectory,
   onDeleteDirectory,
@@ -849,8 +847,6 @@ export default function GlobalSettingsModal({
         <DirectoryManager
           open={open}
           directories={directories}
-          enabledDirectoryIds={enabledDirectoryIds}
-          onEnabledDirectoryIdsChange={onEnabledDirectoryIdsChange}
           onCreate={onCreateDirectory}
           onUpdate={onUpdateDirectory}
           onDelete={onDeleteDirectory}

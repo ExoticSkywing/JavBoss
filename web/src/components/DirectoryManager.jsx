@@ -16,8 +16,6 @@ function isWindowsPlatform() {
 export default function DirectoryManager({
   open,
   directories,
-  enabledDirectoryIds = [],
-  onEnabledDirectoryIdsChange,
   onCreate,
   onUpdate,
   onDelete,
@@ -57,22 +55,6 @@ export default function DirectoryManager({
         ? 'Enter the full host path. Docker deployments map it to the container path automatically.'
         : 'Enter a full path that is accessible inside the container, for example /media.'
   )
-  const enabledSet = new Set((enabledDirectoryIds || []).map((id) => Number(id)))
-  const activeDirectoryIds = directories.filter((d) => !d.is_delete).map((d) => d.id)
-  const allEnabled =
-    activeDirectoryIds.length > 0 && activeDirectoryIds.every((id) => enabledSet.has(id))
-  const filtered = activeDirectoryIds.length > 0 && !allEnabled
-
-  const setDirectoryEnabled = (id, checked) => {
-    const next = new Set(enabledSet)
-    if (checked) {
-      next.add(id)
-    } else {
-      next.delete(id)
-    }
-    onEnabledDirectoryIdsChange?.(Array.from(next))
-  }
-
   const displayPath = (value) => displayHostPath(value, useHostPaths)
   const apiPath = (value) => apiHostPath(value, useHostPaths)
 
@@ -196,33 +178,6 @@ export default function DirectoryManager({
   return (
     <div className="space-y-3">
       {directories.length > 0 && (
-        <div className="flex flex-wrap items-center justify-between gap-2 rounded border bg-sky-50 px-3 py-2">
-          <div className="text-xs font-medium text-sky-800">
-            {filtered
-              ? enabledSet.size === 0
-                ? zh('所有目录已停用，不显示内容', 'All directories disabled, showing no content')
-                : zh(`启用 ${enabledSet.size} 个目录`, `${enabledSet.size} directories enabled`)
-              : zh('所有目录已启用，显示全部内容', 'All directories enabled, showing all content')}
-          </div>
-          <div className="flex items-center gap-2">
-            <button
-              type="button"
-              onClick={() => onEnabledDirectoryIdsChange?.(activeDirectoryIds)}
-              className="rounded border border-sky-200 bg-white px-2 py-1 text-xs text-sky-700 hover:bg-sky-100"
-            >
-              {zh('全部启用', 'Enable all')}
-            </button>
-            <button
-              type="button"
-              onClick={() => onEnabledDirectoryIdsChange?.([])}
-              className="rounded border border-sky-200 bg-white px-2 py-1 text-xs text-sky-700 hover:bg-sky-100"
-            >
-              {zh('全部停用', 'Disable all')}
-            </button>
-          </div>
-        </div>
-      )}
-      {directories.length > 0 && (
         <div className="divide-y rounded border">
           {directories.map((d) => {
             const isEditing = editId === d.id
@@ -235,20 +190,6 @@ export default function DirectoryManager({
                 }`}
               >
                 <div className="min-w-0 space-y-1">
-                  <label className="flex min-w-0 items-center gap-2">
-                    <input
-                      type="checkbox"
-                      checked={enabledSet.has(d.id)}
-                      onChange={(e) => setDirectoryEnabled(d.id, e.target.checked)}
-                      disabled={d.is_delete}
-                      className="h-4 w-4 rounded border-gray-300 text-blue-600"
-                      aria-label={zh(
-                        `启用目录 ${displayPath(d.path)}`,
-                        `Enable directory ${displayPath(d.path)}`
-                      )}
-                    />
-                    <span className="text-xs text-gray-500">{zh('启用此目录', 'Enabled')}</span>
-                  </label>
                   {!isEditing ? (
                     <div className="truncate text-sm font-medium">{displayPath(d.path)}</div>
                   ) : (
