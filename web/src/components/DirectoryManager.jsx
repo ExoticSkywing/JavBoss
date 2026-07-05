@@ -222,136 +222,130 @@ export default function DirectoryManager({
           </div>
         </div>
       )}
-      <div className="divide-y rounded border">
-        {directories.length === 0 && (
-          <div className="p-3 text-sm text-gray-500">
-            {zh(
-              '添加本地视频目录让 JavBoss 接管，所有内容将自动为您呈现。',
-              'No directories yet. Added folders will be scanned automatically.'
-            )}
-          </div>
-        )}
-        {directories.map((d) => {
-          const isEditing = editId === d.id
-          const working = savingId === d.id || deletingId === d.id
-          return (
-            <div
-              key={d.id}
-              className={`flex flex-col gap-2 p-3 sm:flex-row sm:items-center sm:justify-between ${
-                isEditing ? 'rounded border bg-gray-50' : ''
-              }`}
-            >
-              <div className="min-w-0 space-y-1">
-                <label className="flex min-w-0 items-center gap-2">
-                  <input
-                    type="checkbox"
-                    checked={enabledSet.has(d.id)}
-                    onChange={(e) => setDirectoryEnabled(d.id, e.target.checked)}
-                    disabled={d.is_delete}
-                    className="h-4 w-4 rounded border-gray-300 text-blue-600"
-                    aria-label={zh(
-                      `启用目录 ${displayPath(d.path)}`,
-                      `Enable directory ${displayPath(d.path)}`
-                    )}
-                  />
-                  <span className="text-xs text-gray-500">{zh('启用此目录', 'Enabled')}</span>
-                </label>
-                {!isEditing ? (
-                  <div className="truncate text-sm font-medium">{displayPath(d.path)}</div>
-                ) : (
-                  <form onSubmit={handleEditSubmit} className="space-y-2">
-                    <div className="flex flex-col gap-2 sm:flex-row sm:items-center">
-                      <input
-                        value={editPath}
-                        onChange={(e) => setEditPath(e.target.value)}
-                        className="w-full rounded border px-3 py-2 text-sm sm:min-w-[420px] sm:flex-1"
-                        placeholder={pathPlaceholder}
-                      />
-                      {directoryPickerEnabled ? (
-                        <button
-                          type="button"
-                          onClick={() => {
-                            setRowErrorId(null)
-                            setRowErrorMsg('')
-                            handlePick({
-                              setValue: setEditPath,
-                              setErr: setRowErrorMsg,
-                              setRowId: () => setRowErrorId(editId),
-                            })
-                          }}
-                          disabled={picking || working}
-                          className="rounded border px-3 py-2 text-sm hover:bg-gray-100 disabled:opacity-60"
-                        >
-                          {picking
-                            ? zh('选择中…', 'Picking...')
-                            : zh('选择目录', 'Choose directory')}
-                        </button>
-                      ) : null}
-                    </div>
-                    <div className="text-xs text-blue-700">{pathHelperText}</div>
-                  </form>
-                )}
-                <div className="flex flex-wrap items-center gap-2">
-                  {d.missing && (
-                    <span className="inline-flex items-center rounded-full bg-red-50 px-2 py-0.5 text-xs font-medium text-red-700">
-                      {zh('目录缺失', 'Missing')}
-                    </span>
+      {directories.length > 0 && (
+        <div className="divide-y rounded border">
+          {directories.map((d) => {
+            const isEditing = editId === d.id
+            const working = savingId === d.id || deletingId === d.id
+            return (
+              <div
+                key={d.id}
+                className={`flex flex-col gap-2 p-3 sm:flex-row sm:items-center sm:justify-between ${
+                  isEditing ? 'rounded border bg-gray-50' : ''
+                }`}
+              >
+                <div className="min-w-0 space-y-1">
+                  <label className="flex min-w-0 items-center gap-2">
+                    <input
+                      type="checkbox"
+                      checked={enabledSet.has(d.id)}
+                      onChange={(e) => setDirectoryEnabled(d.id, e.target.checked)}
+                      disabled={d.is_delete}
+                      className="h-4 w-4 rounded border-gray-300 text-blue-600"
+                      aria-label={zh(
+                        `启用目录 ${displayPath(d.path)}`,
+                        `Enable directory ${displayPath(d.path)}`
+                      )}
+                    />
+                    <span className="text-xs text-gray-500">{zh('启用此目录', 'Enabled')}</span>
+                  </label>
+                  {!isEditing ? (
+                    <div className="truncate text-sm font-medium">{displayPath(d.path)}</div>
+                  ) : (
+                    <form onSubmit={handleEditSubmit} className="space-y-2">
+                      <div className="flex flex-col gap-2 sm:flex-row sm:items-center">
+                        <input
+                          value={editPath}
+                          onChange={(e) => setEditPath(e.target.value)}
+                          className="w-full rounded border px-3 py-2 text-sm sm:min-w-[420px] sm:flex-1"
+                          placeholder={pathPlaceholder}
+                        />
+                        {directoryPickerEnabled ? (
+                          <button
+                            type="button"
+                            onClick={() => {
+                              setRowErrorId(null)
+                              setRowErrorMsg('')
+                              handlePick({
+                                setValue: setEditPath,
+                                setErr: setRowErrorMsg,
+                                setRowId: () => setRowErrorId(editId),
+                              })
+                            }}
+                            disabled={picking || working}
+                            className="rounded border px-3 py-2 text-sm hover:bg-gray-100 disabled:opacity-60"
+                          >
+                            {picking
+                              ? zh('选择中…', 'Picking...')
+                              : zh('选择目录', 'Choose directory')}
+                          </button>
+                        ) : null}
+                      </div>
+                      <div className="text-xs text-blue-700">{pathHelperText}</div>
+                    </form>
                   )}
-                  {d.is_delete && (
-                    <span className="inline-flex items-center rounded-full bg-gray-100 px-2 py-0.5 text-xs font-medium text-gray-700">
-                      {zh('已删除', 'Deleted')}
-                    </span>
+                  <div className="flex flex-wrap items-center gap-2">
+                    {d.missing && (
+                      <span className="inline-flex items-center rounded-full bg-red-50 px-2 py-0.5 text-xs font-medium text-red-700">
+                        {zh('目录缺失', 'Missing')}
+                      </span>
+                    )}
+                    {d.is_delete && (
+                      <span className="inline-flex items-center rounded-full bg-gray-100 px-2 py-0.5 text-xs font-medium text-gray-700">
+                        {zh('已删除', 'Deleted')}
+                      </span>
+                    )}
+                  </div>
+                  {rowErrorId === d.id && rowErrorMsg && (
+                    <div className="text-xs text-red-600">{rowErrorMsg}</div>
                   )}
                 </div>
-                {rowErrorId === d.id && rowErrorMsg && (
-                  <div className="text-xs text-red-600">{rowErrorMsg}</div>
-                )}
+                <div className="flex flex-wrap items-center justify-end gap-2">
+                  {!isEditing ? (
+                    <>
+                      <button
+                        type="button"
+                        onClick={() => startEdit(d)}
+                        disabled={d.is_delete || working}
+                        className="rounded border px-3 py-1.5 text-xs text-gray-700 hover:bg-gray-50 disabled:opacity-60"
+                      >
+                        {zh('编辑', 'Edit')}
+                      </button>
+                      <button
+                        type="button"
+                        onClick={() => handleDelete(d)}
+                        disabled={d.is_delete || working}
+                        className="rounded border px-3 py-1.5 text-xs text-red-700 hover:bg-red-50 disabled:opacity-60"
+                      >
+                        {deletingId === d.id ? zh('删除中…', 'Deleting...') : zh('删除', 'Delete')}
+                      </button>
+                    </>
+                  ) : (
+                    <>
+                      <button
+                        type="button"
+                        onClick={handleEditSubmit}
+                        disabled={working}
+                        className="rounded bg-blue-600 px-3 py-1.5 text-xs text-white disabled:opacity-60"
+                      >
+                        {savingId === d.id ? zh('保存中…', 'Saving...') : zh('保存', 'Save')}
+                      </button>
+                      <button
+                        type="button"
+                        onClick={cancelEdit}
+                        disabled={working}
+                        className="rounded border px-3 py-1.5 text-xs text-gray-700 hover:bg-gray-50 disabled:opacity-60"
+                      >
+                        {zh('取消', 'Cancel')}
+                      </button>
+                    </>
+                  )}
+                </div>
               </div>
-              <div className="flex flex-wrap items-center justify-end gap-2">
-                {!isEditing ? (
-                  <>
-                    <button
-                      type="button"
-                      onClick={() => startEdit(d)}
-                      disabled={d.is_delete || working}
-                      className="rounded border px-3 py-1.5 text-xs text-gray-700 hover:bg-gray-50 disabled:opacity-60"
-                    >
-                      {zh('编辑', 'Edit')}
-                    </button>
-                    <button
-                      type="button"
-                      onClick={() => handleDelete(d)}
-                      disabled={d.is_delete || working}
-                      className="rounded border px-3 py-1.5 text-xs text-red-700 hover:bg-red-50 disabled:opacity-60"
-                    >
-                      {deletingId === d.id ? zh('删除中…', 'Deleting...') : zh('删除', 'Delete')}
-                    </button>
-                  </>
-                ) : (
-                  <>
-                    <button
-                      type="button"
-                      onClick={handleEditSubmit}
-                      disabled={working}
-                      className="rounded bg-blue-600 px-3 py-1.5 text-xs text-white disabled:opacity-60"
-                    >
-                      {savingId === d.id ? zh('保存中…', 'Saving...') : zh('保存', 'Save')}
-                    </button>
-                    <button
-                      type="button"
-                      onClick={cancelEdit}
-                      disabled={working}
-                      className="rounded border px-3 py-1.5 text-xs text-gray-700 hover:bg-gray-50 disabled:opacity-60"
-                    >
-                      {zh('取消', 'Cancel')}
-                    </button>
-                  </>
-                )}
-              </div>
-            </div>
-          )
-        })}
-      </div>
+            )
+          })}
+        </div>
+      )}
       {adding && (
         <form onSubmit={handleSubmit} className="flex flex-col gap-2 rounded border bg-gray-50 p-3">
           <div className="flex flex-col gap-2 sm:flex-row sm:items-center">
