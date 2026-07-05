@@ -315,47 +315,45 @@ export default function TopBar({
 
   return (
     <header ref={headerRef} className={headerClassName}>
-      {!showDirectorySetupHint ? (
-        <div className="absolute left-6 top-1/2 z-10 flex -translate-y-1/2 items-center overflow-hidden rounded border border-gray-200 bg-white shadow-sm">
-          <Button
-            type="button"
-            variant="text"
-            onClick={onBrowserBack}
-            disabled={!canGoBack}
-            title={zh('浏览器后退', 'Browser back')}
-            aria-label={zh('浏览器后退', 'Browser back')}
-            sx={{
-              minWidth: 30,
-              width: 30,
-              height: 30,
-              p: 0,
-              borderRadius: 0,
-              color: 'text.secondary',
-            }}
-          >
-            <ArrowBackRoundedIcon fontSize="small" />
-          </Button>
-          <span className="h-4 w-px bg-gray-200" aria-hidden="true" />
-          <Button
-            type="button"
-            variant="text"
-            onClick={onBrowserForward}
-            disabled={!canGoForward}
-            title={zh('浏览器前进', 'Browser forward')}
-            aria-label={zh('浏览器前进', 'Browser forward')}
-            sx={{
-              minWidth: 30,
-              width: 30,
-              height: 30,
-              p: 0,
-              borderRadius: 0,
-              color: 'text.secondary',
-            }}
-          >
-            <ArrowForwardRoundedIcon fontSize="small" />
-          </Button>
-        </div>
-      ) : null}
+      <div className="absolute left-6 top-1/2 z-10 flex -translate-y-1/2 items-center overflow-hidden rounded border border-gray-200 bg-white shadow-sm">
+        <Button
+          type="button"
+          variant="text"
+          onClick={onBrowserBack}
+          disabled={!canGoBack}
+          title={zh('浏览器后退', 'Browser back')}
+          aria-label={zh('浏览器后退', 'Browser back')}
+          sx={{
+            minWidth: 30,
+            width: 30,
+            height: 30,
+            p: 0,
+            borderRadius: 0,
+            color: 'text.secondary',
+          }}
+        >
+          <ArrowBackRoundedIcon fontSize="small" />
+        </Button>
+        <span className="h-4 w-px bg-gray-200" aria-hidden="true" />
+        <Button
+          type="button"
+          variant="text"
+          onClick={onBrowserForward}
+          disabled={!canGoForward}
+          title={zh('浏览器前进', 'Browser forward')}
+          aria-label={zh('浏览器前进', 'Browser forward')}
+          sx={{
+            minWidth: 30,
+            width: 30,
+            height: 30,
+            p: 0,
+            borderRadius: 0,
+            color: 'text.secondary',
+          }}
+        >
+          <ArrowForwardRoundedIcon fontSize="small" />
+        </Button>
+      </div>
       <div className={headerBodyClassName}>
         <div className="flex min-w-0 flex-wrap items-center gap-3">
           <div className="relative flex min-w-0 items-center gap-3">

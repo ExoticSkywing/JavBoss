@@ -226,7 +226,7 @@ export default function DirectoryManager({
         {directories.length === 0 && (
           <div className="p-3 text-sm text-gray-500">
             {zh(
-              '还没有添加目录，添加后会自动扫描其中的视频。',
+              '添加本地视频目录让 JavBoss 接管，所有内容将自动为您呈现。',
               'No directories yet. Added folders will be scanned automatically.'
             )}
           </div>
