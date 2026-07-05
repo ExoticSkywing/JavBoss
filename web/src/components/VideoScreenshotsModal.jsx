@@ -38,6 +38,13 @@ export default function VideoScreenshotsModal({
   const open = Boolean(video?.id)
   const title = useMemo(() => getVideoDisplayName(video), [video])
   const currentCoverName = useMemo(() => items.find((item) => item?.is_cover)?.name || '', [items])
+  const defaultCoverPreviewSrc = useMemo(() => {
+    if (!video?.id) return ''
+    const params = new URLSearchParams({ default: '1' })
+    const version = [currentCoverName, video?.updated_at || ''].join('|')
+    if (version) params.set('v', version)
+    return `/videos/${video.id}/thumbnail?${params.toString()}`
+  }, [currentCoverName, video?.id, video?.updated_at])
   const screenshotKey = useMemo(() => {
     const hotkeys = parsePlayerHotkeys(playerHotkeys)
     const screenshotHotkey = hotkeys.find(
@@ -163,8 +170,28 @@ export default function VideoScreenshotsModal({
           </div>
           <div className="flex items-center gap-1">
             {currentCoverName ? (
-              <Tooltip title={zh('恢复默认封面', 'Restore default cover')}>
-                <span>
+              <Tooltip
+                arrow
+                placement="left"
+                title={zh('恢复默认封面', 'Restore default cover')}
+                slotProps={{
+                  popper: {
+                    sx: {
+                      pointerEvents: 'none',
+                      zIndex: (theme) => theme.zIndex.modal + 1000,
+                    },
+                    modifiers: [
+                      {
+                        name: 'offset',
+                        options: {
+                          offset: [0, 4],
+                        },
+                      },
+                    ],
+                  },
+                }}
+              >
+                <span className="group relative inline-flex">
                   <IconButton
                     size="small"
                     onClick={handleResetCover}
@@ -173,6 +200,7 @@ export default function VideoScreenshotsModal({
                   >
                     <RestoreIcon fontSize="inherit" />
                   </IconButton>
+                  <DefaultCoverPreview src={defaultCoverPreviewSrc} />
                 </span>
               </Tooltip>
             ) : null}
@@ -316,6 +344,36 @@ export default function VideoScreenshotsModal({
         />
       ) : null}
     </div>
+  )
+}
+
+function DefaultCoverPreview({ src }) {
+  const [imageFailed, setImageFailed] = useState(false)
+
+  useEffect(() => {
+    setImageFailed(false)
+  }, [src])
+
+  return (
+    <span className="pointer-events-none invisible absolute left-1/2 top-full z-[2000] mt-2 w-72 -translate-x-1/2 overflow-hidden rounded border border-gray-200 bg-white text-gray-900 opacity-0 shadow-lg transition group-focus-within:visible group-focus-within:opacity-100 group-hover:visible group-hover:opacity-100">
+      <div className="border-b border-gray-100 px-3 py-2 text-xs font-medium">
+        {zh('默认封面预览', 'Default cover preview')}
+      </div>
+      <div className="flex aspect-video items-center justify-center bg-gray-100">
+        {src && !imageFailed ? (
+          <img
+            src={src}
+            alt={zh('默认封面预览', 'Default cover preview')}
+            className="h-full w-full object-cover"
+            onError={() => setImageFailed(true)}
+          />
+        ) : (
+          <div className="px-3 text-center text-xs text-gray-500">
+            {zh('默认封面待生成', 'Default cover pending')}
+          </div>
+        )}
+      </div>
+    </span>
   )
 }
 
