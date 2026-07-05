@@ -1130,9 +1130,11 @@ func getThumbnail(c *gin.Context) {
 	}
 	dataDir := filepath.Dir(common.AppConfig.DatabasePath)
 
-	if path, ok := customVideoCoverPath(dataDir, video); ok {
-		c.File(path)
-		return
+	if !defaultVideoThumbnailRequested(c) {
+		if path, ok := customVideoCoverPath(dataDir, video); ok {
+			c.File(path)
+			return
+		}
 	}
 
 	second, ok := manager.PickScreenshotSecond(video.DurationSec)
@@ -1159,6 +1161,10 @@ func getThumbnail(c *gin.Context) {
 	}
 
 	c.File(screenshotPath)
+}
+
+func defaultVideoThumbnailRequested(c *gin.Context) bool {
+	return c.Query("default") == "1"
 }
 
 func updateVideoCover(c *gin.Context) {

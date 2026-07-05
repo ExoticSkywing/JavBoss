@@ -3543,8 +3543,6 @@ export default function App() {
         directoryPickerEnabled={directoryPickerEnabled}
         hostPathPrefixEnabled={hostPathPrefixEnabled}
         mpvEnabled={mpvEnabled}
-        enabledDirectoryIds={enabledDirectoryIds}
-        onEnabledDirectoryIdsChange={setEnabledDirectoryIds}
         onCreateDirectory={async (payload) => {
           const created = await createDirectory(payload)
           await loadDirectories()

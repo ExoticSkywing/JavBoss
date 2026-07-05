@@ -1,4 +1,5 @@
 import { useEffect, useState } from 'react'
+import InfoOutlinedIcon from '@mui/icons-material/InfoOutlined'
 
 import DirectoryManager from '@/components/DirectoryManager'
 import PlayerSettingsModal from '@/components/PlayerSettingsModal'
@@ -48,8 +49,6 @@ export default function GlobalSettingsModal({
   directoryPickerEnabled = true,
   hostPathPrefixEnabled = false,
   mpvEnabled = true,
-  enabledDirectoryIds,
-  onEnabledDirectoryIdsChange,
   onCreateDirectory,
   onUpdateDirectory,
   onDeleteDirectory,
@@ -836,13 +835,18 @@ export default function GlobalSettingsModal({
   }
 
   const renderDirectoriesPanel = () => (
-    <div className="space-y-5">
+    <div className="space-y-2">
+      <div className="flex items-center gap-1.5 text-xs font-semibold text-zinc-600">
+        <InfoOutlinedIcon fontSize="inherit" className="text-[15px]" aria-hidden="true" />
+        {zh(
+          '添加本地视频目录让 JavBoss 接管，所有内容将自动为您呈现。',
+          'No directories yet. Added folders will be scanned automatically.'
+        )}
+      </div>
       <section className="rounded-2xl border border-zinc-200 bg-white p-5 shadow-sm">
         <DirectoryManager
           open={open}
           directories={directories}
-          enabledDirectoryIds={enabledDirectoryIds}
-          onEnabledDirectoryIdsChange={onEnabledDirectoryIdsChange}
           onCreate={onCreateDirectory}
           onUpdate={onUpdateDirectory}
           onDelete={onDeleteDirectory}
@@ -916,7 +920,11 @@ export default function GlobalSettingsModal({
             </div>
           </aside>
 
-          <section className="min-h-0 flex-1 overflow-y-auto px-4 py-4 md:px-6 md:py-6">
+          <section
+            className={`min-h-0 flex-1 overflow-y-auto px-4 pb-4 pt-4 md:px-6 md:pb-6 ${
+              currentSection === 'directories' ? 'md:pt-3' : 'md:pt-6'
+            }`}
+          >
             {currentSection === 'basic' && renderBasicPanel()}
             {currentSection === 'jav' && renderJavPanel()}
             {currentSection === 'player' && renderPlayerPanel()}
