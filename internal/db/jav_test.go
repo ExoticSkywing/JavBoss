@@ -4,6 +4,7 @@ import (
 	"context"
 	"errors"
 	"path/filepath"
+	"reflect"
 	"strings"
 	"testing"
 	"time"
@@ -166,6 +167,7 @@ func TestListJavPrefixesAndSearchByPrefix(t *testing.T) {
 		{Code: "PFX003", Title: "No Hyphen", StudioID: int64Ptr(studioA.ID), IsUncensored: &censored, FetchedAt: now},
 		{Code: "PFX-004", Title: "Hidden Prefix", StudioID: int64Ptr(studioA.ID), IsUncensored: &censored, FetchedAt: now},
 		{Code: "PFX_005", Title: "Underscore Prefix", StudioID: int64Ptr(studioA.ID), IsUncensored: &censored, FetchedAt: now},
+		{Code: "PFX-006", Title: "Unknown Studio", IsUncensored: &censored, FetchedAt: now},
 	}
 	if err := db.Create(&javs).Error; err != nil {
 		t.Fatalf("create javs: %v", err)
@@ -177,6 +179,7 @@ func TestListJavPrefixesAndSearchByPrefix(t *testing.T) {
 		{DirectoryID: dir.ID, Path: "pfx003.mp4", Filename: "pfx003.mp4", Fingerprint: "fp-pfx003", JavID: int64Ptr(javs[3].ID), ModifiedAt: now},
 		{DirectoryID: dir.ID, Path: "pfx-004.mp4", Filename: "pfx-004.mp4", Fingerprint: "fp-pfx-004", JavID: int64Ptr(javs[4].ID), ModifiedAt: now, Hidden: true},
 		{DirectoryID: dir.ID, Path: "pfx_005.mp4", Filename: "pfx_005.mp4", Fingerprint: "fp-pfx-005", JavID: int64Ptr(javs[5].ID), ModifiedAt: now},
+		{DirectoryID: dir.ID, Path: "pfx-006.mp4", Filename: "pfx-006.mp4", Fingerprint: "fp-pfx-006", JavID: int64Ptr(javs[6].ID), ModifiedAt: now},
 	}
 	if err := db.Create(&videos).Error; err != nil {
 		t.Fatalf("create videos: %v", err)
@@ -187,8 +190,8 @@ func TestListJavPrefixesAndSearchByPrefix(t *testing.T) {
 	if err != nil {
 		t.Fatalf("ListJavPrefixes: %v", err)
 	}
-	if len(prefixes) != 2 {
-		t.Fatalf("unexpected prefix count: got %d want 2: %#v", len(prefixes), prefixes)
+	if len(prefixes) != 3 {
+		t.Fatalf("unexpected prefix count: got %d want 3: %#v", len(prefixes), prefixes)
 	}
 	if prefixes[0].Prefix != "PFX" || prefixes[0].StudioName != "Studio A" || prefixes[0].WorkCount != 3 {
 		t.Fatalf("unexpected first prefix: %#v", prefixes[0])
@@ -202,16 +205,27 @@ func TestListJavPrefixesAndSearchByPrefix(t *testing.T) {
 	if prefixes[1].IsUncensored == nil || !*prefixes[1].IsUncensored {
 		t.Fatalf("unexpected second prefix censor status: %#v", prefixes[1].IsUncensored)
 	}
+	if prefixes[2].Prefix != "PFX" || prefixes[2].StudioID != nil || prefixes[2].StudioName != "" || prefixes[2].WorkCount != 1 {
+		t.Fatalf("unexpected unknown-studio prefix: %#v", prefixes[2])
+	}
 
 	items, total, err := SearchJavWithPrefix(ctx, nil, nil, "", "pfx", "code", 20, 0, nil, nil)
 	if err != nil {
 		t.Fatalf("SearchJavWithPrefix: %v", err)
 	}
-	if total != 3 || len(items) != 3 {
+	if total != 4 || len(items) != 4 {
 		t.Fatalf("unexpected pfx result count: total=%d len=%d", total, len(items))
 	}
-	if items[0].Code != "PFX-001" || items[1].Code != "PFX-002" || items[2].Code != "PFX_005" {
-		t.Fatalf("unexpected pfx codes: %#v", []string{items[0].Code, items[1].Code, items[2].Code})
+	if items[0].Code != "PFX-001" || items[1].Code != "PFX-002" || items[2].Code != "PFX-006" || items[3].Code != "PFX_005" {
+		t.Fatalf("unexpected pfx codes: %#v", []string{items[0].Code, items[1].Code, items[2].Code, items[3].Code})
+	}
+
+	items, total, err = SearchJavWithPrefix(ctx, nil, nil, "", "pfx", "code", 20, 0, nil, nil, 0)
+	if err != nil {
+		t.Fatalf("SearchJavWithPrefix unknown studio: %v", err)
+	}
+	if total != 1 || len(items) != 1 || items[0].Code != "PFX-006" {
+		t.Fatalf("unexpected unknown-studio pfx result: total=%d items=%#v", total, items)
 	}
 }
 
@@ -1568,6 +1582,102 @@ func TestSaveAndUpdateJavStudioAndSeries(t *testing.T) {
 	}
 }
 
+func TestMissingOnlyJavMetadataUpdatesDoNotOverwriteExistingValues(t *testing.T) {
+	gdb := openTestDB(t)
+	ctx := context.Background()
+	now := time.Unix(1710000000, 0).UTC()
+
+	studio := models.JavStudio{Name: "Existing Studio"}
+	series := models.JavSeries{Name: "Existing Series"}
+	if err := gdb.Create(&studio).Error; err != nil {
+		t.Fatalf("create studio: %v", err)
+	}
+	if err := gdb.Create(&series).Error; err != nil {
+		t.Fatalf("create series: %v", err)
+	}
+
+	existing := models.Jav{
+		Code:      "MISSUP-001",
+		Title:     "Existing Title",
+		StudioID:  &studio.ID,
+		SeriesID:  &series.ID,
+		FetchedAt: now,
+	}
+	if err := gdb.Create(&existing).Error; err != nil {
+		t.Fatalf("create jav: %v", err)
+	}
+
+	updated, err := UpdateJavStudioIfMissing(ctx, existing.ID, "Replacement Studio")
+	if err != nil {
+		t.Fatalf("update missing studio: %v", err)
+	}
+	if updated {
+		t.Fatal("UpdateJavStudioIfMissing should not update an existing studio")
+	}
+	updated, err = UpdateJavSeriesIfMissing(ctx, existing.ID, "Replacement Series", false)
+	if err != nil {
+		t.Fatalf("update missing series: %v", err)
+	}
+	if updated {
+		t.Fatal("UpdateJavSeriesIfMissing should not update an existing series")
+	}
+
+	var got models.Jav
+	if err := gdb.Preload("Studio").Preload("Series").Where("code = ?", existing.Code).First(&got).Error; err != nil {
+		t.Fatalf("load jav: %v", err)
+	}
+	if got.Title != "Existing Title" || got.Studio == nil || got.Studio.Name != "Existing Studio" || got.Series == nil || got.Series.Name != "Existing Series" {
+		t.Fatalf("existing values were overwritten: %#v", got)
+	}
+	var replacementCount int64
+	if err := gdb.Model(&models.JavStudio{}).Where("name = ?", "Replacement Studio").Count(&replacementCount).Error; err != nil {
+		t.Fatalf("count replacement studio: %v", err)
+	}
+	if replacementCount != 0 {
+		t.Fatalf("replacement studio should not be created, got %d", replacementCount)
+	}
+	if err := gdb.Model(&models.JavSeries{}).Where("name = ?", "Replacement Series").Count(&replacementCount).Error; err != nil {
+		t.Fatalf("count replacement series: %v", err)
+	}
+	if replacementCount != 0 {
+		t.Fatalf("replacement series should not be created, got %d", replacementCount)
+	}
+}
+
+func TestMissingOnlyJavMetadataUpdatesFillEmptyValues(t *testing.T) {
+	gdb := openTestDB(t)
+	ctx := context.Background()
+	now := time.Unix(1710000000, 0).UTC()
+
+	item := models.Jav{Code: "MISSUP-002", FetchedAt: now}
+	if err := gdb.Create(&item).Error; err != nil {
+		t.Fatalf("create jav: %v", err)
+	}
+
+	updated, err := UpdateJavStudioIfMissing(ctx, item.ID, "Filled Studio")
+	if err != nil {
+		t.Fatalf("update missing studio: %v", err)
+	}
+	if !updated {
+		t.Fatal("UpdateJavStudioIfMissing should fill an empty studio")
+	}
+	updated, err = UpdateJavSeriesIfMissing(ctx, item.ID, "Filled Series", false)
+	if err != nil {
+		t.Fatalf("update missing series: %v", err)
+	}
+	if !updated {
+		t.Fatal("UpdateJavSeriesIfMissing should fill an empty series")
+	}
+
+	var got models.Jav
+	if err := gdb.Preload("Studio").Preload("Series").Where("code = ?", item.Code).First(&got).Error; err != nil {
+		t.Fatalf("load jav: %v", err)
+	}
+	if got.Studio == nil || got.Studio.Name != "Filled Studio" || got.Series == nil || got.Series.Name != "Filled Series" {
+		t.Fatalf("missing values were not filled: %#v", got)
+	}
+}
+
 func TestListJavsMissingTitle(t *testing.T) {
 	gdb := openTestDB(t)
 	ctx := context.Background()
@@ -1592,6 +1702,119 @@ func TestListJavsMissingTitle(t *testing.T) {
 	}
 	if items[0].Code != "MISS-001" || items[1].Code != "MISS-002" {
 		t.Fatalf("unexpected codes: got %q, %q", items[0].Code, items[1].Code)
+	}
+}
+
+func TestListJavsMissingStudioOrEnglishSeries(t *testing.T) {
+	gdb := openTestDB(t)
+	ctx := context.Background()
+	now := time.Unix(1710000000, 0).UTC()
+
+	studio := models.JavStudio{Name: "Studio A"}
+	if err := gdb.Create(&studio).Error; err != nil {
+		t.Fatalf("create studio: %v", err)
+	}
+	seriesEn := models.JavSeries{Name: "English Series", IsEnglish: true}
+	if err := gdb.Create(&seriesEn).Error; err != nil {
+		t.Fatalf("create english series: %v", err)
+	}
+
+	rows := []models.Jav{
+		{Code: "MISS-STUDIO", TitleEn: "English Title", SeriesEnID: &seriesEn.ID, FetchedAt: now, CreatedAt: now},
+		{Code: "MISS-SERIES-EN", TitleEn: "English Title", StudioID: &studio.ID, FetchedAt: now.Add(time.Second), CreatedAt: now.Add(time.Second)},
+		{Code: "HAVE-BOTH", TitleEn: "English Title", StudioID: &studio.ID, SeriesEnID: &seriesEn.ID, FetchedAt: now.Add(2 * time.Second), CreatedAt: now.Add(2 * time.Second)},
+		{Code: "", FetchedAt: now.Add(3 * time.Second), CreatedAt: now.Add(3 * time.Second)},
+	}
+	if err := gdb.Create(&rows).Error; err != nil {
+		t.Fatalf("create jav rows: %v", err)
+	}
+
+	items, err := ListJavsMissingStudioOrEnglishSeries(ctx)
+	if err != nil {
+		t.Fatalf("ListJavsMissingStudioOrEnglishSeries: %v", err)
+	}
+	got := []string{}
+	for _, item := range items {
+		got = append(got, item.Code)
+	}
+	want := []string{"MISS-STUDIO", "MISS-SERIES-EN"}
+	if !reflect.DeepEqual(got, want) {
+		t.Fatalf("unexpected codes: got %#v want %#v", got, want)
+	}
+}
+
+func TestListJavsMissingEnglishMetadata(t *testing.T) {
+	gdb := openTestDB(t)
+	ctx := context.Background()
+	now := time.Unix(1710000000, 0).UTC()
+
+	studio := models.JavStudio{Name: "Studio A"}
+	seriesEn := models.JavSeries{Name: "English Series", IsEnglish: true}
+	if err := gdb.Create(&studio).Error; err != nil {
+		t.Fatalf("create studio: %v", err)
+	}
+	if err := gdb.Create(&seriesEn).Error; err != nil {
+		t.Fatalf("create english series: %v", err)
+	}
+
+	rows := []models.Jav{
+		{Code: "MISS-STUDIO", TitleEn: "English Title", SeriesEnID: &seriesEn.ID, FetchedAt: now, CreatedAt: now},
+		{Code: "MISS-TITLE-EN", StudioID: &studio.ID, SeriesEnID: &seriesEn.ID, FetchedAt: now.Add(time.Second), CreatedAt: now.Add(time.Second)},
+		{Code: "MISS-SERIES-EN", TitleEn: "English Title", StudioID: &studio.ID, FetchedAt: now.Add(2 * time.Second), CreatedAt: now.Add(2 * time.Second)},
+		{Code: "MISS-LOCAL-SERIES", TitleEn: "English Title", StudioID: &studio.ID, SeriesEnID: &seriesEn.ID, FetchedAt: now.Add(3 * time.Second), CreatedAt: now.Add(3 * time.Second)},
+		{Code: "", FetchedAt: now.Add(4 * time.Second), CreatedAt: now.Add(4 * time.Second)},
+	}
+	if err := gdb.Create(&rows).Error; err != nil {
+		t.Fatalf("create jav rows: %v", err)
+	}
+
+	items, err := ListJavsMissingEnglishMetadata(ctx)
+	if err != nil {
+		t.Fatalf("ListJavsMissingEnglishMetadata: %v", err)
+	}
+	got := []string{}
+	for _, item := range items {
+		got = append(got, item.Code)
+	}
+	want := []string{"MISS-STUDIO", "MISS-TITLE-EN", "MISS-SERIES-EN"}
+	if !reflect.DeepEqual(got, want) {
+		t.Fatalf("unexpected codes: got %#v want %#v", got, want)
+	}
+}
+
+func TestListJavsMissingLocalSeriesWithEnglishSeries(t *testing.T) {
+	gdb := openTestDB(t)
+	ctx := context.Background()
+	now := time.Unix(1710000000, 0).UTC()
+
+	localSeries := models.JavSeries{Name: "Local Series"}
+	englishSeries := models.JavSeries{Name: "English Series", IsEnglish: true}
+	if err := gdb.Create(&localSeries).Error; err != nil {
+		t.Fatalf("create local series: %v", err)
+	}
+	if err := gdb.Create(&englishSeries).Error; err != nil {
+		t.Fatalf("create english series: %v", err)
+	}
+
+	rows := []models.Jav{
+		{Code: "MISS-LOCAL", SeriesEnID: &englishSeries.ID, FetchedAt: now, CreatedAt: now},
+		{Code: "MISS-BOTH", FetchedAt: now.Add(time.Second), CreatedAt: now.Add(time.Second)},
+		{Code: "HAVE-BOTH", SeriesID: &localSeries.ID, SeriesEnID: &englishSeries.ID, FetchedAt: now.Add(2 * time.Second), CreatedAt: now.Add(2 * time.Second)},
+		{Code: "", SeriesEnID: &englishSeries.ID, FetchedAt: now.Add(3 * time.Second), CreatedAt: now.Add(3 * time.Second)},
+	}
+	if err := gdb.Create(&rows).Error; err != nil {
+		t.Fatalf("create jav rows: %v", err)
+	}
+
+	items, err := ListJavsMissingLocalSeriesWithEnglishSeries(ctx)
+	if err != nil {
+		t.Fatalf("ListJavsMissingLocalSeriesWithEnglishSeries: %v", err)
+	}
+	if len(items) != 1 || items[0].Code != "MISS-LOCAL" {
+		t.Fatalf("unexpected items: %#v", items)
+	}
+	if items[0].SeriesID != nil || items[0].SeriesEnID == nil || *items[0].SeriesEnID != englishSeries.ID {
+		t.Fatalf("unexpected series ids: %#v", items[0])
 	}
 }
 

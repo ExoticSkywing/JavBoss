@@ -1,4 +1,4 @@
-import { useEffect, useMemo, useRef, useState } from 'react'
+import { useCallback, useEffect, useMemo, useRef, useState } from 'react'
 import { IconButton, Popper, Tooltip } from '@mui/material'
 import AddIcon from '@mui/icons-material/Add'
 import CloseOutlinedIcon from '@mui/icons-material/CloseOutlined'
@@ -95,6 +95,8 @@ export default function JavGrid({
   onIdolClick,
   onOpenFavorites,
   onOpenJavFavorites,
+  onOpenStudioFavorites,
+  onOpenSeriesFavorites,
   onPrefixClick,
   onStudioClick,
   onSeriesClick,
@@ -265,6 +267,8 @@ export default function JavGrid({
             onIdolClick={onIdolClick}
             onOpenFavorites={onOpenFavorites}
             onOpenJavFavorites={onOpenJavFavorites}
+            onOpenStudioFavorites={onOpenStudioFavorites}
+            onOpenSeriesFavorites={onOpenSeriesFavorites}
             onPrefixClick={onPrefixClick}
             onStudioClick={onStudioClick}
             onSeriesClick={onSeriesClick}
@@ -1507,6 +1511,8 @@ function JavCard({
   onIdolClick,
   onOpenFavorites,
   onOpenJavFavorites,
+  onOpenStudioFavorites,
+  onOpenSeriesFavorites,
   onPrefixClick,
   onStudioClick,
   onSeriesClick,
@@ -1724,6 +1730,7 @@ function JavCard({
   const [idolCoverEditorItem, setIdolCoverEditorItem] = useState(null)
   const [idolEditorItem, setIdolEditorItem] = useState(null)
   const closeTimerRef = useRef(null)
+  const hoverPreviewLockedRef = useRef(false)
   const activeIdolHoverIdRef = useRef(null)
   const activeStudioHoverIdRef = useRef(null)
   const activeSeriesHoverIdRef = useRef(null)
@@ -1851,11 +1858,35 @@ function JavCard({
 
   const scheduleHoverClose = () => {
     clearHoverCloseTimer()
+    if (hoverPreviewLockedRef.current) return
     closeTimerRef.current = window.setTimeout(() => {
       clearHoverPreview()
       closeTimerRef.current = null
     }, 120)
   }
+
+  const handleStudioSeriesListOpenChange = useCallback((open) => {
+    if (closeTimerRef.current) {
+      window.clearTimeout(closeTimerRef.current)
+      closeTimerRef.current = null
+    }
+    hoverPreviewLockedRef.current = Boolean(open)
+    if (open) {
+      return
+    }
+    closeTimerRef.current = window.setTimeout(() => {
+      activeIdolHoverIdRef.current = null
+      activeStudioHoverIdRef.current = null
+      activeSeriesHoverIdRef.current = null
+      setPreviewIdol(null)
+      setIdolHoverAnchorEl(null)
+      setPreviewStudio(null)
+      setStudioHoverAnchorEl(null)
+      setPreviewSeries(null)
+      setSeriesHoverAnchorEl(null)
+      closeTimerRef.current = null
+    }, 120)
+  }, [])
 
   const handleIdolHoverStart = (idol, event) => {
     clearHoverCloseTimer()
@@ -2193,7 +2224,10 @@ function JavCard({
                   onSelectStudio={(studio) => onStudioClick?.(studio)}
                   onSelectSeries={(series) => onSeriesClick?.(series)}
                   onSelectPrefix={(prefix) => onPrefixClick?.(prefix)}
+                  onOpenFavorites={onOpenStudioFavorites}
                   buildSeriesUrl={buildSeriesFilterHref}
+                  onOpenSeriesFavorites={onOpenSeriesFavorites}
+                  onSeriesListOpenChange={handleStudioSeriesListOpenChange}
                   directoryIds={directoryIds}
                 />
               ) : null}
@@ -2224,6 +2258,7 @@ function JavCard({
                   href={buildSeriesFilterHref(previewSeries)}
                   onSelectSeries={(series) => onSeriesClick?.(series)}
                   onSelectStudio={(studio) => onStudioClick?.(studio)}
+                  onOpenFavorites={onOpenSeriesFavorites}
                 />
               ) : null}
             </div>

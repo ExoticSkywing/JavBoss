@@ -708,7 +708,7 @@ func replaceJavUserTagsTx(tx *gorm.DB, javIDs, tagIDs []int64) error {
 	return nil
 }
 
-func buildJavFilter(ctx context.Context, idolIDs []int64, tagIDs []int64, search, prefix string, directoryIDs []int64, studioID, seriesID int64, soloOnly bool, favoriteGroupID int64) *gorm.DB {
+func buildJavFilter(ctx context.Context, idolIDs []int64, tagIDs []int64, search, prefix string, directoryIDs []int64, studioID int64, seriesID int64, soloOnly bool, favoriteGroupID int64) *gorm.DB {
 	q := common.DB.WithContext(ctx).Model(&models.Jav{})
 	visibleTagProviders := visibleJavTagProviders()
 	// Only include JAV entries that have at least one active file location.
@@ -728,7 +728,9 @@ func buildJavFilter(ctx context.Context, idolIDs []int64, tagIDs []int64, search
 		}
 		q = q.Where("code LIKE ? OR "+titleColumn+" LIKE ?", like, like)
 	}
-	if studioID > 0 {
+	if studioID == 0 {
+		q = q.Where("studio_id IS NULL")
+	} else if studioID > 0 {
 		q = q.Where("studio_id = ?", studioID)
 	}
 	if prefix != "" {
@@ -783,11 +785,11 @@ func normalizeJavCodePrefix(prefix string) string {
 }
 
 func javFilterOptions(values []int64) (int64, int64, bool, int64) {
-	studioID := int64(0)
+	studioID := int64(-1)
 	seriesID := int64(0)
 	soloOnly := false
 	favoriteGroupID := int64(0)
-	if len(values) > 0 && values[0] > 0 {
+	if len(values) > 0 && values[0] >= 0 {
 		studioID = values[0]
 	}
 	if len(values) > 1 && values[1] > 0 {
@@ -2154,17 +2156,48 @@ func ListJavCodes(ctx context.Context) ([]string, error) {
 	return codes, nil
 }
 
-// ListJavsMissingMetadata returns JAV rows whose English title, studio, or series relation is empty.
-func ListJavsMissingMetadata(ctx context.Context) ([]JavMetadataScanItem, error) {
+// ListJavsMissingStudioOrEnglishSeries returns JAV rows whose studio or English series relation is empty.
+func ListJavsMissingStudioOrEnglishSeries(ctx context.Context) ([]JavMetadataScanItem, error) {
 	var items []JavMetadataScanItem
 	if err := common.DB.WithContext(ctx).
 		Model(&models.Jav{}).
-		Select("id, code, title_en, studio_id, series_id, series_en_id").
+		Select("id, code, studio_id, series_en_id").
 		Where("COALESCE(code, '') <> ''").
-		Where("COALESCE(title_en, '') = '' OR studio_id IS NULL OR series_id IS NULL OR series_en_id IS NULL").
+		Where("studio_id IS NULL OR series_en_id IS NULL").
 		Order("created_at ASC, id ASC").
 		Find(&items).Error; err != nil {
-		return nil, fmt.Errorf("list javs missing metadata: %w", err)
+		return nil, fmt.Errorf("list javs missing studio or english series: %w", err)
+	}
+	return items, nil
+}
+
+// ListJavsMissingEnglishMetadata returns JAV rows whose English title, studio, or English series relation is empty.
+func ListJavsMissingEnglishMetadata(ctx context.Context) ([]JavMetadataScanItem, error) {
+	var items []JavMetadataScanItem
+	if err := common.DB.WithContext(ctx).
+		Model(&models.Jav{}).
+		Select("id, code, title_en, studio_id, series_en_id").
+		Where("COALESCE(code, '') <> ''").
+		Where("COALESCE(title_en, '') = '' OR studio_id IS NULL OR series_en_id IS NULL").
+		Order("created_at ASC, id ASC").
+		Find(&items).Error; err != nil {
+		return nil, fmt.Errorf("list javs missing english metadata: %w", err)
+	}
+	return items, nil
+}
+
+// ListJavsMissingLocalSeriesWithEnglishSeries returns JAV rows that have English series but are missing local series.
+func ListJavsMissingLocalSeriesWithEnglishSeries(ctx context.Context) ([]JavMetadataScanItem, error) {
+	var items []JavMetadataScanItem
+	if err := common.DB.WithContext(ctx).
+		Model(&models.Jav{}).
+		Select("id, code, series_id, series_en_id").
+		Where("COALESCE(code, '') <> ''").
+		Where("series_id IS NULL").
+		Where("series_en_id IS NOT NULL").
+		Order("created_at ASC, id ASC").
+		Find(&items).Error; err != nil {
+		return nil, fmt.Errorf("list javs missing local series with english series: %w", err)
 	}
 	return items, nil
 }
@@ -2293,6 +2326,46 @@ func UpdateJavStudio(ctx context.Context, javID int64, studio string) error {
 	})
 }
 
+// UpdateJavStudioIfMissing records the studio lookup result without overwriting an existing studio.
+func UpdateJavStudioIfMissing(ctx context.Context, javID int64, studio string) (bool, error) {
+	if javID == 0 {
+		return false, errors.New("jav id cannot be zero")
+	}
+	studio = strings.TrimSpace(studio)
+	if studio == "" {
+		return false, nil
+	}
+	var updated bool
+	err := common.DB.WithContext(ctx).Transaction(func(tx *gorm.DB) error {
+		var javRec models.Jav
+		if err := tx.Clauses(clause.Locking{Strength: "UPDATE"}).
+			Select("id", "studio_id").
+			Where("id = ?", javID).
+			First(&javRec).Error; err != nil {
+			return fmt.Errorf("get jav studio: %w", err)
+		}
+		if javRec.StudioID != nil {
+			return nil
+		}
+		rec, err := ensureStudioTx(tx, studio)
+		if err != nil {
+			return err
+		}
+		res := tx.Model(&models.Jav{}).
+			Where("id = ? AND studio_id IS NULL", javID).
+			Update("studio_id", rec.ID)
+		if res.Error != nil {
+			return fmt.Errorf("update missing jav studio: %w", res.Error)
+		}
+		updated = res.RowsAffected > 0
+		return nil
+	})
+	if err != nil {
+		return false, err
+	}
+	return updated, nil
+}
+
 // UpdateJavSeries records the series lookup result for a JAV row.
 func UpdateJavSeries(ctx context.Context, javID int64, series string, isEnglish bool) error {
 	if javID == 0 {
@@ -2322,6 +2395,53 @@ func UpdateJavSeries(ctx context.Context, javID int64, series string, isEnglish 
 		}
 		return nil
 	})
+}
+
+// UpdateJavSeriesIfMissing records the series lookup result without overwriting an existing series.
+func UpdateJavSeriesIfMissing(ctx context.Context, javID int64, series string, isEnglish bool) (bool, error) {
+	if javID == 0 {
+		return false, errors.New("jav id cannot be zero")
+	}
+	series = strings.TrimSpace(series)
+	if series == "" {
+		return false, nil
+	}
+	var updated bool
+	err := common.DB.WithContext(ctx).Transaction(func(tx *gorm.DB) error {
+		var javRec models.Jav
+		if err := tx.Clauses(clause.Locking{Strength: "UPDATE"}).
+			Select("id", "studio_id", "series_id", "series_en_id").
+			Where("id = ?", javID).
+			First(&javRec).Error; err != nil {
+			return fmt.Errorf("get jav studio for series: %w", err)
+		}
+		if isEnglish && javRec.SeriesEnID != nil {
+			return nil
+		}
+		if !isEnglish && javRec.SeriesID != nil {
+			return nil
+		}
+		rec, err := ensureSeriesWithStudioTx(tx, series, isEnglish, javRec.StudioID)
+		if err != nil {
+			return err
+		}
+		column := "series_id"
+		if isEnglish {
+			column = "series_en_id"
+		}
+		res := tx.Model(&models.Jav{}).
+			Where("id = ? AND "+column+" IS NULL", javID).
+			Update(column, rec.ID)
+		if res.Error != nil {
+			return fmt.Errorf("update missing jav series: %w", res.Error)
+		}
+		updated = res.RowsAffected > 0
+		return nil
+	})
+	if err != nil {
+		return false, err
+	}
+	return updated, nil
 }
 
 // AppendJavIdolsIfMissingForProvider appends provider-language idol mappings when none exist yet.

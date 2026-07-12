@@ -30,6 +30,7 @@ export default function JavStudioView({
   onSelectSeries,
   onSelectPrefix,
   onOpenFavorites,
+  onOpenSeriesFavorites,
   directoryIds = [],
   waterfallMode,
   onWaterfallModeChange,
@@ -67,6 +68,7 @@ export default function JavStudioView({
           onSelectStudio={onSelectStudio}
           onSelectPrefix={onSelectPrefix}
           onOpenFavorites={onOpenFavorites}
+          onOpenSeriesFavorites={onOpenSeriesFavorites}
           buildStudioUrl={buildStudioUrl}
           buildSeriesUrl={buildSeriesUrl}
           onSelectSeries={onSelectSeries}
@@ -89,6 +91,7 @@ function JavStudioGrid({
   onSelectSeries,
   onSelectPrefix,
   onOpenFavorites,
+  onOpenSeriesFavorites,
   buildStudioUrl,
   buildSeriesUrl,
   directoryIds,
@@ -116,6 +119,7 @@ function JavStudioGrid({
           onSelectSeries={onSelectSeries}
           onSelectPrefix={onSelectPrefix}
           onOpenFavorites={onOpenFavorites}
+          onOpenSeriesFavorites={onOpenSeriesFavorites}
           buildSeriesUrl={buildSeriesUrl}
           directoryIds={directoryIds}
         />
@@ -131,6 +135,8 @@ export function StudioCard({
   onSelectSeries,
   onSelectPrefix,
   onOpenFavorites,
+  onOpenSeriesFavorites,
+  onSeriesListOpenChange,
   buildSeriesUrl,
   directoryIds = [],
 }) {
@@ -178,6 +184,7 @@ export function StudioCard({
   const seriesMeasureRef = useRef(null)
   const closeTimerRef = useRef(null)
   const activeSeriesHoverIdRef = useRef(null)
+  const hasReportedSeriesListOpenRef = useRef(false)
   const canOpenJavDB = Boolean(javdbURL || (Number.isFinite(studioId) && studioId > 0))
   const displayedSeriesItems =
     visibleSeriesCount == null ? seriesItems : seriesItems.slice(0, visibleSeriesCount)
@@ -313,6 +320,19 @@ export function StudioCard({
     event.stopPropagation()
     setSeriesListOpen(true)
   }
+
+  useEffect(() => {
+    if (seriesListOpen) {
+      hasReportedSeriesListOpenRef.current = true
+      onSeriesListOpenChange?.(true)
+      return () => {
+        hasReportedSeriesListOpenRef.current = false
+        onSeriesListOpenChange?.(false)
+      }
+    }
+    if (hasReportedSeriesListOpenRef.current) onSeriesListOpenChange?.(false)
+    return undefined
+  }, [onSeriesListOpenChange, seriesListOpen])
 
   useEffect(() => {
     if (!seriesListOpen) return undefined
@@ -616,6 +636,7 @@ export function StudioCard({
                     href={buildSeriesUrl?.(previewSeries)}
                     onSelectSeries={(series) => onSelectSeries?.(series)}
                     onSelectStudio={(studio) => onSelectStudio?.(studio)}
+                    onOpenFavorites={onOpenSeriesFavorites}
                   />
                 ) : null}
               </div>
@@ -673,6 +694,7 @@ export function StudioCard({
                                 onSelectSeries?.(selectedSeries)
                               }}
                               onSelectStudio={(studio) => onSelectStudio?.(studio)}
+                              onOpenFavorites={onOpenSeriesFavorites}
                             />
                           )
                         })}

@@ -95,6 +95,79 @@ func TestParseJavBusMovieInfoIncludesCoverURL(t *testing.T) {
 	}
 }
 
+func TestParseJavBusMovieInfoIncludesSeries(t *testing.T) {
+	doc, err := html.Parse(strings.NewReader(`
+		<html>
+			<body>
+				<h3>ABC-001 Test Title</h3>
+				<p><span>識別碼:</span><span>ABC-001</span></p>
+				<p><span>系列:</span><span><a href="/series/abc">测试系列</a></span></p>
+			</body>
+		</html>`))
+	if err != nil {
+		t.Fatalf("parse fixture: %v", err)
+	}
+
+	info := parseDocument(doc)
+	if info == nil {
+		t.Fatal("expected info, got nil")
+	}
+	if info.Series != "测试系列" {
+		t.Fatalf("unexpected series: %q", info.Series)
+	}
+}
+
+func TestJavBusLookupCodeRewritesSpecialPrefixes(t *testing.T) {
+	cases := []struct {
+		code string
+		want string
+	}{
+		{code: "gana-001", want: "200gana-001"},
+		{code: "MIUM-001", want: "300mium-001"},
+		{code: "luxu-001", want: "259luxu-001"},
+	}
+	for _, tc := range cases {
+		got, rewrite := javBusLookupCode(tc.code)
+		if got != tc.want || rewrite == nil {
+			t.Fatalf("javBusLookupCode(%q) = %q, %#v; want %q with rewrite", tc.code, got, rewrite, tc.want)
+		}
+	}
+
+	got, rewrite := javBusLookupCode("ABC-001")
+	if got != "ABC-001" || rewrite != nil {
+		t.Fatalf("javBusLookupCode(ABC-001) = %q, %#v; want ABC-001 without rewrite", got, rewrite)
+	}
+}
+
+func TestNormalizeJavBusRewrittenInfoRemovesRequestPrefix(t *testing.T) {
+	cases := []struct {
+		code      string
+		title     string
+		wantCode  string
+		wantTitle string
+	}{
+		{code: "200GANA-001", title: "200GANA-001 Test Title", wantCode: "GANA-001", wantTitle: "Test Title"},
+		{code: "300MIUM-001", title: "300MIUM-001 Test Title", wantCode: "MIUM-001", wantTitle: "Test Title"},
+		{code: "259LUXU-001", title: "259LUXU-001 Test Title", wantCode: "LUXU-001", wantTitle: "Test Title"},
+	}
+	for _, tc := range cases {
+		_, rewrite := javBusLookupCode(tc.wantCode)
+		info := &JavInfo{
+			Code:  tc.code,
+			Title: tc.title,
+		}
+
+		normalizeJavBusRewrittenInfo(info, rewrite)
+
+		if info.Code != tc.wantCode {
+			t.Fatalf("unexpected code for %s: %q", tc.code, info.Code)
+		}
+		if info.Title != tc.wantTitle {
+			t.Fatalf("unexpected title for %s: %q", tc.code, info.Title)
+		}
+	}
+}
+
 func TestParseJavBusUncensoredFromFixture(t *testing.T) {
 	doc, err := html.Parse(strings.NewReader(`
 		<html>

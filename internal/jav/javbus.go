@@ -41,12 +41,13 @@ func (javBus) LookupJavByCode(code string) (*JavInfo, error) {
 	if code == "" {
 		return nil, ResourceNotFonud
 	}
-	logging.Info("javbus: code -> %s", code)
+	lookupCode, rewrite := javBusLookupCode(code)
+	logging.Info("javbus: code -> %s", lookupCode)
 
 	ctx, cancel := context.WithTimeout(context.Background(), 15*time.Second)
 	defer cancel()
 
-	info, err := fetchInfo(ctx, code)
+	info, err := fetchInfo(ctx, lookupCode)
 	if err != nil {
 		return nil, err
 	}
@@ -54,7 +55,10 @@ func (javBus) LookupJavByCode(code string) (*JavInfo, error) {
 		return nil, nil
 	}
 	if info.Code == "" {
-		info.Code = code
+		info.Code = lookupCode
+	}
+	if rewrite != nil {
+		normalizeJavBusRewrittenInfo(info, rewrite)
 	}
 	return info, nil
 }
@@ -118,6 +122,56 @@ func fetchInfo(ctx context.Context, code string) (*JavInfo, error) {
 	}
 	logging.Info("javbus parsed from %s: title=%q tags=%d actors=%d", url, info.Title, len(info.Tags), len(info.Actors))
 	return info, nil
+}
+
+type javBusCodeRewrite struct {
+	inputPrefix   string
+	requestPrefix string
+}
+
+var javBusCodeRewrites = []javBusCodeRewrite{
+	{inputPrefix: "gana", requestPrefix: "200gana"},
+	{inputPrefix: "mium", requestPrefix: "300mium"},
+	{inputPrefix: "luxu", requestPrefix: "259luxu"},
+}
+
+func javBusLookupCode(code string) (string, *javBusCodeRewrite) {
+	code = strings.TrimSpace(code)
+	for _, rewrite := range javBusCodeRewrites {
+		if javBusCodeHasPrefix(code, rewrite.inputPrefix) {
+			r := rewrite
+			return rewrite.requestPrefix + code[len(rewrite.inputPrefix):], &r
+		}
+	}
+	return code, nil
+}
+
+func normalizeJavBusRewrittenInfo(info *JavInfo, rewrite *javBusCodeRewrite) {
+	if info == nil {
+		return
+	}
+	info.Code = stripJavBusRequestPrefix(info.Code, rewrite)
+	info.Title = cleanTitle(stripJavBusRequestPrefix(info.Title, rewrite))
+}
+
+func javBusCodeHasPrefix(code, prefix string) bool {
+	if len(code) <= len(prefix) || !strings.EqualFold(code[:len(prefix)], prefix) {
+		return false
+	}
+	next := code[len(prefix)]
+	return next == '-' || next == '_' || next == ' ' || (next >= '0' && next <= '9')
+}
+
+func stripJavBusRequestPrefix(value string, rewrite *javBusCodeRewrite) string {
+	value = strings.TrimSpace(value)
+	if rewrite == nil || !javBusCodeHasPrefix(value, rewrite.requestPrefix) {
+		return value
+	}
+	addedPrefixLen := len(rewrite.requestPrefix) - len(rewrite.inputPrefix)
+	if addedPrefixLen <= 0 || len(value) <= addedPrefixLen {
+		return value
+	}
+	return strings.TrimSpace(value[addedPrefixLen:])
 }
 
 func fetchJavBusDocument(ctx context.Context, code string) (*html.Node, string, error) {
@@ -220,6 +274,7 @@ func parseDocument(doc *html.Node) *JavInfo {
 	}
 	title := cleanTitle(rawTitle)
 	code := extractCode(doc)
+	series := extractJavBusField(doc, "系列", "series")
 	releaseUnix, duration := extractDetails(doc)
 
 	tags := collectGenres(doc)
@@ -233,6 +288,7 @@ func parseDocument(doc *html.Node) *JavInfo {
 	return &JavInfo{
 		Title:        title,
 		Code:         code,
+		Series:       series,
 		ReleaseUnix:  releaseUnix,
 		DurationMin:  duration,
 		Tags:         tags,
@@ -358,21 +414,36 @@ func cleanTitle(s string) string {
 }
 
 func extractCode(root *html.Node) string {
-	var code string
+	return extractJavBusField(root, "識別碼", "id:")
+}
+
+func extractJavBusField(root *html.Node, labels ...string) string {
+	normalizedLabels := make([]string, 0, len(labels))
+	for _, label := range labels {
+		label = normalizeJavBusFieldLabel(label)
+		if label != "" {
+			normalizedLabels = append(normalizedLabels, label)
+		}
+	}
+	if len(normalizedLabels) == 0 {
+		return ""
+	}
+
+	var value string
 	var walk func(*html.Node)
 	walk = func(n *html.Node) {
-		if code != "" {
+		if value != "" {
 			return
 		}
 		if n.Type == html.ElementNode && n.Data == "span" {
-			text := strings.TrimSpace(flattenText(n))
-			if strings.Contains(text, "識別碼") || strings.Contains(strings.ToLower(text), "id:") {
+			text := normalizeJavBusFieldLabel(flattenText(n))
+			if javBusFieldLabelMatches(text, normalizedLabels) {
 				for next := n.NextSibling; next != nil; next = next.NextSibling {
 					if next.Type != html.ElementNode {
 						continue
 					}
 					if c := strings.TrimSpace(flattenText(next)); c != "" {
-						code = c
+						value = c
 						return
 					}
 				}
@@ -383,7 +454,23 @@ func extractCode(root *html.Node) string {
 		}
 	}
 	walk(root)
-	return code
+	return value
+}
+
+func normalizeJavBusFieldLabel(value string) string {
+	value = strings.ToLower(strings.TrimSpace(value))
+	value = strings.TrimSuffix(value, ":")
+	value = strings.TrimSuffix(value, "：")
+	return strings.TrimSpace(value)
+}
+
+func javBusFieldLabelMatches(text string, labels []string) bool {
+	for _, label := range labels {
+		if text == label || strings.Contains(text, label) {
+			return true
+		}
+	}
+	return false
 }
 
 func extractDetails(root *html.Node) (releaseUnix int64, durationMin int) {
