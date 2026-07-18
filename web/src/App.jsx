@@ -54,6 +54,7 @@ import VideoRoute from '@/routes/VideoRoute'
 import { isChineseLocale, zh } from '@/utils/i18n'
 import { getIdolDisplayName } from '@/utils/javIdol'
 import { directoryQueryIds, useStore, videoSelectionKey } from '@/store'
+import { useAuth } from '@/auth'
 
 const JAV_SCRAPE_OVERRIDE_SKIP = ':skip'
 const JAV_SCRAPE_OVERRIDE_MANUAL_PREFIX = ':manual:'
@@ -101,6 +102,7 @@ function applyScrapeOverrideToVideo(video, override) {
 }
 
 export default function App() {
+  const { changePassword, logout } = useAuth()
   const pendingVideoTagIdsRef = useRef(null)
   const {
     page,
@@ -3766,6 +3768,8 @@ export default function App() {
           const cfg = await updateConfig({ player_hotkeys: hotkeys })
           useStore.setState({ config: cfg })
         }}
+        onChangePassword={changePassword}
+        onLogout={logout}
       />
       <Toast open={Boolean(toastMessage)} message={toastMessage} onClose={closeToast} />
     </div>
