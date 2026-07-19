@@ -124,6 +124,10 @@ export default function JavGrid({
   const preferChineseName = useStore((state) =>
     configFlag(state.config?.jav_idol_prefer_chinese_name)
   )
+  const hideSeries = useStore((state) => configFlag(state.config?.jav_hide_series))
+  const hideIdols = useStore((state) => configFlag(state.config?.jav_hide_idols))
+  const hideTags = useStore((state) => configFlag(state.config?.jav_hide_tags))
+  const hideActions = useStore((state) => configFlag(state.config?.jav_hide_actions))
   const idolPreviewCacheRef = useRef(new Map())
   const idolPreviewInflightRef = useRef(new Map())
   const studioPreviewCacheRef = useRef(new Map())
@@ -302,6 +306,10 @@ export default function JavGrid({
             titleMaxRows={titleMaxRows}
             idolTagMaxRows={idolTagMaxRows}
             tagMaxRows={tagMaxRows}
+            hideSeries={hideSeries}
+            hideIdols={hideIdols}
+            hideTags={hideTags}
+            hideActions={hideActions}
           />
         ))}
       </div>
@@ -1316,8 +1324,6 @@ function IdolTagList({
             className="rounded-full bg-purple-100 px-2 py-1 text-xs font-medium text-purple-700 transition hover:bg-purple-200"
             onMouseEnter={(event) => onIdolHoverStart(idol, event)}
             onMouseLeave={onIdolHoverEnd}
-            onFocus={(event) => onIdolHoverStart(idol, event)}
-            onBlur={onIdolHoverEnd}
             onClick={(event) => onFilterLinkClick(event, () => onIdolClick?.(idol))}
           >
             {getIdolDisplayName(idol, javMetadataLanguage, preferChineseName)}
@@ -1557,6 +1563,10 @@ function JavCard({
   titleMaxRows,
   idolTagMaxRows,
   tagMaxRows,
+  hideSeries = false,
+  hideIdols = false,
+  hideTags = false,
+  hideActions = false,
 }) {
   const primaryVideo = useMemo(() => (item?.videos || [])[0], [item])
   const { coverAspectPercent } = useMemo(() => getIdolCardLayoutProps(), [])
@@ -2167,8 +2177,8 @@ function JavCard({
             {codeText ? ' ' : null}
             <span className="font-medium text-gray-800">{mainTitle}</span>
           </div>
-          <div className="flex flex-wrap items-center gap-x-3 gap-y-1 text-xs text-gray-600">
-            <span className="inline-flex items-center gap-1">
+          <div className="flex min-w-0 flex-nowrap items-center gap-x-3 overflow-hidden text-xs text-gray-600">
+            <span className="inline-flex shrink-0 items-center gap-1">
               <Tooltip title={zh('时长', 'Duration')} arrow>
                 <span className="inline-flex">
                   <DurationIcon />
@@ -2176,7 +2186,7 @@ function JavCard({
               </Tooltip>
               <span>{durationText || zh('时长未知', 'Unknown duration')}</span>
             </span>
-            <span className="inline-flex items-center gap-1">
+            <span className="inline-flex shrink-0 items-center gap-1">
               <Tooltip title={zh('发行日期', 'Release date')} arrow>
                 <span className="inline-flex">
                   <ReleaseIcon />
@@ -2185,54 +2195,52 @@ function JavCard({
               <span>{releaseText}</span>
             </span>
             {studioText ? (
-              <span className="inline-flex min-w-0 items-center gap-1">
+              <span className="flex min-w-0 flex-1 items-center gap-1 overflow-hidden">
                 <Tooltip title={zh('片商', 'Studio')} arrow>
                   <span className="inline-flex">
                     <VideocamOutlinedIcon sx={{ fontSize: 16 }} className="shrink-0 text-sky-600" />
                   </span>
                 </Tooltip>
-                <button
-                  type="button"
-                  className={`min-w-0 truncate text-left ${
+                <a
+                  href={buildStudioFilterHref(item.studio)}
+                  className={`block min-w-0 flex-1 truncate text-left ${
                     canFilterStudio ? 'cursor-pointer hover:text-blue-700 hover:underline' : ''
                   }`}
-                  onClick={() => {
-                    if (canFilterStudio) onStudioClick(item.studio)
-                  }}
+                  onClick={(event) =>
+                    handleFilterLinkClick(event, () => {
+                      if (canFilterStudio) onStudioClick(item.studio)
+                    })
+                  }
                   onMouseEnter={(event) => handleStudioHoverStart(item.studio, event)}
                   onMouseLeave={scheduleHoverClose}
-                  onFocus={(event) => handleStudioHoverStart(item.studio, event)}
-                  onBlur={scheduleHoverClose}
-                  disabled={!canFilterStudio}
                 >
                   {studioText}
-                </button>
+                </a>
               </span>
             ) : null}
           </div>
-          {seriesText ? (
+          {!hideSeries && seriesText ? (
             <div className="flex min-w-0 items-start gap-1 text-xs text-gray-600">
               <Tooltip title={zh('系列', 'Series')} arrow>
                 <span className="inline-flex">
                   <MovieCreationIcon sx={{ fontSize: 16 }} className="shrink-0 text-emerald-600" />
                 </span>
               </Tooltip>
-              <button
-                type="button"
+              <a
+                href={buildSeriesFilterHref(preferredSeries)}
                 className={`min-w-0 whitespace-normal break-words text-left leading-snug ${
                   canFilterSeries ? 'cursor-pointer hover:text-blue-700 hover:underline' : ''
                 }`}
-                onClick={() => {
-                  if (canFilterSeries) onSeriesClick(preferredSeries)
-                }}
+                onClick={(event) =>
+                  handleFilterLinkClick(event, () => {
+                    if (canFilterSeries) onSeriesClick(preferredSeries)
+                  })
+                }
                 onMouseEnter={(event) => handleSeriesHoverStart(preferredSeries, event)}
                 onMouseLeave={scheduleHoverClose}
-                onFocus={(event) => handleSeriesHoverStart(preferredSeries, event)}
-                onBlur={scheduleHoverClose}
-                disabled={!canFilterSeries}
               >
                 {seriesText}
-              </button>
+              </a>
             </div>
           ) : null}
           <Popper
@@ -2300,7 +2308,7 @@ function JavCard({
               ) : null}
             </div>
           </Popper>
-          {Array.isArray(item?.idols) && item.idols.length > 0 && (
+          {!hideIdols && Array.isArray(item?.idols) && item.idols.length > 0 && (
             <>
               <IdolTagList
                 idols={item.idols}
@@ -2374,7 +2382,7 @@ function JavCard({
               />
             </>
           )}
-          {tags.length > 0 && (
+          {!hideTags && tags.length > 0 && (
             <JavTagList
               tags={tags}
               maxRows={tagMaxRows}
@@ -2383,47 +2391,49 @@ function JavCard({
               onFilterLinkClick={handleFilterLinkClick}
             />
           )}
-          <div className="flex flex-wrap items-center gap-2">
+          {!hideActions ? (
             <div className="flex flex-wrap items-center gap-2">
-              <Tooltip title={openFileLabel || zh('用默认程序打开', 'Open with default app')}>
-                <IconButton
-                  size="small"
-                  onClick={handleOpenFile}
-                  disabled={!canOpen}
-                  aria-label={openFileLabel || zh('打开文件', 'Open file')}
-                  className="h-6 w-6"
-                >
-                  <PlayArrowIcon fontSize="inherit" />
-                </IconButton>
-              </Tooltip>
-              <Tooltip title={zh('编辑 JAV', 'Edit JAV')}>
-                <IconButton
-                  size="small"
-                  onClick={handleOpenEditor}
-                  aria-label={zh('编辑 JAV', 'Edit JAV')}
-                  className="h-6 w-6"
-                >
-                  <MovieEdit fontSize="inherit" />
-                </IconButton>
-              </Tooltip>
-              <Tooltip title={zh('视频管理', 'Manage videos')}>
-                <IconButton
-                  size="small"
-                  onClick={handleOpenVideoManager}
-                  disabled={!Array.isArray(item?.videos) || item.videos.length === 0}
-                  aria-label={zh('视频管理', 'Manage videos')}
-                  className="h-6 w-6"
-                >
-                  <VideoLibraryOutlinedIcon fontSize="inherit" />
-                </IconButton>
-              </Tooltip>
+              <div className="flex flex-wrap items-center gap-2">
+                <Tooltip title={openFileLabel || zh('用默认程序打开', 'Open with default app')}>
+                  <IconButton
+                    size="small"
+                    onClick={handleOpenFile}
+                    disabled={!canOpen}
+                    aria-label={openFileLabel || zh('打开文件', 'Open file')}
+                    className="h-6 w-6"
+                  >
+                    <PlayArrowIcon fontSize="inherit" />
+                  </IconButton>
+                </Tooltip>
+                <Tooltip title={zh('编辑 JAV', 'Edit JAV')}>
+                  <IconButton
+                    size="small"
+                    onClick={handleOpenEditor}
+                    aria-label={zh('编辑 JAV', 'Edit JAV')}
+                    className="h-6 w-6"
+                  >
+                    <MovieEdit fontSize="inherit" />
+                  </IconButton>
+                </Tooltip>
+                <Tooltip title={zh('视频管理', 'Manage videos')}>
+                  <IconButton
+                    size="small"
+                    onClick={handleOpenVideoManager}
+                    disabled={!Array.isArray(item?.videos) || item.videos.length === 0}
+                    aria-label={zh('视频管理', 'Manage videos')}
+                    className="h-6 w-6"
+                  >
+                    <VideoLibraryOutlinedIcon fontSize="inherit" />
+                  </IconButton>
+                </Tooltip>
+              </div>
+              {Array.isArray(item?.videos) && item.videos.length > 1 && (
+                <span className="text-xs text-gray-500">
+                  {zh(`${item.videos.length} 个视频`, `${item.videos.length} video files`)}
+                </span>
+              )}
             </div>
-            {Array.isArray(item?.videos) && item.videos.length > 1 && (
-              <span className="text-xs text-gray-500">
-                {zh(`${item.videos.length} 个视频`, `${item.videos.length} video files`)}
-              </span>
-            )}
-          </div>
+          ) : null}
         </div>
       </div>
       <JavEditModal
