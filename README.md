@@ -39,6 +39,9 @@ JavBoss 完美屏蔽了繁琐的 JAV信息收集 和 视频整理 的底层细�
 
 #### 方式一：命令行一键安装（推荐）
 
+<dl>
+<dd>
+
 Windows PowerShell：
 
 ```powershell
@@ -58,14 +61,20 @@ curl -fsSL https://raw.githubusercontent.com/Solr159/JavBoss/main/scripts/instal
 - Windows：双击桌面的 `JavBoss` 快捷方式，或在开始菜单中搜索 `JavBoss`。
 - Linux / macOS：打开终端运行 `javboss`。
 
+</dd>
+</dl>
+
 #### 方式二：手动下载
+
+<dl>
+<dd>
 
 点击下载对应系统的最新版发布包并解压：
 
-- [Windows](https://github.com/Solr159/JavBoss/releases/download/v1.8.5/javboss-v1.8.5-windows-x86_64.zip)
-- [Linux](https://github.com/Solr159/JavBoss/releases/download/v1.8.5/javboss-v1.8.5-linux-x86_64.zip)
-- [macOS-x86_64](https://github.com/Solr159/JavBoss/releases/download/v1.8.5/javboss-v1.8.5-macos-x86_64.zip)（适用于 Intel 芯片的 macOS）
-- [macOS-arm64](https://github.com/Solr159/JavBoss/releases/download/v1.8.5/javboss-v1.8.5-macos-arm64.zip)（适用于 M 芯片的 macOS）
+- [Windows](https://github.com/Solr159/JavBoss/releases/download/v1.8.6/javboss-v1.8.6-windows-x86_64.zip)
+- [Linux](https://github.com/Solr159/JavBoss/releases/download/v1.8.6/javboss-v1.8.6-linux-x86_64.zip)
+- [macOS-x86_64](https://github.com/Solr159/JavBoss/releases/download/v1.8.6/javboss-v1.8.6-macos-x86_64.zip)（适用于 Intel 芯片的 macOS）
+- [macOS-arm64](https://github.com/Solr159/JavBoss/releases/download/v1.8.6/javboss-v1.8.6-macos-arm64.zip)（适用于 M 芯片的 macOS）
 
 也可以前往 [Releases](https://github.com/Solr159/JavBoss/releases) 页面查看所有版本。
 
@@ -75,9 +84,13 @@ curl -fsSL https://raw.githubusercontent.com/Solr159/JavBoss/main/scripts/instal
 - macOS：打开终端运行 `javboss.command`。
 - Linux：打开终端运行 `javboss`。
 
-启动成功后，程序会自动尝试打开浏览器。如果没有自动打开，可以手动访问终端里显示的本地地址。运行过程中请不要关闭终端窗口。
+</dd>
+</dl>
 
 #### 方式三：Docker 部署
+
+<dl>
+<dd>
 
 docker-compose.yaml：
 
@@ -102,14 +115,15 @@ services:
 docker compose up -d
 ```
 
-访问：
-
-```text
-http://localhost:8655 
-```
-如果需要通过局域网访问，将 ip 改为部署服务器的局域网 ip。
-
 Docker 部署下使用浏览器播放视频，不会调用本机 mpv。添加目录时直接填写宿主机路径，例如 `/mnt/disk1/videos`，程序会自动映射到容器内可访问路径。
+
+</dd>
+</dl>
+
+</br>
+
+**浏览器访问地址：`http://localhost:8655`，非 Docker 方式启动后，程序会自动打开浏览器。Docker 方式启动支持局域网设备访问，将 `localhost` 改为部署主机的局域网ip。
+默认登录密码为 `admin`，可在全局设置中修改。**
 
 ### 2. 添加本地目录
 
@@ -267,7 +281,7 @@ JavBoss 集成 [mpv](https://github.com/mpv-player/mpv) 播放能力，点击视
 - JavBoss 是本地媒体库管理工具，不是在线视频站。
 - JAV 元数据、封面资料首次抓取依赖外部站点可访问性，中国大陆地区请自备梯子。
 - 首次导入大库时，扫描、封面抓取、资料补全和缩略图生成需要一些时间。
-- 发布包根目录会包含 `config.toml` 文件。默认 `port = 0`，启动时使用随机端口；如果需要固定端口，可随时更改。
+- 发布包根目录会包含 `config.toml` 文件，程序默认启动端口为 8655，如有需要可修改其中 port 的值更换启动端口。
 
 ## Q&A
 
