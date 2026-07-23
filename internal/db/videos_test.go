@@ -545,8 +545,32 @@ func TestOpenMigratesLegacyGormSchemaPreservesVideoTags(t *testing.T) {
 	); err != nil {
 		t.Fatalf("create legacy schema: %v", err)
 	}
+	for _, statement := range []string{
+		`ALTER TABLE jav ADD COLUMN provider integer NOT NULL DEFAULT 0`,
+		`ALTER TABLE jav ADD COLUMN title_en text`,
+		`ALTER TABLE jav_idol ADD COLUMN is_english numeric NOT NULL DEFAULT 0`,
+	} {
+		if err := legacy.Exec(statement).Error; err != nil {
+			t.Fatalf("prepare legacy metadata schema: %v", err)
+		}
+	}
 
 	now := time.Unix(1710000000, 0).UTC()
+	englishTitleOnlyJav := models.Jav{
+		Code:      "EN-TITLE-ONLY",
+		FetchedAt: now,
+		CreatedAt: now,
+		UpdatedAt: now,
+	}
+	if err := legacy.Create(&englishTitleOnlyJav).Error; err != nil {
+		t.Fatalf("create English-title-only JAV: %v", err)
+	}
+	if err := legacy.Table("jav").
+		Where("id = ?", englishTitleOnlyJav.ID).
+		Update("title_en", "English title").Error; err != nil {
+		t.Fatalf("set legacy English title: %v", err)
+	}
+
 	dir := models.Directory{Path: "/tmp/media"}
 	if err := legacy.Create(&dir).Error; err != nil {
 		t.Fatalf("create legacy directory: %v", err)
@@ -600,6 +624,13 @@ func TestOpenMigratesLegacyGormSchemaPreservesVideoTags(t *testing.T) {
 	}
 	if afterCount != 1 {
 		t.Fatalf("migrated video_tag count = %d, want 1", afterCount)
+	}
+	var migratedEnglishTitleOnlyJav models.Jav
+	if err := migrated.First(&migratedEnglishTitleOnlyJav, englishTitleOnlyJav.ID).Error; err != nil {
+		t.Fatalf("load migrated English-title-only JAV: %v", err)
+	}
+	if migratedEnglishTitleOnlyJav.Title != "" {
+		t.Fatalf("legacy English title was copied into localized title: %q", migratedEnglishTitleOnlyJav.Title)
 	}
 	assertVideoContentSchema(t, migrated)
 	assertModelIndexes(t, migrated)
@@ -725,10 +756,10 @@ func assertModelIndexes(t *testing.T, db *gorm.DB) {
 	})
 	assertTableIndexes(t, db, "jav_idol", []string{
 		"idx_jav_idol_cover_jav_id",
-		"idx_jav_idol_name_language",
+		"idx_jav_idol_name",
 	})
 	assertTableIndexes(t, db, "jav_idol_alias", []string{
-		"idx_jav_idol_alias_alias_language",
+		"idx_jav_idol_alias_alias",
 		"idx_jav_idol_alias_jav_idol_id",
 	})
 	assertTableIndexes(t, db, "config", nil)
