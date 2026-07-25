@@ -3,6 +3,7 @@ package db
 import (
 	"context"
 	"path/filepath"
+	"reflect"
 	"strings"
 	"testing"
 	"time"
@@ -2652,6 +2653,157 @@ func TestUpdateJavIdolUpdatesProfileAndAliases(t *testing.T) {
 		t.Fatalf("SaveJavInfo alias: %v", err)
 	}
 	assertJavIdolMaps(t, db, "EDT-002", map[string]bool{"New Idol": false})
+}
+
+func TestSetJavSampleImagesIfEmpty(t *testing.T) {
+	db := openTestDB(t)
+	ctx := context.Background()
+
+	item := models.Jav{Code: "SAMPLE-001", Title: "Sample images"}
+	if err := db.Create(&item).Error; err != nil {
+		t.Fatalf("create jav: %v", err)
+	}
+
+	first, err := SetJavSampleImagesIfEmpty(ctx, item.ID, models.JavSampleImages{
+		{
+			ThumbnailURL: " https://example.com/thumb-1.jpg ",
+			DetailURL:    "https://example.com/detail-1.jpg",
+		},
+		{
+			DetailURL: "https://example.com/detail-2.jpg",
+		},
+		{
+			ThumbnailURL: "https://example.com/thumb-1.jpg",
+			DetailURL:    "https://example.com/detail-1.jpg",
+		},
+	})
+	if err != nil {
+		t.Fatalf("SetJavSampleImagesIfEmpty first call: %v", err)
+	}
+	want := models.JavSampleImages{
+		{
+			ThumbnailURL: "https://example.com/thumb-1.jpg",
+			DetailURL:    "https://example.com/detail-1.jpg",
+		},
+		{
+			ThumbnailURL: "https://example.com/detail-2.jpg",
+			DetailURL:    "https://example.com/detail-2.jpg",
+		},
+	}
+	if !reflect.DeepEqual(first, want) {
+		t.Fatalf("first sample images = %#v, want %#v", first, want)
+	}
+
+	second, err := SetJavSampleImagesIfEmpty(ctx, item.ID, models.JavSampleImages{
+		{
+			ThumbnailURL: "https://example.com/replacement-thumb.jpg",
+			DetailURL:    "https://example.com/replacement-detail.jpg",
+		},
+	})
+	if err != nil {
+		t.Fatalf("SetJavSampleImagesIfEmpty second call: %v", err)
+	}
+	if !reflect.DeepEqual(second, want) {
+		t.Fatalf("existing sample images were replaced: %#v", second)
+	}
+
+	var stored models.Jav
+	if err := db.First(&stored, item.ID).Error; err != nil {
+		t.Fatalf("load jav: %v", err)
+	}
+	if !reflect.DeepEqual(stored.SampleImages, want) {
+		t.Fatalf("stored sample images = %#v, want %#v", stored.SampleImages, want)
+	}
+}
+
+func TestSaveJavInfoDoesNotWriteSampleImages(t *testing.T) {
+	db := openTestDB(t)
+	ctx := context.Background()
+
+	_, err := SaveJavInfo(ctx, &jav.JavInfo{
+		Code:     "SAMPLE-SCAN-001",
+		Title:    "Scanned metadata",
+		Provider: jav.ProviderJavBus,
+		SampleImages: []jav.SampleImage{{
+			ThumbnailURL: "https://provider.example/scanned-thumb.jpg",
+			DetailURL:    "https://provider.example/scanned-detail.jpg",
+		}},
+	})
+	if err != nil {
+		t.Fatalf("SaveJavInfo create: %v", err)
+	}
+
+	var stored models.Jav
+	if err := db.Where("code = ?", "SAMPLE-SCAN-001").First(&stored).Error; err != nil {
+		t.Fatalf("load created jav: %v", err)
+	}
+	if len(stored.SampleImages) != 0 {
+		t.Fatalf("provider sample images were persisted: %#v", stored.SampleImages)
+	}
+
+	want := models.JavSampleImages{{
+		ThumbnailURL: "https://lazy.example/thumb.jpg",
+		DetailURL:    "https://lazy.example/detail.jpg",
+	}}
+	if _, err := SetJavSampleImagesIfEmpty(ctx, stored.ID, want); err != nil {
+		t.Fatalf("SetJavSampleImagesIfEmpty: %v", err)
+	}
+
+	_, err = SaveJavInfo(ctx, &jav.JavInfo{
+		Code:     "SAMPLE-SCAN-001",
+		Title:    "Refreshed metadata",
+		Provider: jav.ProviderJavBus,
+		SampleImages: []jav.SampleImage{{
+			ThumbnailURL: "https://provider.example/replacement-thumb.jpg",
+			DetailURL:    "https://provider.example/replacement-detail.jpg",
+		}},
+	})
+	if err != nil {
+		t.Fatalf("SaveJavInfo update: %v", err)
+	}
+
+	stored = models.Jav{}
+	if err := db.Where("code = ?", "SAMPLE-SCAN-001").First(&stored).Error; err != nil {
+		t.Fatalf("load updated jav: %v", err)
+	}
+	if stored.Title != "Refreshed metadata" {
+		t.Fatalf("title = %q, want refreshed metadata", stored.Title)
+	}
+	if !reflect.DeepEqual(stored.SampleImages, want) {
+		t.Fatalf("resolved sample images were overwritten: %#v", stored.SampleImages)
+	}
+}
+
+func TestMarkJavSampleImagesNotFound(t *testing.T) {
+	db := openTestDB(t)
+	ctx := context.Background()
+
+	item := models.Jav{Code: "SAMPLE-MISS-001", Title: "Missing sample images"}
+	if err := db.Create(&item).Error; err != nil {
+		t.Fatalf("create jav: %v", err)
+	}
+	if err := MarkJavSampleImagesNotFound(ctx, item.ID); err != nil {
+		t.Fatalf("MarkJavSampleImagesNotFound: %v", err)
+	}
+
+	var stored models.Jav
+	if err := db.First(&stored, item.ID).Error; err != nil {
+		t.Fatalf("load jav: %v", err)
+	}
+	if !stored.SampleImages.IsNotFound() {
+		t.Fatalf("sample image sentinel was not stored: %#v", stored.SampleImages)
+	}
+
+	images, err := SetJavSampleImagesIfEmpty(ctx, item.ID, models.JavSampleImages{{
+		ThumbnailURL: "https://example.com/thumb.jpg",
+		DetailURL:    "https://example.com/detail.jpg",
+	}})
+	if err != nil {
+		t.Fatalf("SetJavSampleImagesIfEmpty: %v", err)
+	}
+	if !images.IsNotFound() {
+		t.Fatalf("sample image sentinel was replaced: %#v", images)
+	}
 }
 
 func openTestDB(t *testing.T) *gorm.DB {
