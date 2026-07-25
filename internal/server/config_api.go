@@ -64,6 +64,7 @@ func updateConfig(c *gin.Context) {
 		DefaultPlayer          string                `json:"default_player"`
 		InitialViewMode        string                `json:"initial_view_mode"`
 		ShowTopBarTooltips     *bool                 `json:"show_top_bar_button_tooltips"`
+		AllowLANAccess         *bool                 `json:"allow_lan_access"`
 		ProxyHost              *string               `json:"proxy_host"`
 		ProxyPort              *int                  `json:"proxy_port"`
 		PlayerWindowSize       *int                  `json:"player_window_size"`
@@ -213,7 +214,7 @@ func updateConfig(c *gin.Context) {
 	}
 	if s := strings.ToLower(strings.TrimSpace(req.DefaultPlayer)); s != "" {
 		switch s {
-		case "mpv", "system":
+		case "browser", "mpv", "system":
 			entries["default_player"] = s
 		default:
 			respondLocalizedError(c, http.StatusBadRequest, "默认播放器无效", "Invalid default player")
@@ -231,6 +232,9 @@ func updateConfig(c *gin.Context) {
 	}
 	if req.ShowTopBarTooltips != nil {
 		entries["show_top_bar_button_tooltips"] = strconv.FormatBool(*req.ShowTopBarTooltips)
+	}
+	if req.AllowLANAccess != nil {
+		entries["allow_lan_access"] = strconv.FormatBool(*req.AllowLANAccess)
 	}
 	if req.ProxyPort != nil {
 		port := *req.ProxyPort
