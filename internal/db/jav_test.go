@@ -1353,6 +1353,39 @@ func TestCreatedUserJavTagAppearsWithZeroCount(t *testing.T) {
 	t.Fatalf("created user tag not listed: %#v", tags)
 }
 
+func TestAttachVisibleJavTagsIncludesSimplifiedName(t *testing.T) {
+	gdb := openTestDB(t)
+	ctx := context.Background()
+
+	javRec := models.Jav{Code: "TAG-ZH-001", Title: "Traditional tag"}
+	if err := gdb.Create(&javRec).Error; err != nil {
+		t.Fatalf("create jav: %v", err)
+	}
+	tag := models.JavTag{Name: "無碼"}
+	if err := gdb.Create(&tag).Error; err != nil {
+		t.Fatalf("create tag: %v", err)
+	}
+	if err := gdb.Create(&models.JavTagMap{
+		JavID:     javRec.ID,
+		JavTagID:  tag.ID,
+		Provider:  int(jav.ProviderJavBus),
+		CreatedAt: time.Now(),
+	}).Error; err != nil {
+		t.Fatalf("create tag map: %v", err)
+	}
+
+	items := []models.Jav{{ID: javRec.ID}}
+	if err := attachVisibleJavTags(ctx, items); err != nil {
+		t.Fatalf("attachVisibleJavTags: %v", err)
+	}
+	if len(items[0].Tags) != 1 {
+		t.Fatalf("attached tags = %#v, want one", items[0].Tags)
+	}
+	if items[0].Tags[0].Name != "無碼" || items[0].Tags[0].SimplifiedName != "无码" {
+		t.Fatalf("unexpected tag names: %#v", items[0].Tags[0])
+	}
+}
+
 func TestJavTagsFilterOutEnglishProviders(t *testing.T) {
 	gdb := openTestDB(t)
 	ctx := context.Background()
@@ -2459,6 +2492,162 @@ func TestListJavIdolsSortByRecentDirections(t *testing.T) {
 	}
 	if items[0].ID != oldIdol.ID {
 		t.Fatalf("unexpected recent_asc first idol: got %d want %d", items[0].ID, oldIdol.ID)
+	}
+}
+
+func TestUpdateJavStudioProfileUpdatesAliasesAndResolvesScrapedName(t *testing.T) {
+	db := openTestDB(t)
+	ctx := context.Background()
+	now := time.Unix(1710000000, 0).UTC()
+
+	dir := models.Directory{Path: "/tmp/media"}
+	if err := db.Create(&dir).Error; err != nil {
+		t.Fatalf("create directory: %v", err)
+	}
+	studio := models.JavStudio{Name: "Old Studio"}
+	if err := db.Create(&studio).Error; err != nil {
+		t.Fatalf("create studio: %v", err)
+	}
+	javRec := models.Jav{Code: "STU-EDIT-001", Title: "Studio edit", StudioID: &studio.ID, FetchedAt: now}
+	if err := db.Create(&javRec).Error; err != nil {
+		t.Fatalf("create jav: %v", err)
+	}
+	video := models.Video{
+		DirectoryID: dir.ID,
+		Path:        "stu-edit-001.mp4",
+		Filename:    "stu-edit-001.mp4",
+		Fingerprint: "fp-stu-edit-001",
+		JavID:       &javRec.ID,
+		ModifiedAt:  now,
+	}
+	if err := db.Create(&video).Error; err != nil {
+		t.Fatalf("create video: %v", err)
+	}
+	createVideoLocationsForVideos(t, db, video)
+
+	updated, err := UpdateJavStudioProfile(ctx, studio.ID, JavStudioUpdateInput{
+		Name:    "Main Studio",
+		Aliases: []string{"Alias Studio", "Main Studio", "Alias Studio"},
+	}, nil)
+	if err != nil {
+		t.Fatalf("UpdateJavStudioProfile: %v", err)
+	}
+	if updated.Name != "Main Studio" {
+		t.Fatalf("studio name = %q, want Main Studio", updated.Name)
+	}
+	if len(updated.Aliases) != 1 || updated.Aliases[0] != "Alias Studio" {
+		t.Fatalf("studio aliases = %#v, want Alias Studio", updated.Aliases)
+	}
+
+	items, total, err := ListJavStudios(ctx, "Alias Studio", 20, 0, nil)
+	if err != nil {
+		t.Fatalf("ListJavStudios by alias: %v", err)
+	}
+	if total != 1 || len(items) != 1 || items[0].ID != studio.ID {
+		t.Fatalf("unexpected studio alias search: total=%d items=%#v", total, items)
+	}
+
+	if _, err := SaveJavInfo(ctx, &jav.JavInfo{
+		Code:     "STU-EDIT-002",
+		Title:    "Alias scraped studio",
+		Studio:   "Alias Studio",
+		Provider: jav.ProviderJavBus,
+	}); err != nil {
+		t.Fatalf("SaveJavInfo alias: %v", err)
+	}
+	assertJavStudio(t, db, "STU-EDIT-002", "Main Studio")
+}
+
+func TestMergeJavStudiosMovesWorksSeriesFavoritesAndAliases(t *testing.T) {
+	db := openTestDB(t)
+	ctx := context.Background()
+	now := time.Unix(1710000000, 0).UTC()
+
+	dir := models.Directory{Path: "/tmp/media"}
+	if err := db.Create(&dir).Error; err != nil {
+		t.Fatalf("create directory: %v", err)
+	}
+	canonical := models.JavStudio{Name: "Main Studio"}
+	source := models.JavStudio{Name: "Source Studio"}
+	if err := db.Create(&canonical).Error; err != nil {
+		t.Fatalf("create canonical studio: %v", err)
+	}
+	if err := db.Create(&source).Error; err != nil {
+		t.Fatalf("create source studio: %v", err)
+	}
+	if err := db.Create(&models.JavStudioAlias{
+		JavStudioID: source.ID,
+		Alias:       "Legacy Source",
+	}).Error; err != nil {
+		t.Fatalf("create source alias: %v", err)
+	}
+	series := models.JavSeries{Name: "Source Series", StudioID: &source.ID}
+	if err := db.Create(&series).Error; err != nil {
+		t.Fatalf("create source series: %v", err)
+	}
+	javs := []models.Jav{
+		{Code: "STU-MRG-001", Title: "Canonical work", StudioID: &canonical.ID, FetchedAt: now},
+		{Code: "STU-MRG-002", Title: "Source work", StudioID: &source.ID, SeriesID: &series.ID, FetchedAt: now},
+	}
+	if err := db.Create(&javs).Error; err != nil {
+		t.Fatalf("create javs: %v", err)
+	}
+	group := models.JavFavoriteGroup{Name: "Studio Favorites", EntityType: JavFavoriteEntityStudio}
+	if err := db.Create(&group).Error; err != nil {
+		t.Fatalf("create favorite group: %v", err)
+	}
+	if err := db.Create(&models.JavFavoriteMap{
+		JavFavoriteGroupID: group.ID,
+		EntityType:         JavFavoriteEntityStudio,
+		EntityID:           source.ID,
+		SortOrder:          7,
+	}).Error; err != nil {
+		t.Fatalf("create favorite map: %v", err)
+	}
+	videos := []models.Video{
+		{DirectoryID: dir.ID, Path: "stu-mrg-001.mp4", Filename: "stu-mrg-001.mp4", Fingerprint: "fp-stu-mrg-001", JavID: &javs[0].ID, ModifiedAt: now},
+		{DirectoryID: dir.ID, Path: "stu-mrg-002.mp4", Filename: "stu-mrg-002.mp4", Fingerprint: "fp-stu-mrg-002", JavID: &javs[1].ID, ModifiedAt: now},
+	}
+	if err := db.Create(&videos).Error; err != nil {
+		t.Fatalf("create videos: %v", err)
+	}
+	createVideoLocationsForVideos(t, db, videos...)
+
+	updated, err := MergeJavStudios(ctx, canonical.ID, []int64{source.ID}, nil)
+	if err != nil {
+		t.Fatalf("MergeJavStudios: %v", err)
+	}
+	if updated.ID != canonical.ID || updated.WorkCount != 2 {
+		t.Fatalf("unexpected merged studio: %#v", updated)
+	}
+	if len(updated.Aliases) != 2 || updated.Aliases[0] != "Legacy Source" || updated.Aliases[1] != "Source Studio" {
+		t.Fatalf("merged aliases = %#v", updated.Aliases)
+	}
+
+	var sourceCount int64
+	if err := db.Model(&models.JavStudio{}).Where("id = ?", source.ID).Count(&sourceCount).Error; err != nil {
+		t.Fatalf("count source studio: %v", err)
+	}
+	if sourceCount != 0 {
+		t.Fatal("source studio still exists")
+	}
+	var movedJav models.Jav
+	if err := db.Where("code = ?", "STU-MRG-002").First(&movedJav).Error; err != nil {
+		t.Fatalf("load moved jav: %v", err)
+	}
+	if movedJav.StudioID == nil || *movedJav.StudioID != canonical.ID {
+		t.Fatalf("moved jav studio id = %v, want %d", movedJav.StudioID, canonical.ID)
+	}
+	var movedSeries models.JavSeries
+	if err := db.Where("id = ?", series.ID).First(&movedSeries).Error; err != nil {
+		t.Fatalf("load moved series: %v", err)
+	}
+	if movedSeries.StudioID == nil || *movedSeries.StudioID != canonical.ID {
+		t.Fatalf("moved series studio id = %v, want %d", movedSeries.StudioID, canonical.ID)
+	}
+	var favorite models.JavFavoriteMap
+	if err := db.Where("entity_type = ? AND entity_id = ?", JavFavoriteEntityStudio, canonical.ID).First(&favorite).Error; err != nil {
+		t.Fatalf("find moved favorite: %v", err)
 	}
 }
 
