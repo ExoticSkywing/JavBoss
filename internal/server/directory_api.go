@@ -25,7 +25,21 @@ func listDirectories(c *gin.Context) {
 		respondLocalizedError(c, http.StatusInternalServerError, "加载目录列表失败", "Failed to load directories")
 		return
 	}
-	c.JSON(http.StatusOK, dirs)
+	type directoryResponse struct {
+		models.Directory
+		IsScanning bool   `json:"is_scanning"`
+		WorkStatus string `json:"work_status"`
+	}
+	response := make([]directoryResponse, len(dirs))
+	for i := range dirs {
+		workStatus := service.DirectoryWorkStatus(dirs[i].ID)
+		response[i] = directoryResponse{
+			Directory:  dirs[i],
+			IsScanning: workStatus == service.DirectoryWorkScanning,
+			WorkStatus: workStatus,
+		}
+	}
+	c.JSON(http.StatusOK, response)
 }
 
 func createDirectory(c *gin.Context) {
@@ -101,7 +115,7 @@ func updateDirectory(c *gin.Context) {
 	}
 
 	var releaseScanReservation func()
-	if req.Path != nil {
+	if req.Path != nil || req.IsDelete != nil {
 		reserveCtx, cancel := context.WithTimeout(c.Request.Context(), 10*time.Second)
 		release, err := service.CancelAndReserveDirectoryScan(reserveCtx, id)
 		cancel()
@@ -145,4 +159,56 @@ func updateDirectory(c *gin.Context) {
 		}
 	}(*dir)
 	c.JSON(http.StatusOK, dir)
+}
+
+func processDirectory(c *gin.Context) {
+	id, err := strconv.ParseInt(c.Param("id"), 10, 64)
+	if err != nil || id <= 0 {
+		respondLocalizedError(c, http.StatusBadRequest, "目录 ID 无效", "Invalid directory ID")
+		return
+	}
+
+	var req struct {
+		Mode   string `json:"mode"`
+		Layout string `json:"layout"`
+	}
+	if err := c.ShouldBindJSON(&req); err != nil {
+		respondLocalizedError(c, http.StatusBadRequest, "目录处理请求无效", "Invalid directory processing request")
+		return
+	}
+
+	dir, err := dbpkg.GetDirectory(c.Request.Context(), id)
+	if err != nil {
+		logging.Error("get directory for processing failed id=%d err=%v", id, err)
+		respondLocalizedError(c, http.StatusInternalServerError, "读取目录失败", "Failed to load directory")
+		return
+	}
+	if dir == nil || dir.IsDelete {
+		respondLocalizedError(c, http.StatusNotFound, "目录不存在", "Directory does not exist")
+		return
+	}
+	if dir.Missing {
+		respondLocalizedError(c, http.StatusConflict, "目录当前不可用", "The directory is currently unavailable")
+		return
+	}
+
+	startCtx, cancel := context.WithTimeout(c.Request.Context(), 10*time.Second)
+	defer cancel()
+	if err := service.StartDirectoryProcessing(startCtx, *dir, req.Mode, req.Layout); err != nil {
+		switch {
+		case errors.Is(err, service.ErrInvalidDirectoryProcessMode):
+			respondLocalizedError(c, http.StatusBadRequest, "目录处理模式无效", "Invalid directory processing mode")
+		case errors.Is(err, service.ErrInvalidDirectoryProcessLayout):
+			respondLocalizedError(c, http.StatusBadRequest, "目录整理方式无效", "Invalid directory organization layout")
+		case errors.Is(err, service.ErrDirectoryWorkInProgress),
+			errors.Is(err, service.ErrDirectoryScanInProgress),
+			errors.Is(err, context.DeadlineExceeded):
+			respondLocalizedError(c, http.StatusConflict, "目录正在执行其他任务，请稍后重试", "The directory is busy; please try again later")
+		default:
+			logging.Error("start directory processing failed id=%d mode=%s err=%v", id, req.Mode, err)
+			respondLocalizedError(c, http.StatusInternalServerError, "启动目录处理失败", "Failed to start directory processing")
+		}
+		return
+	}
+	c.JSON(http.StatusAccepted, gin.H{"work_status": service.DirectoryWorkStatus(id)})
 }

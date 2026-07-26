@@ -92,6 +92,39 @@ type directoryScanSession struct {
 	reserve bool
 }
 
+const (
+	DirectoryWorkIdle                  = "idle"
+	DirectoryWorkScanning              = "scanning"
+	DirectoryWorkOrganizing            = "organizing"
+	DirectoryWorkGeneratingSidecar     = "generating_sidecar"
+	DirectoryWorkOrganizingWithSidecar = "organizing_with_sidecar"
+	DirectoryWorkRescanning            = "rescanning"
+)
+
+// IsDirectoryScanning reports whether a filesystem scan is currently running for id.
+// Reservations used while updating a directory are intentionally not reported as scans.
+func IsDirectoryScanning(id int64) bool {
+	if id <= 0 {
+		return false
+	}
+
+	dirScanMu.Lock()
+	defer dirScanMu.Unlock()
+	session := dirScanActive[id]
+	return session != nil && !session.reserve
+}
+
+// DirectoryWorkStatus returns the active manual job, scan, or idle status for id.
+func DirectoryWorkStatus(id int64) string {
+	if status := activeDirectoryProcessingStatus(id); status != "" {
+		return status
+	}
+	if IsDirectoryScanning(id) {
+		return DirectoryWorkScanning
+	}
+	return DirectoryWorkIdle
+}
+
 func startDirectoryScanSession(ctx context.Context, id int64) (context.Context, func(), error) {
 	if id <= 0 {
 		return nil, nil, errors.New("directory id cannot be zero")
@@ -179,6 +212,19 @@ func syncDirectory(ctx context.Context, directory models.Directory, javLinks *ja
 		summary.Directories = 1
 	}
 	summary.Duration = time.Since(start)
+	if scanned {
+		lastScanSummary := models.DirectoryScanSummary{
+			FilesSeen:        summary.FilesSeen,
+			Inserted:         summary.Inserted,
+			Updated:          summary.Updated,
+			Removed:          summary.Removed,
+			DurationMS:       summary.Duration.Milliseconds(),
+			FinishedAtUnixMS: time.Now().UnixMilli(),
+		}
+		if err := db.UpdateDirectoryLastScanSummary(scanCtx, directory.ID, lastScanSummary); err != nil {
+			return nil, err
+		}
+	}
 	logging.Info(
 		"sync directory summary: id=%d path=%s scanned=%t files_seen=%d inserted=%d updated=%d removed=%d duration=%s",
 		directory.ID,
