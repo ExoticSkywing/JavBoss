@@ -3,6 +3,7 @@ package util
 import (
 	"bytes"
 	"context"
+	"encoding/binary"
 	"encoding/json"
 	"errors"
 	"fmt"
@@ -68,47 +69,41 @@ func (m *VideoMetadata) FingerprintV2(size int64) string {
 		size)
 }
 
-// isVideo uses github.com/h2non/filetype to detect if the file is a video by
-// inspecting the initial bytes and matching known MIME signatures.
-func IsVideo(path string) bool {
-	ext := strings.ToLower(filepath.Ext(path))
-	if ext == ".ts" || ext == ".mts" || ext == ".m2ts" {
-		f, err := os.Open(path)
-		if err != nil {
-			return false
-		}
-		defer f.Close()
-		// MPEG-TS packets start with 0x47 sync byte every 188 bytes.
-		header := make([]byte, 564) // 3 * 188
-		n, _ := f.Read(header)
-		if n < 188 {
-			return false
-		}
-		if header[0] != 0x47 {
-			return false
-		}
-		if n > 188 && header[188] != 0x47 {
-			return false
-		}
-		if n > 376 && header[376] != 0x47 {
-			return false
-		}
+// IsVideoCandidate reports whether a file should be passed to ffprobe for final
+// video-stream validation. Known video extensions are accepted as candidates so
+// uncommon or newer container signatures are not filtered out prematurely.
+func IsVideoCandidate(path string) bool {
+	if hasVideoExtension(filepath.Ext(path)) {
 		return true
 	}
+	return IsVideo(path)
+}
 
+// IsVideo detects video content by inspecting the initial bytes and matching
+// known container signatures.
+func IsVideo(path string) bool {
+	ext := strings.ToLower(filepath.Ext(path))
 	f, err := os.Open(path)
 	if err != nil {
 		return false
 	}
 	defer f.Close()
 
-	// filetype recommends at least 261 bytes
-	header := make([]byte, 261)
+	// filetype recommends at least 261 bytes. Read enough MPEG-TS packets to
+	// recognize transport streams by content even when the extension is incorrect
+	// (for example, a .mp4 file containing MPEG-TS data).
+	header := make([]byte, 4*204)
 	n, err := f.Read(header)
 	if n == 0 && err != nil {
 		return false
 	}
 	buf := header[:n]
+	if isMPEGTransportStreamHeader(buf) {
+		return true
+	}
+	if hasVideoExtension(ext) && isISOBMFFHeader(buf) {
+		return true
+	}
 	if isRealMediaExtension(ext) && isRealMediaHeader(buf) {
 		return true
 	}
@@ -121,6 +116,70 @@ func IsVideo(path string) bool {
 	}
 	// Accept any MIME with top-level type "video"
 	return strings.HasPrefix(kind.MIME.Value, "video/") || kind.MIME.Type == "video"
+}
+
+func isMPEGTransportStreamHeader(buf []byte) bool {
+	const packetsToCheck = 4
+	layouts := []struct {
+		packetSize int
+		syncOffset int
+	}{
+		{packetSize: 188, syncOffset: 0},
+		{packetSize: 192, syncOffset: 4},
+		{packetSize: 192, syncOffset: 0},
+		{packetSize: 204, syncOffset: 0},
+	}
+	for _, layout := range layouts {
+		required := layout.syncOffset + (packetsToCheck-1)*layout.packetSize + 1
+		if len(buf) < required {
+			continue
+		}
+		matched := true
+		for packet := 0; packet < packetsToCheck; packet++ {
+			if buf[layout.syncOffset+packet*layout.packetSize] != 0x47 {
+				matched = false
+				break
+			}
+		}
+		if matched {
+			return true
+		}
+	}
+	return false
+}
+
+func isISOBMFFHeader(buf []byte) bool {
+	if len(buf) < 12 || !bytes.Equal(buf[4:8], []byte("ftyp")) {
+		return false
+	}
+	boxSize := binary.BigEndian.Uint32(buf[:4])
+	return boxSize == 1 || boxSize >= 16
+}
+
+func hasVideoExtension(ext string) bool {
+	switch strings.ToLower(strings.TrimSpace(ext)) {
+	case ".3g2", ".3gp",
+		".av1",
+		".asf", ".avi",
+		".divx",
+		".dv",
+		".f4v", ".flv",
+		".264", ".265", ".h264", ".h265", ".hevc",
+		".ivf",
+		".m2ts", ".m2v", ".m4v", ".mkv", ".mov", ".mp4", ".mpe", ".mpeg", ".mpegts", ".mpg", ".mpv", ".mts", ".mxf",
+		".nut",
+		".ogg", ".ogm", ".ogv",
+		".qt",
+		".rm", ".rmvb",
+		".ts",
+		".vob",
+		".webm", ".wmv",
+		".xvid",
+		".y4m", ".yuv":
+		return true
+	default:
+		return false
+	}
 }
 
 func isRealMediaExtension(ext string) bool {
