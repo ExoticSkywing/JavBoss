@@ -1324,7 +1324,7 @@ export default function App() {
       const sp = new URLSearchParams()
       sp.set('view', 'jav')
       const tab = tabOverride ?? javTab
-      if (tab === 'idol' || tab === 'studio' || tab === 'series') {
+      if (tab === 'idol' || tab === 'studio' || tab === 'series' || tab === 'discover') {
         sp.set('tab', tab)
       }
       const searchVal = (searchOverride ?? javSearchTerm).trim()
@@ -1568,7 +1568,9 @@ export default function App() {
 
   useEffect(() => {
     if (!hydrated || !configLoaded || !isJavMode) return
-    if (javTab === 'idol') {
+    if (javTab === 'discover') {
+      return
+    } else if (javTab === 'idol') {
       loadJavIdols()
       loadJavFavoriteGroups('idol')
     } else if (javTab === 'studio') {
@@ -1688,7 +1690,9 @@ export default function App() {
   const forceReloadJavByTab = useCallback(
     (tab) => {
       if (!hydrated || !configLoaded) return
-      if (tab === 'idol') {
+      if (tab === 'discover') {
+        return
+      } else if (tab === 'idol') {
         loadJavIdols({ force: true })
         loadJavFavoriteGroups('idol', { force: true })
       } else if (tab === 'studio') {
@@ -2938,7 +2942,15 @@ export default function App() {
 
   const handleSwitchJavTab = (tab) => {
     const nextTab =
-      tab === 'idol' ? 'idol' : tab === 'studio' ? 'studio' : tab === 'series' ? 'series' : 'list'
+      tab === 'idol'
+        ? 'idol'
+        : tab === 'studio'
+          ? 'studio'
+          : tab === 'series'
+            ? 'series'
+            : tab === 'discover'
+              ? 'discover'
+              : 'list'
     const shouldResetRandomList = nextTab === 'list' && javRandomMode
     const shouldClearSearch = nextTab === 'list' || nextTab !== javTab || shouldResetRandomList
     const nextRandomMode = nextTab === 'list' && !shouldResetRandomList ? javRandomMode : false
@@ -2987,7 +2999,15 @@ export default function App() {
       return
     }
     const nextTab =
-      tab === 'idol' ? 'idol' : tab === 'studio' ? 'studio' : tab === 'series' ? 'series' : 'list'
+      tab === 'idol'
+        ? 'idol'
+        : tab === 'studio'
+          ? 'studio'
+          : tab === 'series'
+            ? 'series'
+            : tab === 'discover'
+              ? 'discover'
+              : 'list'
     if (isJavMode && nextTab === javTab) return
     handleSwitchJavTab(nextTab)
   }
@@ -3614,13 +3634,15 @@ export default function App() {
   }, [videos])
 
   const activeError = isJavMode
-    ? javTab === 'idol'
-      ? idolError
-      : javTab === 'studio'
-        ? studioError
-        : javTab === 'series'
-          ? seriesError
-          : javError
+    ? javTab === 'discover'
+      ? null
+      : javTab === 'idol'
+        ? idolError
+        : javTab === 'studio'
+          ? studioError
+          : javTab === 'series'
+            ? seriesError
+            : javError
     : error
   const showDirectorySetupHint =
     hydrated &&
@@ -3633,21 +3655,25 @@ export default function App() {
     videos.length === 0
 
   const activeJavLoading =
-    javTab === 'idol'
-      ? idolLoading
-      : javTab === 'studio'
-        ? studioLoading
-        : javTab === 'series'
-          ? seriesLoading
-          : javLoading
+    javTab === 'discover'
+      ? false
+      : javTab === 'idol'
+        ? idolLoading
+        : javTab === 'studio'
+          ? studioLoading
+          : javTab === 'series'
+            ? seriesLoading
+            : javLoading
   const activeLoadingMore = isJavMode
-    ? javTab === 'idol'
-      ? idolLoadingMore
-      : javTab === 'studio'
-        ? studioLoadingMore
-        : javTab === 'series'
-          ? seriesLoadingMore
-          : javLoadingMore
+    ? javTab === 'discover'
+      ? false
+      : javTab === 'idol'
+        ? idolLoadingMore
+        : javTab === 'studio'
+          ? studioLoadingMore
+          : javTab === 'series'
+            ? seriesLoadingMore
+            : javLoadingMore
     : videoLoadingMore
   useScrollRestoration({
     activeJavLoading,

@@ -613,6 +613,79 @@ export async function fetchJavFilterOptions({
   return res.json()
 }
 
+export async function fetchJavDiscoverySubscriptions() {
+  const res = await apiFetch('/jav/discovery/subscriptions', { cache: 'no-store' })
+  if (!res.ok) throw await apiError(res)
+  return res.json()
+}
+
+export async function createJavDiscoverySubscription({ referenceCode }) {
+  const res = await apiFetch('/jav/discovery/subscriptions', {
+    method: 'POST',
+    headers: jsonHeaders,
+    body: JSON.stringify({ reference_code: referenceCode }),
+  })
+  if (!res.ok) throw await apiError(res)
+  return res.json()
+}
+
+export async function deleteJavDiscoverySubscription(id) {
+  const res = await apiFetch(`/jav/discovery/subscriptions/${encodeURIComponent(id)}`, {
+    method: 'DELETE',
+  })
+  if (!res.ok) throw await apiError(res)
+}
+
+export async function loadMoreJavDiscoveryHistory(id) {
+  const res = await apiFetch(`/jav/discovery/subscriptions/${encodeURIComponent(id)}/history`, {
+    method: 'POST',
+  })
+  if (!res.ok) throw await apiError(res)
+  return res.json()
+}
+
+export async function fetchJavDiscoveryItems({
+  wanted = false,
+  includeOwned = false,
+  subscriptionId = null,
+  limit = 49,
+  offset = 0,
+} = {}) {
+  const params = new URLSearchParams()
+  params.set('wanted', wanted ? '1' : '0')
+  params.set('include_owned', includeOwned ? '1' : '0')
+  if (subscriptionId) params.set('subscription_id', String(subscriptionId))
+  params.set('limit', String(limit))
+  params.set('offset', String(offset))
+  const res = await apiFetch(`/jav/discovery/items?${params.toString()}`, { cache: 'no-store' })
+  if (!res.ok) throw await apiError(res)
+  return res.json()
+}
+
+export async function updateJavDiscoveryWanted(id, wanted) {
+  const res = await apiFetch(`/jav/discovery/items/${encodeURIComponent(id)}/wanted`, {
+    method: 'PATCH',
+    headers: jsonHeaders,
+    body: JSON.stringify({ wanted: Boolean(wanted) }),
+  })
+  if (!res.ok) throw await apiError(res)
+}
+
+export async function resolveJavDiscoveryDetails(id) {
+  const res = await apiFetch(`/jav/discovery/items/${encodeURIComponent(id)}/details`, {
+    method: 'POST',
+    cache: 'no-store',
+  })
+  if (!res.ok) throw await apiError(res)
+  return res.json()
+}
+
+export async function triggerJavDiscoverySync() {
+  const res = await apiFetch('/jav/discovery/sync', { method: 'POST' })
+  if (!res.ok) throw await apiError(res)
+  return res.json()
+}
+
 function javSampleImagesRequest(id, directoryIds) {
   const javId = Number(id)
   const normalizedDirectoryIds = directoryIds

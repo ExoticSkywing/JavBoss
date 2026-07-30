@@ -3,6 +3,7 @@ import ArrowBackRoundedIcon from '@mui/icons-material/ArrowBackRounded'
 import ArrowForwardRoundedIcon from '@mui/icons-material/ArrowForwardRounded'
 import CollectionsBookmarkOutlinedIcon from '@mui/icons-material/CollectionsBookmarkOutlined'
 import DisplaySettingsOutlinedIcon from '@mui/icons-material/DisplaySettingsOutlined'
+import ExploreOutlinedIcon from '@mui/icons-material/ExploreOutlined'
 import FolderOpenOutlinedIcon from '@mui/icons-material/FolderOpenOutlined'
 import LocalOfferOutlinedIcon from '@mui/icons-material/LocalOfferOutlined'
 import MovieCreationOutlinedIcon from '@mui/icons-material/MovieCreationOutlined'
@@ -23,6 +24,7 @@ const tabs = [
   { id: 'idol', label: zh('女优', 'Idols'), icon: PeopleAltOutlinedIcon },
   { id: 'studio', label: zh('片商', 'Studios'), icon: VideocamOutlinedIcon },
   { id: 'series', label: zh('系列', 'Series'), icon: CollectionsBookmarkOutlinedIcon },
+  { id: 'discover', label: zh('发现', 'Discover'), icon: ExploreOutlinedIcon },
 ]
 
 function RailButton({
