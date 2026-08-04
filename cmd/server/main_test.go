@@ -3,6 +3,7 @@ package main
 import (
 	"os"
 	"path/filepath"
+	"strings"
 	"testing"
 )
 
@@ -59,6 +60,55 @@ func TestConfiguredListenAddr(t *testing.T) {
 			got := configuredListenAddr(defaultDevelopmentPort, tt.allowLAN, tt.containerMode)
 			if got != tt.want {
 				t.Fatalf("configuredListenAddr() = %q, want %q", got, tt.want)
+			}
+		})
+	}
+}
+
+func TestShouldRunClientModeDependsOnlyOnServerURL(t *testing.T) {
+	for _, test := range []struct {
+		name      string
+		serverURL string
+		want      bool
+	}{
+		{name: "missing server URL"},
+		{name: "blank server URL", serverURL: "  "},
+		{name: "configured server URL", serverURL: "http://localhost:17654", want: true},
+	} {
+		t.Run(test.name, func(t *testing.T) {
+			if got := shouldRunClientMode(test.serverURL); got != test.want {
+				t.Fatalf("shouldRunClientMode(%q) = %t, want %t", test.serverURL, got, test.want)
+			}
+		})
+	}
+}
+
+func TestReleaseClientStartupHintIncludesModeAndRemoteServer(t *testing.T) {
+	localURL := "http://localhost:8655"
+	remoteURL := "https://server.example.com"
+
+	for _, test := range []struct {
+		name     string
+		chinese  bool
+		contains []string
+	}{
+		{
+			name:     "Chinese",
+			chinese:  true,
+			contains: []string{"JavBoss 已通过 Client 模式启动，访问地址：" + localURL, "远程 Server 地址：" + remoteURL},
+		},
+		{
+			name:     "English",
+			chinese:  false,
+			contains: []string{"JavBoss started in Client mode. URL: " + localURL, "Remote Server: " + remoteURL},
+		},
+	} {
+		t.Run(test.name, func(t *testing.T) {
+			hint := releaseClientStartupHint(localURL, remoteURL, test.chinese)
+			for _, expected := range test.contains {
+				if !strings.Contains(hint, expected) {
+					t.Fatalf("startup hint %q does not contain %q", hint, expected)
+				}
 			}
 		})
 	}

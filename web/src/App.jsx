@@ -375,6 +375,7 @@ export default function App() {
       }
     : null
   const browserPlaybackOnly = configFlag(config?.browser_playback_only)
+  const clientMode = configFlag(config?.runtime_client)
   const containerMode = configFlag(config?.runtime_container)
   const hostPathPrefixEnabled = configFlag(config?.host_path_prefix_enabled, containerMode)
   const desktopIntegrationEnabled = configFlag(config?.desktop_integration_enabled, true)
@@ -385,7 +386,25 @@ export default function App() {
     : normalizeDefaultPlayer(config?.default_player)
   const initialViewMode = normalizeInitialViewMode(config?.initial_view_mode)
   const showTopBarButtonTooltips = configFlag(config?.show_top_bar_button_tooltips, true)
-  const alternatePlayer = browserPlaybackOnly ? '' : defaultPlayer === 'system' ? 'mpv' : 'system'
+  const alternatePlayer = browserPlaybackOnly
+    ? ''
+    : defaultPlayer === 'system'
+      ? mpvEnabled
+        ? 'mpv'
+        : ''
+      : defaultPlayer === 'browser'
+        ? clientMode
+          ? mpvEnabled
+            ? 'mpv'
+            : desktopIntegrationEnabled
+              ? 'system'
+              : ''
+          : desktopIntegrationEnabled
+            ? 'system'
+            : ''
+        : desktopIntegrationEnabled
+          ? 'system'
+          : ''
   const alternatePlayerLabel =
     alternatePlayer === 'mpv'
       ? zh('使用MPV播放器播放', 'Play with MPV player')
@@ -495,6 +514,7 @@ export default function App() {
       }
       const payload = {
         id: video.id,
+        locationId: video.location_id,
         path: getVideoRelPath(video),
         dirPath: getVideoDirPath(video),
       }
@@ -534,6 +554,7 @@ export default function App() {
       }
       playVideoFile({
         id: video.id,
+        locationId: video.location_id,
         path: getVideoRelPath(video),
         dirPath: getVideoDirPath(video),
         startTime,
@@ -3789,6 +3810,7 @@ export default function App() {
         onClose={() => setGlobalSettingsOpen(false)}
         directories={directories}
         browserPlaybackOnly={browserPlaybackOnly}
+        desktopIntegrationEnabled={desktopIntegrationEnabled}
         containerMode={containerMode}
         directoryPickerEnabled={directoryPickerEnabled}
         hostPathPrefixEnabled={hostPathPrefixEnabled}

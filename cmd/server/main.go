@@ -14,11 +14,13 @@ import (
 	"os/signal"
 	"path/filepath"
 	"strconv"
+	"strings"
 	"sync"
 	"syscall"
 	"time"
 
 	"javboss/internal/cache"
+	clientpkg "javboss/internal/client"
 	"javboss/internal/common"
 	"javboss/internal/common/logging"
 	"javboss/internal/db"
@@ -66,14 +68,27 @@ func main() {
 		fallback.Fatalf("init logger: %v", err)
 	}
 	defer closeLogs()
+	logging.SetLogger(logger)
+	logging.SetColorEnabled(false)
+
+	bootstrapCfg, err := clientpkg.LoadBootstrapConfig(baseDir)
+	if err != nil {
+		logger.Fatalf("load bootstrap config: %v", err)
+	}
+	serverURL := strings.TrimSpace(bootstrapCfg.ServerURL)
+	if shouldRunClientMode(serverURL) {
+		ctx, stop := signal.NotifyContext(context.Background(), os.Interrupt, syscall.SIGTERM)
+		defer stop()
+		if err := runClientMode(ctx, stop, baseDir, serverURL, bootstrapCfg.Port, logger); err != nil {
+			logger.Fatalf("run client mode: %v", err)
+		}
+		return
+	}
 
 	cfg, err := common.LoadWithBaseDir(baseDir)
 	if err != nil {
 		logger.Fatalf("load config: %v", err)
 	}
-
-	logging.SetLogger(logger)
-	logging.SetColorEnabled(false)
 
 	if buildMode == "release" {
 		dataDir := filepath.Dir(cfg.DatabasePath)
@@ -236,6 +251,74 @@ func main() {
 	}
 }
 
+func shouldRunClientMode(serverURL string) bool {
+	return strings.TrimSpace(serverURL) != ""
+}
+
+func runClientMode(ctx context.Context, stop context.CancelFunc, baseDir, serverURL string, configuredPort int, logger *log.Logger) error {
+	port := configuredPort
+	if port == 0 {
+		if buildMode == "release" {
+			port = defaultReleasePort
+		} else {
+			port = defaultDevelopmentPort
+		}
+	}
+	if port < 1 || port > 65535 {
+		return fmt.Errorf("invalid client port %d", port)
+	}
+	listenAddr := net.JoinHostPort("127.0.0.1", strconv.Itoa(port))
+	localURL := fmt.Sprintf("http://127.0.0.1:%d", port)
+	normalizedServerURL, err := clientpkg.NormalizeServerURL(serverURL)
+	if err != nil {
+		return fmt.Errorf("invalid configured remote server: %w", err)
+	}
+	serverURL = normalizedServerURL
+	clientHandler, err := clientpkg.New(clientpkg.Options{
+		BaseDir:      baseDir,
+		LocalBaseURL: localURL,
+		RemoteURL:    serverURL,
+	})
+	if err != nil {
+		return err
+	}
+	defer clientHandler.Close()
+
+	srv := &http.Server{
+		Addr:              listenAddr,
+		Handler:           clientHandler,
+		ReadHeaderTimeout: 10 * time.Second,
+		IdleTimeout:       120 * time.Second,
+	}
+	listener, err := net.Listen("tcp", listenAddr)
+	if err != nil {
+		return fmt.Errorf("listen on %s: %w", listenAddr, err)
+	}
+	defer listener.Close()
+	go func() {
+		<-ctx.Done()
+		shutdownCtx, cancel := context.WithTimeout(context.Background(), 10*time.Second)
+		defer cancel()
+		if err := srv.Shutdown(shutdownCtx); err != nil {
+			logger.Printf("client server shutdown error: %v", err)
+		}
+	}()
+
+	displayURL := fmt.Sprintf("http://localhost:%d", port)
+	if buildMode == "release" {
+		printReleaseClientStartupHint(displayURL, serverURL)
+		if err := util.OpenFile(displayURL); err != nil {
+			logger.Printf("open browser failed: %v", err)
+		}
+		startReleaseKeyboardControls(ctx, stop, displayURL, logger)
+	}
+	logger.Printf("client mode listening on %s, remote server %s", listenAddr, strings.TrimSpace(serverURL))
+	if err := srv.Serve(listener); err != nil && !errors.Is(err, http.ErrServerClosed) {
+		return fmt.Errorf("client server: %w", err)
+	}
+	return nil
+}
+
 func applyRuntimeConfig(ctx context.Context) map[string]string {
 	cfg, err := db.ListConfig(ctx)
 	if err != nil {
@@ -330,6 +413,26 @@ func printReleaseStartupHint(url string) {
 	}
 	fmt.Printf("JavBoss started successfully. Browser URL: %s\n", url)
 	fmt.Println("Press 1 to open a new page. Press 2 or close this window to exit the app.")
+}
+
+func printReleaseClientStartupHint(localURL, serverURL string) {
+	fmt.Print(releaseClientStartupHint(localURL, serverURL, util.SystemPrefersChinese()))
+}
+
+func releaseClientStartupHint(localURL, serverURL string, chinese bool) string {
+	remote := strings.TrimSpace(serverURL)
+	if chinese {
+		return fmt.Sprintf(
+			"JavBoss 已通过 Client 模式启动，访问地址：%s\n远程 Server 地址：%s\n按 1 打开新页面，按 2 或者关闭此窗口退出应用。\n",
+			localURL,
+			remote,
+		)
+	}
+	return fmt.Sprintf(
+		"JavBoss started in Client mode. URL: %s\nRemote Server: %s\nPress 1 to open a new page. Press 2 or close this window to exit the app.\n",
+		localURL,
+		remote,
+	)
 }
 
 func startReleaseKeyboardControls(ctx context.Context, cancel context.CancelFunc, url string, logger *log.Logger) {
