@@ -60,13 +60,14 @@ type JavScanVideo struct {
 
 // JavUpdateInput contains user-editable JAV metadata fields.
 type JavUpdateInput struct {
-	Title       *string
-	StudioID    *int64
-	SeriesID    *int64
-	IdolIDs     *[]int64
-	UserTagIDs  *[]int64
-	ReleaseUnix *int64
-	DurationMin *int
+	Title          *string
+	StudioID       *int64
+	SeriesID       *int64
+	IdolIDs        *[]int64
+	UserTagIDs     *[]int64
+	ReleaseUnix    *int64
+	DurationMin    *int
+	FavoriteRating *float64
 }
 
 // JavIdolUpdateInput contains user-editable JAV idol profile fields.
@@ -132,8 +133,29 @@ func SearchJav(ctx context.Context, idolIDs []int64, tagIDs []int64, search, sor
 	return SearchJavWithPrefix(ctx, idolIDs, tagIDs, search, "", sort, limit, offset, seed, directoryIDs, filterIDs...)
 }
 
+// JavSearchFilters contains optional filters for a JAV list query.
+type JavSearchFilters struct {
+	StudioID          int64
+	SeriesID          int64
+	SoloOnly          bool
+	FavoriteGroupID   int64
+	FavoriteRatingMin *float64
+	FavoriteRatingMax *float64
+}
+
 // SearchJavWithPrefix lists Jav metadata filtered by an exact code prefix plus other filters.
 func SearchJavWithPrefix(ctx context.Context, idolIDs []int64, tagIDs []int64, search, prefix, sort string, limit, offset int, seed *int64, directoryIDs []int64, filterIDs ...int64) ([]models.Jav, int64, error) {
+	studioID, seriesID, soloOnly, favoriteGroupID := javFilterOptions(filterIDs)
+	return SearchJavWithPrefixFilters(ctx, idolIDs, tagIDs, search, prefix, sort, limit, offset, seed, directoryIDs, JavSearchFilters{
+		StudioID:        studioID,
+		SeriesID:        seriesID,
+		SoloOnly:        soloOnly,
+		FavoriteGroupID: favoriteGroupID,
+	})
+}
+
+// SearchJavWithPrefixFilters lists JAV metadata using the complete filter set.
+func SearchJavWithPrefixFilters(ctx context.Context, idolIDs []int64, tagIDs []int64, search, prefix, sort string, limit, offset int, seed *int64, directoryIDs []int64, filters JavSearchFilters) ([]models.Jav, int64, error) {
 	if limit <= 0 {
 		limit = 100
 	}
@@ -147,11 +169,10 @@ func SearchJavWithPrefix(ctx context.Context, idolIDs []int64, tagIDs []int64, s
 	prefix = normalizeJavCodePrefix(prefix)
 	sort = strings.ToLower(strings.TrimSpace(sort))
 
-	studioID, seriesID, soloOnly, favoriteGroupID := javFilterOptions(filterIDs)
-	filtered := buildJavFilter(ctx, idolIDs, tagIDs, search, prefix, directoryIDs, studioID, seriesID, soloOnly, favoriteGroupID)
+	filtered := buildJavFilter(ctx, idolIDs, tagIDs, search, prefix, directoryIDs, filters)
 
 	// Count on a cloned query to avoid mutating the main one.
-	countBase := buildJavFilter(ctx, idolIDs, tagIDs, search, prefix, directoryIDs, studioID, seriesID, soloOnly, favoriteGroupID)
+	countBase := buildJavFilter(ctx, idolIDs, tagIDs, search, prefix, directoryIDs, filters)
 	countQuery := countBase.Select("DISTINCT jav.id")
 	var total int64
 	if err := countQuery.Count(&total).Error; err != nil {
@@ -179,6 +200,10 @@ func SearchJavWithPrefix(ctx context.Context, idolIDs []int64, tagIDs []int64, s
 		order = "COALESCE((SELECT SUM(COALESCE(v.play_count, 0)) FROM video_location vl JOIN directory d ON d.id = vl.directory_id JOIN video v ON v.id = vl.video_id WHERE vl.jav_id = jav.id AND " + activeLocationWhereSQL("vl", "d") + directoryFilterSQL("vl", directoryIDs) + "), 0) DESC, jav.created_at DESC, jav.id DESC"
 	case "play_count_asc":
 		order = "COALESCE((SELECT SUM(COALESCE(v.play_count, 0)) FROM video_location vl JOIN directory d ON d.id = vl.directory_id JOIN video v ON v.id = vl.video_id WHERE vl.jav_id = jav.id AND " + activeLocationWhereSQL("vl", "d") + directoryFilterSQL("vl", directoryIDs) + "), 0) ASC, jav.created_at ASC, jav.id ASC"
+	case "favorite_rating", "favorite_rating_desc":
+		order = "jav.favorite_rating DESC, jav.created_at DESC, jav.id DESC"
+	case "favorite_rating_asc":
+		order = "jav.favorite_rating = 0 ASC, jav.favorite_rating ASC, jav.created_at DESC, jav.id DESC"
 	case "recent_asc":
 		order = "jav.created_at ASC, jav.id ASC"
 	case "random":
@@ -403,6 +428,14 @@ func UpdateJav(ctx context.Context, javID int64, input JavUpdateInput, directory
 				durationMin = 0
 			}
 			updates["duration_min"] = durationMin
+		}
+		if input.FavoriteRating != nil {
+			favoriteRating := *input.FavoriteRating
+			if math.IsNaN(favoriteRating) || math.IsInf(favoriteRating, 0) ||
+				favoriteRating < 0 || favoriteRating > 5 || favoriteRating*2 != math.Trunc(favoriteRating*2) {
+				return errors.New("favorite rating must be 0 or between 0.5 and 5 in 0.5 increments")
+			}
+			updates["favorite_rating"] = favoriteRating
 		}
 		if input.StudioID != nil {
 			studioID := *input.StudioID
@@ -729,7 +762,7 @@ func replaceJavUserTagsTx(tx *gorm.DB, javIDs, tagIDs []int64) error {
 	return nil
 }
 
-func buildJavFilter(ctx context.Context, idolIDs []int64, tagIDs []int64, search, prefix string, directoryIDs []int64, studioID int64, seriesID int64, soloOnly bool, favoriteGroupID int64) *gorm.DB {
+func buildJavFilter(ctx context.Context, idolIDs []int64, tagIDs []int64, search, prefix string, directoryIDs []int64, filters JavSearchFilters) *gorm.DB {
 	q := common.DB.WithContext(ctx).Model(&models.Jav{})
 	visibleTagProviders := visibleJavTagProviders()
 	// Only include JAV entries that have at least one active file location.
@@ -745,21 +778,27 @@ func buildJavFilter(ctx context.Context, idolIDs []int64, tagIDs []int64, search
 		like := fmt.Sprintf("%%%s%%", search)
 		q = q.Where("code LIKE ? OR title LIKE ?", like, like)
 	}
-	if studioID == 0 {
+	if filters.StudioID == 0 {
 		q = q.Where("studio_id IS NULL")
-	} else if studioID > 0 {
-		q = q.Where("studio_id = ?", studioID)
+	} else if filters.StudioID > 0 {
+		q = q.Where("studio_id = ?", filters.StudioID)
 	}
 	if prefix != "" {
 		q = q.Where(javCodePrefixSQL("code")+" = ?", prefix)
 	}
-	if seriesID > 0 {
-		q = q.Where("series_id = ?", seriesID)
+	if filters.SeriesID > 0 {
+		q = q.Where("series_id = ?", filters.SeriesID)
 	}
-	if favoriteGroupID > 0 {
-		q = q.Joins("JOIN jav_favorite_map jfm_filter ON jfm_filter.entity_id = jav.id AND jfm_filter.entity_type = ? AND jfm_filter.jav_favorite_group_id = ?", JavFavoriteEntityJav, favoriteGroupID)
+	if filters.FavoriteGroupID > 0 {
+		q = q.Joins("JOIN jav_favorite_map jfm_filter ON jfm_filter.entity_id = jav.id AND jfm_filter.entity_type = ? AND jfm_filter.jav_favorite_group_id = ?", JavFavoriteEntityJav, filters.FavoriteGroupID)
 	}
-	if soloOnly {
+	if filters.FavoriteRatingMin != nil {
+		q = q.Where("jav.favorite_rating >= ?", *filters.FavoriteRatingMin)
+	}
+	if filters.FavoriteRatingMax != nil {
+		q = q.Where("jav.favorite_rating <= ?", *filters.FavoriteRatingMax)
+	}
+	if filters.SoloOnly {
 		soloJavs := common.DB.WithContext(ctx).
 			Table("jav_idol_map jim_solo_count").
 			Select("jim_solo_count.jav_id").

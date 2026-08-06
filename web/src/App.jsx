@@ -163,6 +163,9 @@ export default function App() {
     javSeriesName,
     javPrefix,
     javSoloOnly,
+    javFavoriteRatingEnabled,
+    javFavoriteRatingMin,
+    javFavoriteRatingMax,
     javFavoriteGroupId,
     setJavFavoriteGroupId,
     javSort,
@@ -323,6 +326,9 @@ export default function App() {
   const [javHideTagsInput, setJavHideTagsInput] = useState(configFlag(config?.jav_hide_tags))
   const [javHideActionsInput, setJavHideActionsInput] = useState(
     configFlag(config?.jav_hide_actions)
+  )
+  const [javFavoriteRatingShowFullInput, setJavFavoriteRatingShowFullInput] = useState(
+    configFlag(config?.jav_favorite_rating_show_full, false)
   )
   const [javWaterfallDefaultInput, setJavWaterfallDefaultInput] = useState(
     configFlag(config?.jav_waterfall_default)
@@ -1011,6 +1017,9 @@ export default function App() {
           javSeriesName: jav.tab === 'list' && jav.seriesId ? jav.seriesName : '',
           javPrefix: jav.tab === 'list' ? jav.prefix : '',
           javSoloOnly: jav.tab === 'list' ? jav.soloOnly : false,
+          javFavoriteRatingEnabled: jav.tab === 'list' ? jav.favoriteRatingEnabled : false,
+          javFavoriteRatingMin: jav.tab === 'list' ? jav.favoriteRatingMin : 0.5,
+          javFavoriteRatingMax: jav.tab === 'list' ? jav.favoriteRatingMax : 5,
           javFavoriteGroupId: jav.tab === 'list' ? jav.favoriteGroupId : null,
           javPage: jav.random ? 1 : jav.page,
           idolPage: jav.tab === 'idol' ? jav.page : 1,
@@ -1081,6 +1090,9 @@ export default function App() {
           javSeriesName,
           javPrefix,
           javSoloOnly,
+          javFavoriteRatingEnabled,
+          javFavoriteRatingMin,
+          javFavoriteRatingMax,
           javFavoriteGroupId,
           javTempSort,
           idolTempSort,
@@ -1113,6 +1125,9 @@ export default function App() {
       javSeriesId,
       javPrefix,
       javSoloOnly,
+      javFavoriteRatingEnabled,
+      javFavoriteRatingMin,
+      javFavoriteRatingMax,
       studioFavoriteGroupId,
       seriesFavoriteGroupId,
       javPage,
@@ -1225,6 +1240,9 @@ export default function App() {
         seriesName: seriesNameOverride,
         prefix: prefixOverride,
         soloOnly: soloOnlyOverride,
+        favoriteRatingEnabled: favoriteRatingEnabledOverride,
+        favoriteRatingMin: favoriteRatingMinOverride,
+        favoriteRatingMax: favoriteRatingMaxOverride,
         favoriteGroupId: favoriteGroupIdOverride,
         tagIds: tagIdsOverride,
         random: randomOverride,
@@ -1280,6 +1298,19 @@ export default function App() {
       const soloOnly = hasSoloOnlyOverride ? Boolean(soloOnlyOverride) : Boolean(javSoloOnly)
       if (tab === 'list' && soloOnly) {
         sp.set('solo', '1')
+      }
+      const hasFavoriteRatingEnabledOverride = Object.prototype.hasOwnProperty.call(
+        options,
+        'favoriteRatingEnabled'
+      )
+      const favoriteRatingEnabled = hasFavoriteRatingEnabledOverride
+        ? Boolean(favoriteRatingEnabledOverride)
+        : Boolean(javFavoriteRatingEnabled)
+      if (tab === 'list' && favoriteRatingEnabled) {
+        const favoriteRatingMin = favoriteRatingMinOverride ?? javFavoriteRatingMin
+        const favoriteRatingMax = favoriteRatingMaxOverride ?? javFavoriteRatingMax
+        sp.set('favorite_rating_min', String(favoriteRatingMin))
+        sp.set('favorite_rating_max', String(favoriteRatingMax))
       }
       const hasFavoriteGroupIdOverride = Object.prototype.hasOwnProperty.call(
         options,
@@ -1352,6 +1383,9 @@ export default function App() {
       javSeriesName,
       javPrefix,
       javSoloOnly,
+      javFavoriteRatingEnabled,
+      javFavoriteRatingMin,
+      javFavoriteRatingMax,
       javPage,
       javTempSort,
       javSearchTerm,
@@ -1387,6 +1421,9 @@ export default function App() {
         javSeriesName: '',
         javPrefix: '',
         javSoloOnly: false,
+        javFavoriteRatingEnabled: false,
+        javFavoriteRatingMin: 0.5,
+        javFavoriteRatingMax: 5,
         idolFavoriteGroupId: null,
         javTags: clean,
         javSearchTerm: '',
@@ -1471,6 +1508,11 @@ export default function App() {
     javTags,
     javStudioId,
     javSeriesId,
+    javPrefix,
+    javSoloOnly,
+    javFavoriteRatingEnabled,
+    javFavoriteRatingMin,
+    javFavoriteRatingMax,
     javFavoriteGroupId,
     javSort,
     javTempSort,
@@ -1697,6 +1739,7 @@ export default function App() {
       Boolean(javSeriesId) ||
       Boolean((javPrefix || '').trim()) ||
       Boolean(javSoloOnly) ||
+      Boolean(javFavoriteRatingEnabled) ||
       Boolean((javSearchTerm || '').trim()))
   useEffect(() => {
     setJavResolvedIdols({})
@@ -1749,6 +1792,7 @@ export default function App() {
     seriesId: null,
     prefix: '',
     soloOnly: false,
+    favoriteRatingEnabled: false,
     random: false,
     tempSort: '',
   })
@@ -1762,6 +1806,7 @@ export default function App() {
     seriesId: null,
     prefix: '',
     soloOnly: false,
+    favoriteRatingEnabled: false,
     search: '',
   })
   const handleJavRandomClick = useCallback(() => {
@@ -1780,6 +1825,9 @@ export default function App() {
       javSeriesName: '',
       javPrefix: '',
       javSoloOnly: false,
+      javFavoriteRatingEnabled: false,
+      javFavoriteRatingMin: 0.5,
+      javFavoriteRatingMax: 5,
       idolFavoriteGroupId: null,
       javSearchTerm: '',
       javPage: 1,
@@ -1871,6 +1919,14 @@ export default function App() {
         if (javSoloOnly) {
           parts.push(zh('单体作品', 'Solo works'))
         }
+        if (javFavoriteRatingEnabled) {
+          parts.push(
+            zh(
+              `喜爱度: ${javFavoriteRatingMin.toFixed(1)}–${javFavoriteRatingMax.toFixed(1)}`,
+              `Favorite rating: ${javFavoriteRatingMin.toFixed(1)}–${javFavoriteRatingMax.toFixed(1)}`
+            )
+          )
+        }
       }
       const searchLabel = (javSearchTerm || '').trim()
       if (searchLabel) parts.push(zh(`搜索: ${searchLabel}`, `Search: ${searchLabel}`))
@@ -1901,6 +1957,9 @@ export default function App() {
     javSeriesName,
     javPrefix,
     javSoloOnly,
+    javFavoriteRatingEnabled,
+    javFavoriteRatingMin,
+    javFavoriteRatingMax,
     javItems,
     javTagNameMap,
     javSearchTerm,
@@ -1927,6 +1986,7 @@ export default function App() {
     setJavHideIdolsInput(configFlag(config?.jav_hide_idols))
     setJavHideTagsInput(configFlag(config?.jav_hide_tags))
     setJavHideActionsInput(configFlag(config?.jav_hide_actions))
+    setJavFavoriteRatingShowFullInput(configFlag(config?.jav_favorite_rating_show_full, false))
     setJavWaterfallDefaultInput(configFlag(config?.jav_waterfall_default))
     setIdolPageSizeInput(idolPageSize)
     setIdolWaterfallDefaultInput(configFlag(config?.idol_waterfall_default))
@@ -1947,6 +2007,7 @@ export default function App() {
     config?.jav_hide_idols,
     config?.jav_hide_tags,
     config?.jav_hide_actions,
+    config?.jav_favorite_rating_show_full,
     config?.jav_waterfall_default,
     config?.idol_waterfall_default,
     config?.studio_waterfall_default,
@@ -1989,6 +2050,9 @@ export default function App() {
       javSeriesName: '',
       javPrefix: '',
       javSoloOnly: false,
+      javFavoriteRatingEnabled: false,
+      javFavoriteRatingMin: 0.5,
+      javFavoriteRatingMax: 5,
       javSearchTerm: (javSearchInput || '').trim(),
       javPage: 1,
       idolPage: 1,
@@ -2067,6 +2131,7 @@ export default function App() {
         jav_hide_idols: Boolean(javHideIdolsInput),
         jav_hide_tags: Boolean(javHideTagsInput),
         jav_hide_actions: Boolean(javHideActionsInput),
+        jav_favorite_rating_show_full: Boolean(javFavoriteRatingShowFullInput),
         jav_waterfall_default: waterfallDefaults.jav,
         idol_page_size: idolSize,
         idol_waterfall_default: waterfallDefaults.idol,
@@ -2138,6 +2203,7 @@ export default function App() {
       setJavHideIdolsInput(configFlag(config?.jav_hide_idols))
       setJavHideTagsInput(configFlag(config?.jav_hide_tags))
       setJavHideActionsInput(configFlag(config?.jav_hide_actions))
+      setJavFavoriteRatingShowFullInput(configFlag(config?.jav_favorite_rating_show_full, false))
       setJavWaterfallDefaultInput(configFlag(config?.jav_waterfall_default))
       setIdolPageSizeInput(idolPageSize)
       setIdolWaterfallDefaultInput(configFlag(config?.idol_waterfall_default))
@@ -2158,6 +2224,7 @@ export default function App() {
     config?.jav_hide_idols,
     config?.jav_hide_tags,
     config?.jav_hide_actions,
+    config?.jav_favorite_rating_show_full,
     config?.jav_waterfall_default,
     config?.idol_waterfall_default,
     config?.studio_waterfall_default,
@@ -2458,6 +2525,10 @@ export default function App() {
         javSeriesName: '',
         javPrefix: '',
         javSoloOnly: false,
+        javFavoriteRatingEnabled: false,
+        javFavoriteRatingMin: 0.5,
+        javFavoriteRatingMax: 5,
+        javFavoriteGroupId: null,
         idolFavoriteGroupId: null,
         javSearchTerm: '',
         javPage: 1,
@@ -2516,6 +2587,9 @@ export default function App() {
       javSeriesName: '',
       javPrefix: '',
       javSoloOnly: false,
+      javFavoriteRatingEnabled: false,
+      javFavoriteRatingMin: 0.5,
+      javFavoriteRatingMax: 5,
       idolFavoriteGroupId: null,
       javRandomMode: nextRandomMode,
       javRandomSeed: nextRandomSeed,
@@ -2562,6 +2636,9 @@ export default function App() {
       javSeriesId: null,
       javSeriesName: '',
       javSoloOnly: false,
+      javFavoriteRatingEnabled: false,
+      javFavoriteRatingMin: 0.5,
+      javFavoriteRatingMax: 5,
       idolFavoriteGroupId: null,
       javSearchTerm: '',
       javPage: 1,
@@ -2883,6 +2960,9 @@ export default function App() {
         javSeriesId: null,
         javSeriesName: '',
         javSoloOnly: false,
+        javFavoriteRatingEnabled: false,
+        javFavoriteRatingMin: 0.5,
+        javFavoriteRatingMax: 5,
         idolFavoriteGroupId: null,
         javSearchTerm: '',
         javPage: 1,
@@ -2914,6 +2994,9 @@ export default function App() {
       javSeriesName: '',
       javPrefix: '',
       javSoloOnly: false,
+      javFavoriteRatingEnabled: false,
+      javFavoriteRatingMin: 0.5,
+      javFavoriteRatingMax: 5,
       idolFavoriteGroupId: null,
       javSearchTerm: '',
       javPage: 1,
@@ -2943,6 +3026,9 @@ export default function App() {
       javSeriesName: String(series?.name || '').trim(),
       javPrefix: '',
       javSoloOnly: false,
+      javFavoriteRatingEnabled: false,
+      javFavoriteRatingMin: 0.5,
+      javFavoriteRatingMax: 5,
       idolFavoriteGroupId: null,
       javSearchTerm: '',
       javPage: 1,
@@ -2978,6 +3064,9 @@ export default function App() {
       javSeriesName: '',
       javPrefix: prefix,
       javSoloOnly: false,
+      javFavoriteRatingEnabled: false,
+      javFavoriteRatingMin: 0.5,
+      javFavoriteRatingMax: 5,
       javFavoriteGroupId: null,
       idolFavoriteGroupId: null,
       javSearchTerm: '',
@@ -3029,6 +3118,18 @@ export default function App() {
       const nextPrefix = String(query?.prefix || '')
         .trim()
         .toUpperCase()
+      const requestedFavoriteRatingMin = Number(query?.favoriteRatingMin)
+      const requestedFavoriteRatingMax = Number(query?.favoriteRatingMax)
+      const hasValidFavoriteRatingRange =
+        Number.isFinite(requestedFavoriteRatingMin) &&
+        Number.isFinite(requestedFavoriteRatingMax) &&
+        requestedFavoriteRatingMin >= 0.5 &&
+        requestedFavoriteRatingMax <= 5 &&
+        requestedFavoriteRatingMin <= requestedFavoriteRatingMax &&
+        Number.isInteger(requestedFavoriteRatingMin * 2) &&
+        Number.isInteger(requestedFavoriteRatingMax * 2)
+      const nextFavoriteRatingEnabled =
+        Boolean(query?.favoriteRatingEnabled) && hasValidFavoriteRatingRange
       saveScrollBeforeUrlStateChange()
       useStore.setState({
         viewMode: 'jav',
@@ -3047,6 +3148,9 @@ export default function App() {
         javSeriesName: nextSeriesName,
         javPrefix: nextPrefix,
         javSoloOnly: Boolean(query?.soloOnly),
+        javFavoriteRatingEnabled: nextFavoriteRatingEnabled,
+        javFavoriteRatingMin: nextFavoriteRatingEnabled ? requestedFavoriteRatingMin : 0.5,
+        javFavoriteRatingMax: nextFavoriteRatingEnabled ? requestedFavoriteRatingMax : 5,
         idolFavoriteGroupId: null,
         javPage: 1,
         idolPage: 1,
@@ -3236,6 +3340,7 @@ export default function App() {
             seriesId: null,
             prefix: item?.prefix || '',
             soloOnly: false,
+            favoriteRatingEnabled: false,
             favoriteGroupId: null,
             random: false,
             tempSort: '',
@@ -3486,6 +3591,9 @@ export default function App() {
         seriesName={javSeriesName}
         prefix={javPrefix}
         soloOnly={javSoloOnly}
+        favoriteRatingEnabled={javFavoriteRatingEnabled}
+        favoriteRatingMin={javFavoriteRatingMin}
+        favoriteRatingMax={javFavoriteRatingMax}
         directoryIds={javQueryDirectoryIds}
         preferChineseName={configFlag(config?.jav_idol_prefer_chinese_name)}
       />
@@ -3558,6 +3666,8 @@ export default function App() {
         onJavHideTagsChange={setJavHideTagsInput}
         javHideActionsInput={javHideActionsInput}
         onJavHideActionsChange={setJavHideActionsInput}
+        javFavoriteRatingShowFullInput={javFavoriteRatingShowFullInput}
+        onJavFavoriteRatingShowFullChange={setJavFavoriteRatingShowFullInput}
         javWaterfallDefaultInput={javWaterfallDefaultInput}
         onJavWaterfallDefaultChange={setJavWaterfallDefaultInput}
         idolPageSizeInput={idolPageSizeInput}
