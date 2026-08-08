@@ -3,13 +3,20 @@ import CloseOutlinedIcon from '@mui/icons-material/CloseOutlined'
 import DeleteOutlineIcon from '@mui/icons-material/DeleteOutline'
 import SearchIcon from '@mui/icons-material/Search'
 import { Slider } from '@mui/material'
-
-import { fetchJavIdols, fetchJavPrefixes, fetchJavSeries, fetchJavStudios } from '@/api'
-import { isChineseLocale, zh } from '@/utils/i18n'
+import { fetchJavFilterOptions } from '@/api'
+import { zh } from '@/utils/i18n'
 import { getErrorMessage } from '@/utils/errors'
 import { getIdolDisplayName } from '@/utils/javIdol'
 
-const JAV_FILTER_FETCH_LIMIT = 500
+const EMPTY_FILTER_OPTIONS = {
+  total: 0,
+  solo_count: 0,
+  prefixes: [],
+  idols: [],
+  tags: [],
+  studios: [],
+  series: [],
+}
 
 const cleanIds = (ids) =>
   Array.from(
@@ -28,31 +35,7 @@ const cleanFavoriteRating = (value, fallback) => {
   return Math.min(5, Math.max(0.5, Math.round(parsed * 2) / 2))
 }
 
-const studioListSeparator = () => (isChineseLocale() ? '、' : ', ')
 const unknownStudioOption = () => ({ id: 0, name: zh('未知片商', 'Unknown studio') })
-
-const mergeJavPrefixes = (items = []) => {
-  const byPrefix = new Map()
-  ;(items || []).forEach((item) => {
-    const prefix = cleanJavPrefix(item?.prefix)
-    if (!prefix) return
-    const existing = byPrefix.get(prefix) || {
-      prefix,
-      work_count: 0,
-      studioNames: new Set(),
-    }
-    existing.work_count += Number.isFinite(Number(item?.work_count)) ? Number(item.work_count) : 0
-    const studioName = String(item?.studio_name || '').trim()
-    if (studioName) existing.studioNames.add(studioName)
-    byPrefix.set(prefix, existing)
-  })
-
-  return Array.from(byPrefix.values()).map((item) => ({
-    prefix: item.prefix,
-    work_count: item.work_count,
-    studio_name: Array.from(item.studioNames).join(studioListSeparator()),
-  }))
-}
 
 function buildIdolSearchText(idol, preferChineseName) {
   const aliases = Array.isArray(idol?.aliases) ? idol.aliases : []
@@ -71,77 +54,6 @@ function buildIdolSearchText(idol, preferChineseName) {
 function buildStudioSearchText(studio) {
   const aliases = Array.isArray(studio?.aliases) ? studio.aliases : []
   return [studio?.name, ...aliases].filter(Boolean).join(' ')
-}
-
-const fetchAllJavIdols = async ({ directoryIds = [] } = {}) => {
-  const all = []
-  let offset = 0
-  let total = null
-
-  while (total == null || offset < total) {
-    const resp = await fetchJavIdols({
-      limit: JAV_FILTER_FETCH_LIMIT,
-      offset,
-      search: '',
-      directoryIds,
-    })
-    const items = Array.isArray(resp?.items) ? resp.items : []
-    all.push(...items)
-    total = Number.isFinite(Number(resp?.total)) ? Number(resp.total) : all.length
-    if (items.length === 0) break
-    offset += items.length
-  }
-
-  return all
-}
-
-const fetchAllJavStudios = async ({ directoryIds = [] } = {}) => {
-  const all = []
-  let offset = 0
-  let total = null
-
-  while (total == null || offset < total) {
-    const resp = await fetchJavStudios({
-      limit: JAV_FILTER_FETCH_LIMIT,
-      offset,
-      search: '',
-      directoryIds,
-    })
-    const items = Array.isArray(resp?.items) ? resp.items : []
-    all.push(...items)
-    total = Number.isFinite(Number(resp?.total)) ? Number(resp.total) : all.length
-    if (items.length === 0) break
-    offset += items.length
-  }
-
-  return all
-}
-
-const fetchAllJavSeries = async ({ directoryIds = [] } = {}) => {
-  const all = []
-  let offset = 0
-  let total = null
-
-  while (total == null || offset < total) {
-    const resp = await fetchJavSeries({
-      limit: JAV_FILTER_FETCH_LIMIT,
-      offset,
-      search: '',
-      directoryIds,
-    })
-    const items = Array.isArray(resp?.items) ? resp.items : []
-    all.push(...items)
-    total = Number.isFinite(Number(resp?.total)) ? Number(resp.total) : all.length
-    if (items.length === 0) break
-    offset += items.length
-  }
-
-  return all
-}
-
-const fetchAllJavPrefixes = async ({ directoryIds = [] } = {}) => {
-  const items = await fetchJavPrefixes({ directoryIds })
-  return Array.isArray(items) ? items : []
 }
 
 function SelectedIdolChip({ idol, preferChineseName, onRemove }) {
@@ -176,11 +88,12 @@ export default function JavQueryEditorModal({
   seriesName = '',
   prefix = '',
   soloOnly = false,
+  directoryIds = [],
+  preferChineseName = false,
+  favoriteGroupId = null,
   favoriteRatingEnabled = false,
   favoriteRatingMin = 0.5,
   favoriteRatingMax = 5,
-  directoryIds = [],
-  preferChineseName = false,
 }) {
   const prefixInputRef = useRef(null)
   const studioInputRef = useRef(null)
@@ -189,33 +102,25 @@ export default function JavQueryEditorModal({
   const [selectedPrefix, setSelectedPrefix] = useState(null)
   const [prefixSearch, setPrefixSearch] = useState('')
   const [prefixPickerOpen, setPrefixPickerOpen] = useState(false)
-  const [allPrefixes, setAllPrefixes] = useState([])
-  const [prefixLoading, setPrefixLoading] = useState(false)
-  const [prefixError, setPrefixError] = useState('')
   const [selectedIdolIds, setSelectedIdolIds] = useState([])
   const [idolSearch, setIdolSearch] = useState('')
   const [idolPickerOpen, setIdolPickerOpen] = useState(false)
-  const [allIdols, setAllIdols] = useState([])
-  const [idolLoading, setIdolLoading] = useState(false)
-  const [idolError, setIdolError] = useState('')
+  const [knownIdols, setKnownIdols] = useState([])
   const [selectedTagIds, setSelectedTagIds] = useState([])
   const [tagSearch, setTagSearch] = useState('')
   const [tagPickerOpen, setTagPickerOpen] = useState(false)
   const [selectedStudio, setSelectedStudio] = useState(null)
   const [studioSearch, setStudioSearch] = useState('')
   const [studioPickerOpen, setStudioPickerOpen] = useState(false)
-  const [allStudios, setAllStudios] = useState([])
-  const [studioLoading, setStudioLoading] = useState(false)
-  const [studioError, setStudioError] = useState('')
   const [selectedSeries, setSelectedSeries] = useState(null)
   const [selectedSoloOnly, setSelectedSoloOnly] = useState(false)
   const [selectedFavoriteRatingEnabled, setSelectedFavoriteRatingEnabled] = useState(false)
   const [selectedFavoriteRatingRange, setSelectedFavoriteRatingRange] = useState([0.5, 5])
   const [seriesSearch, setSeriesSearch] = useState('')
   const [seriesPickerOpen, setSeriesPickerOpen] = useState(false)
-  const [allSeries, setAllSeries] = useState([])
-  const [seriesLoading, setSeriesLoading] = useState(false)
-  const [seriesError, setSeriesError] = useState('')
+  const [filterOptions, setFilterOptions] = useState(EMPTY_FILTER_OPTIONS)
+  const [filterOptionsLoading, setFilterOptionsLoading] = useState(false)
+  const [filterOptionsError, setFilterOptionsError] = useState('')
 
   useEffect(() => {
     if (!open) return
@@ -230,11 +135,10 @@ export default function JavQueryEditorModal({
     setSelectedPrefix(cleanedPrefix ? { prefix: cleanedPrefix, work_count: 0 } : null)
     setPrefixSearch('')
     setPrefixPickerOpen(false)
-    setPrefixError('')
     setSelectedIdolIds(cleanIds(idolIds))
     setIdolSearch('')
     setIdolPickerOpen(false)
-    setIdolError('')
+    setKnownIdols(Array.isArray(idolOptions) ? idolOptions : [])
     setSelectedTagIds(cleanIds(tagIds))
     setTagSearch('')
     setTagPickerOpen(false)
@@ -250,7 +154,6 @@ export default function JavQueryEditorModal({
     )
     setStudioSearch('')
     setStudioPickerOpen(false)
-    setStudioError('')
     setSelectedSeries(
       Number.isFinite(parsedSeriesId) && parsedSeriesId > 0
         ? { id: parsedSeriesId, name: trimmedSeriesName || `#${parsedSeriesId}` }
@@ -267,12 +170,14 @@ export default function JavQueryEditorModal({
     )
     setSeriesSearch('')
     setSeriesPickerOpen(false)
-    setSeriesError('')
+    setFilterOptions(EMPTY_FILTER_OPTIONS)
+    setFilterOptionsError('')
   }, [
     favoriteRatingEnabled,
     favoriteRatingMax,
     favoriteRatingMin,
     idolIds,
+    idolOptions,
     open,
     prefix,
     search,
@@ -285,116 +190,90 @@ export default function JavQueryEditorModal({
   ])
 
   useEffect(() => {
-    if (!open) return
-
-    let cancelled = false
-    setIdolLoading(true)
-    setIdolError('')
-    fetchAllJavIdols({ directoryIds })
-      .then((items) => {
-        if (!cancelled) setAllIdols(items)
+    if (!open) return undefined
+    const controller = new AbortController()
+    setFilterOptionsLoading(true)
+    setFilterOptionsError('')
+    const timeout = window.setTimeout(() => {
+      fetchJavFilterOptions({
+        search: keyword.trim(),
+        idolIds: selectedIdolIds,
+        tagIds: selectedTagIds,
+        studioId: selectedStudio?.id ?? null,
+        seriesId: selectedSeries?.id ?? null,
+        prefix: cleanJavPrefix(selectedPrefix?.prefix),
+        soloOnly: selectedSoloOnly,
+        favoriteGroupId,
+        favoriteRatingEnabled: selectedFavoriteRatingEnabled,
+        favoriteRatingMin: selectedFavoriteRatingRange[0],
+        favoriteRatingMax: selectedFavoriteRatingRange[1],
+        directoryIds,
+        prefixSearch,
+        idolSearch,
+        tagSearch,
+        studioSearch,
+        seriesSearch,
+        signal: controller.signal,
       })
-      .catch((err) => {
-        if (!cancelled) {
-          setAllIdols([])
-          setIdolError(getErrorMessage(err))
-        }
-      })
-      .finally(() => {
-        if (!cancelled) setIdolLoading(false)
-      })
-
-    return () => {
-      cancelled = true
-    }
-  }, [directoryIds, open])
-
-  useEffect(() => {
-    if (open) return
-    setAllIdols([])
-    setAllPrefixes([])
-    setAllStudios([])
-    setAllSeries([])
-  }, [open])
-
-  useEffect(() => {
-    if (!open) return
-
-    let cancelled = false
-    setPrefixLoading(true)
-    setPrefixError('')
-    fetchAllJavPrefixes({ directoryIds })
-      .then((items) => {
-        if (!cancelled) setAllPrefixes(items)
-      })
-      .catch((err) => {
-        if (!cancelled) {
-          setAllPrefixes([])
-          setPrefixError(getErrorMessage(err))
-        }
-      })
-      .finally(() => {
-        if (!cancelled) setPrefixLoading(false)
-      })
-
-    return () => {
-      cancelled = true
-    }
-  }, [directoryIds, open])
-
-  useEffect(() => {
-    if (!open) return
-
-    let cancelled = false
-    setStudioLoading(true)
-    setStudioError('')
-    fetchAllJavStudios({ directoryIds })
-      .then((items) => {
-        if (!cancelled) setAllStudios(items)
-      })
-      .catch((err) => {
-        if (!cancelled) {
-          setAllStudios([])
-          setStudioError(getErrorMessage(err))
-        }
-      })
-      .finally(() => {
-        if (!cancelled) setStudioLoading(false)
-      })
+        .then((payload) => {
+          const next = {
+            total: Number(payload?.total) || 0,
+            solo_count: Number(payload?.solo_count) || 0,
+            prefixes: Array.isArray(payload?.prefixes) ? payload.prefixes : [],
+            idols: Array.isArray(payload?.idols) ? payload.idols : [],
+            tags: Array.isArray(payload?.tags) ? payload.tags : [],
+            studios: Array.isArray(payload?.studios) ? payload.studios : [],
+            series: Array.isArray(payload?.series) ? payload.series : [],
+          }
+          setFilterOptions(next)
+          setKnownIdols((current) => {
+            const byId = new Map()
+            ;[...(idolOptions || []), ...(current || []), ...next.idols].forEach((idol) => {
+              const id = Number(idol?.id)
+              if (Number.isFinite(id) && id > 0) byId.set(id, idol)
+            })
+            return Array.from(byId.values())
+          })
+        })
+        .catch((err) => {
+          if (err?.name !== 'AbortError') setFilterOptionsError(getErrorMessage(err))
+        })
+        .finally(() => {
+          if (!controller.signal.aborted) setFilterOptionsLoading(false)
+        })
+    }, 180)
 
     return () => {
-      cancelled = true
+      window.clearTimeout(timeout)
+      controller.abort()
     }
-  }, [directoryIds, open])
-
-  useEffect(() => {
-    if (!open) return
-
-    let cancelled = false
-    setSeriesLoading(true)
-    setSeriesError('')
-    fetchAllJavSeries({ directoryIds })
-      .then((items) => {
-        if (!cancelled) setAllSeries(items)
-      })
-      .catch((err) => {
-        if (!cancelled) {
-          setAllSeries([])
-          setSeriesError(getErrorMessage(err))
-        }
-      })
-      .finally(() => {
-        if (!cancelled) setSeriesLoading(false)
-      })
-
-    return () => {
-      cancelled = true
-    }
-  }, [directoryIds, open])
+  }, [
+    directoryIds,
+    favoriteGroupId,
+    idolOptions,
+    idolSearch,
+    keyword,
+    open,
+    prefixSearch,
+    selectedIdolIds,
+    selectedPrefix?.prefix,
+    selectedFavoriteRatingEnabled,
+    selectedFavoriteRatingRange,
+    selectedSeries?.id,
+    selectedSoloOnly,
+    selectedStudio?.id,
+    selectedTagIds,
+    seriesSearch,
+    studioSearch,
+    tagSearch,
+  ])
 
   const tagMap = useMemo(
-    () => new Map((tagOptions || []).map((tag) => [Number(tag.id), tag])),
-    [tagOptions]
+    () =>
+      new Map(
+        [...(tagOptions || []), ...(filterOptions.tags || [])].map((tag) => [Number(tag.id), tag])
+      ),
+    [filterOptions.tags, tagOptions]
   )
 
   const idolMap = useMemo(() => {
@@ -405,9 +284,10 @@ export default function JavQueryEditorModal({
       map.set(id, idol)
     }
     ;(idolOptions || []).forEach(addIdol)
-    ;(allIdols || []).forEach(addIdol)
+    ;(knownIdols || []).forEach(addIdol)
+    ;(filterOptions.idols || []).forEach(addIdol)
     return map
-  }, [allIdols, idolOptions])
+  }, [filterOptions.idols, idolOptions, knownIdols])
 
   const selectedIdols = useMemo(
     () => selectedIdolIds.map((id) => idolMap.get(id) || { id, name: `#${id}` }),
@@ -421,9 +301,11 @@ export default function JavQueryEditorModal({
 
   const filteredTags = useMemo(() => {
     const query = tagSearch.trim().toLowerCase()
-    const list = Array.isArray(tagOptions) ? tagOptions : []
+    const selected = new Set(selectedTagIds.map(Number))
+    const list = Array.isArray(filterOptions.tags) ? filterOptions.tags : []
     return [...list]
       .filter((tag) => {
+        if (selected.has(Number(tag?.id))) return false
         if (!query) return true
         return [tag?.name, tag?.original_name, tag?.simplified_name]
           .filter(Boolean)
@@ -438,17 +320,14 @@ export default function JavQueryEditorModal({
         return String(a?.name || '').localeCompare(String(b?.name || ''))
       })
       .slice(0, 120)
-  }, [tagOptions, tagSearch])
+  }, [filterOptions.tags, selectedTagIds, tagSearch])
 
   const filteredIdols = useMemo(() => {
     const query = idolSearch.trim().toLowerCase()
-    const merged = new Map(idolMap)
-    ;(idolOptions || []).forEach((idol) => {
-      const id = Number(idol?.id)
-      if (Number.isFinite(id) && id > 0 && !merged.has(id)) merged.set(id, idol)
-    })
-    return Array.from(merged.values())
+    const selected = new Set(selectedIdolIds.map(Number))
+    return [...(filterOptions.idols || [])]
       .filter((idol) => {
+        if (selected.has(Number(idol?.id))) return false
         if (!query) return true
         return buildIdolSearchText(idol, preferChineseName).toLowerCase().includes(query)
       })
@@ -460,19 +339,19 @@ export default function JavQueryEditorModal({
           getIdolDisplayName(b, preferChineseName)
         )
       })
-  }, [idolMap, idolOptions, idolSearch, preferChineseName])
-
-  const mergedPrefixes = useMemo(() => mergeJavPrefixes(allPrefixes), [allPrefixes])
+  }, [filterOptions.idols, idolSearch, preferChineseName, selectedIdolIds])
 
   const selectedPrefixDisplay = useMemo(() => {
     const prefixValue = cleanJavPrefix(selectedPrefix?.prefix)
     if (!prefixValue) return null
-    return mergedPrefixes.find((item) => item.prefix === prefixValue) || selectedPrefix
-  }, [mergedPrefixes, selectedPrefix])
+    return (
+      (filterOptions.prefixes || []).find((item) => item.prefix === prefixValue) || selectedPrefix
+    )
+  }, [filterOptions.prefixes, selectedPrefix])
 
   const filteredPrefixes = useMemo(() => {
     const query = prefixSearch.trim().toLowerCase()
-    return [...mergedPrefixes]
+    return [...(filterOptions.prefixes || [])]
       .filter((item) => {
         if (!query) return true
         return [item?.prefix, item?.studio_name]
@@ -488,11 +367,14 @@ export default function JavQueryEditorModal({
         return String(a?.prefix || '').localeCompare(String(b?.prefix || ''))
       })
       .slice(0, 200)
-  }, [mergedPrefixes, prefixSearch])
+  }, [filterOptions.prefixes, prefixSearch])
 
   const filteredStudios = useMemo(() => {
     const query = studioSearch.trim().toLowerCase()
-    return [unknownStudioOption(), ...allStudios]
+    return (filterOptions.studios || [])
+      .map((studio) =>
+        Number(studio?.id) === 0 ? { ...studio, name: unknownStudioOption().name } : studio
+      )
       .filter((studio) => {
         if (!query) return true
         return buildStudioSearchText(studio).toLowerCase().includes(query)
@@ -505,11 +387,11 @@ export default function JavQueryEditorModal({
         if (countB !== countA) return countB - countA
         return String(a?.name || '').localeCompare(String(b?.name || ''))
       })
-  }, [allStudios, studioSearch])
+  }, [filterOptions.studios, studioSearch])
 
   const filteredSeries = useMemo(() => {
     const query = seriesSearch.trim().toLowerCase()
-    return [...allSeries]
+    return [...(filterOptions.series || [])]
       .filter((series) => {
         if (!query) return true
         return String(series?.name || '')
@@ -522,7 +404,7 @@ export default function JavQueryEditorModal({
         if (countB !== countA) return countB - countA
         return String(a?.name || '').localeCompare(String(b?.name || ''))
       })
-  }, [allSeries, seriesSearch])
+  }, [filterOptions.series, seriesSearch])
 
   const toggleIdol = (id) => {
     const parsed = Number(id)
@@ -605,14 +487,32 @@ export default function JavQueryEditorModal({
   return (
     <div className="fixed inset-0 z-50 flex items-center justify-center bg-slate-900/60 px-4 backdrop-blur-sm">
       <div className="flex max-h-[88vh] w-full max-w-3xl flex-col overflow-hidden rounded-xl bg-white shadow-2xl ring-1 ring-slate-200">
-        <div className="flex items-center justify-between border-b border-slate-200 bg-slate-50 px-5 py-4">
-          <h2 className="text-base font-semibold text-slate-900">
+        <div className="flex items-center gap-4 border-b border-slate-200 bg-slate-50 px-5 py-4">
+          <h2 className="shrink-0 text-base font-semibold text-slate-900">
             {zh('编辑 JAV 查询条件', 'Edit JAV Filters')}
           </h2>
+          <div
+            className={`ml-auto min-w-0 rounded-lg border px-3.5 py-2 text-[13px] ${
+              filterOptionsError
+                ? 'border-rose-200 bg-rose-50 text-rose-700'
+                : 'border-blue-100 bg-blue-50 text-blue-700'
+            }`}
+          >
+            <div className="truncate">
+              {filterOptionsError
+                ? filterOptionsError
+                : filterOptionsLoading
+                  ? zh('正在更新可添加条件…', 'Updating available filters…')
+                  : zh(
+                      `当前条件匹配 ${filterOptions.total} 部，选项右侧数字表示添加该选项后剩余作品数。`,
+                      `${filterOptions.total} works match. The number to the right of an option shows how many works remain after adding it.`
+                    )}
+            </div>
+          </div>
           <button
             type="button"
             onClick={onClose}
-            className="inline-flex h-8 w-8 items-center justify-center rounded text-slate-500 hover:bg-slate-200"
+            className="inline-flex h-8 w-8 shrink-0 items-center justify-center rounded text-slate-500 hover:bg-slate-200"
             aria-label={zh('关闭查询条件编辑', 'Close query editor')}
           >
             <CloseOutlinedIcon fontSize="small" />
@@ -620,7 +520,7 @@ export default function JavQueryEditorModal({
         </div>
 
         <div className="min-h-0 flex-1 space-y-5 overflow-y-auto px-5 py-4">
-          <section className="space-y-2">
+          <section className="min-w-0 space-y-2">
             <div className="text-sm font-semibold text-slate-800">
               {zh('作品类型', 'Work Type')}
             </div>
@@ -631,11 +531,16 @@ export default function JavQueryEditorModal({
                 onChange={(event) => setSelectedSoloOnly(event.target.checked)}
                 className="h-4 w-4 rounded border-slate-300 text-blue-600"
               />
-              <span>{zh('只看单体作品', 'Solo works only')}</span>
+              <span className="min-w-0 flex-1">{zh('只看单体作品', 'Solo works only')}</span>
+              {!selectedSoloOnly ? (
+                <span className="shrink-0 text-xs text-slate-400">
+                  {zh(`${filterOptions.solo_count} 部`, `${filterOptions.solo_count} works`)}
+                </span>
+              ) : null}
             </label>
           </section>
 
-          <section className="space-y-2">
+          <section className="min-w-0 space-y-2">
             <div className="text-sm font-semibold text-slate-800">
               {zh('喜爱度', 'Favorite Rating')}
             </div>
@@ -684,455 +589,470 @@ export default function JavQueryEditorModal({
             ) : null}
           </section>
 
-          <section className="space-y-2">
-            <label className="text-sm font-semibold text-slate-800" htmlFor="jav-query-keyword">
-              {zh('关键词', 'Keyword')}
-            </label>
-            <div className="flex items-center gap-2 rounded border border-slate-200 bg-white px-3 py-2">
-              <SearchIcon fontSize="small" className="text-slate-400" />
-              <input
-                id="jav-query-keyword"
-                value={keyword}
-                onChange={(event) => setKeyword(event.target.value)}
-                className="min-w-0 flex-1 border-0 text-sm outline-none"
-                placeholder={zh('番号或标题关键词', 'Code or title keyword')}
-              />
-              {keyword ? (
-                <button
-                  type="button"
-                  onClick={() => setKeyword('')}
-                  className="inline-flex h-7 w-7 items-center justify-center rounded text-slate-400 hover:bg-slate-100"
-                  aria-label={zh('清空关键词', 'Clear keyword')}
-                >
-                  <CloseOutlinedIcon fontSize="inherit" />
-                </button>
-              ) : null}
-            </div>
-          </section>
-
-          <section className="space-y-2">
-            <div className="text-sm font-semibold text-slate-800">{zh('番号', 'Code')}</div>
-            {selectedPrefixDisplay ? (
-              <div className="flex items-center justify-between gap-2 rounded border border-cyan-100 bg-cyan-50 px-3 py-2 text-sm text-cyan-800">
-                <span className="min-w-0 flex-1 truncate font-medium">
-                  {selectedPrefixDisplay.prefix}
-                </span>
-                {Number.isFinite(selectedPrefixDisplay?.work_count) &&
-                selectedPrefixDisplay.work_count > 0 ? (
-                  <span className="shrink-0 text-xs text-cyan-600">
-                    {zh(
-                      `${selectedPrefixDisplay.work_count} 部`,
-                      `${selectedPrefixDisplay.work_count} works`
-                    )}
-                  </span>
-                ) : null}
-                <button
-                  type="button"
-                  onClick={() => {
-                    setSelectedPrefix(null)
-                    setPrefixSearch('')
-                  }}
-                  className="inline-flex h-7 w-7 items-center justify-center rounded hover:bg-cyan-100"
-                  aria-label={zh('删除番号条件', 'Remove code filter')}
-                >
-                  <DeleteOutlineIcon fontSize="small" />
-                </button>
-              </div>
-            ) : null}
-            <div onBlur={closePickerOnBlur(setPrefixPickerOpen)}>
-              <input
-                ref={prefixInputRef}
-                id="jav-query-prefix"
-                value={prefixSearch}
-                onFocus={() => setPrefixPickerOpen(true)}
-                onChange={(event) => {
-                  setPrefixSearch(cleanJavPrefix(event.target.value))
-                  setPrefixPickerOpen(true)
-                  setSelectedPrefix(null)
-                }}
-                className="w-full rounded border border-slate-200 px-3 py-2 text-sm uppercase outline-none focus:border-blue-500 focus:ring-1 focus:ring-blue-500"
-                placeholder={zh('搜索并选择番号', 'Search and choose a code')}
-              />
-              {prefixPickerOpen ? (
-                <div className="mt-1 max-h-52 overflow-y-auto rounded border border-slate-200 bg-white p-1 shadow-lg">
-                  {prefixLoading ? (
-                    <div className="px-2 py-3 text-sm text-slate-500">
-                      {zh('加载中…', 'Loading...')}
-                    </div>
-                  ) : prefixError ? (
-                    <div className="px-2 py-3 text-sm text-rose-600">{prefixError}</div>
-                  ) : filteredPrefixes.length > 0 ? (
-                    filteredPrefixes.map((item) => {
-                      const checked = selectedPrefix?.prefix === item.prefix
-                      return (
-                        <button
-                          key={item.prefix}
-                          type="button"
-                          role="radio"
-                          aria-checked={checked}
-                          onMouseDown={(event) => event.preventDefault()}
-                          onClick={() => {
-                            setSelectedPrefix(item)
-                            setPrefixSearch('')
-                            setPrefixPickerOpen(false)
-                            prefixInputRef.current?.blur()
-                          }}
-                          className="flex w-full cursor-pointer items-center gap-2 rounded px-2 py-1.5 text-left text-sm hover:bg-slate-50"
-                        >
-                          <input
-                            type="radio"
-                            checked={checked}
-                            readOnly
-                            tabIndex={-1}
-                            className="pointer-events-none h-4 w-4 shrink-0 border-slate-300 text-blue-600"
-                            aria-hidden="true"
-                          />
-                          <span className="min-w-0 flex-1 truncate font-medium text-slate-800">
-                            {item.prefix}
-                          </span>
-                          {item.studio_name ? (
-                            <span className="min-w-0 max-w-[45%] truncate text-xs text-slate-400">
-                              {item.studio_name}
-                            </span>
-                          ) : null}
-                          <span className="shrink-0 text-xs text-slate-400">
-                            {zh(`${item.work_count || 0} 部`, `${item.work_count || 0} works`)}
-                          </span>
-                        </button>
-                      )
-                    })
-                  ) : (
-                    <div className="px-2 py-3 text-sm text-slate-500">
-                      {zh('没有匹配番号', 'No matching codes')}
-                    </div>
-                  )}
-                </div>
-              ) : null}
-            </div>
-          </section>
-
-          <section className="space-y-2">
-            <div className="text-sm font-semibold text-slate-800">{zh('女优', 'Idols')}</div>
-            {selectedIdols.length > 0 ? (
-              <div className="flex flex-wrap gap-2">
-                {selectedIdols.map((idol) => (
-                  <SelectedIdolChip
-                    key={idol.id}
-                    idol={idol}
-                    preferChineseName={preferChineseName}
-                    onRemove={() => removeIdol(idol.id)}
-                  />
-                ))}
-              </div>
-            ) : null}
-            <div onBlur={closePickerOnBlur(setIdolPickerOpen)}>
-              <input
-                value={idolSearch}
-                onFocus={() => setIdolPickerOpen(true)}
-                onChange={(event) => {
-                  setIdolSearch(event.target.value)
-                  setIdolPickerOpen(true)
-                }}
-                className="w-full rounded border border-slate-200 px-3 py-2 text-sm outline-none focus:border-blue-500 focus:ring-1 focus:ring-blue-500"
-                placeholder={zh('搜索女优', 'Search idols')}
-              />
-              {idolPickerOpen ? (
-                <div className="mt-1 max-h-52 overflow-y-auto rounded border border-slate-200 bg-white p-1 shadow-lg">
-                  {idolLoading ? (
-                    <div className="px-2 py-3 text-sm text-slate-500">
-                      {zh('加载中…', 'Loading...')}
-                    </div>
-                  ) : idolError ? (
-                    <div className="px-2 py-3 text-sm text-rose-600">{idolError}</div>
-                  ) : filteredIdols.length > 0 ? (
-                    filteredIdols.map((idol) => {
-                      const checked = selectedIdolIds.includes(Number(idol.id))
-                      return (
-                        <button
-                          type="button"
-                          role="checkbox"
-                          aria-checked={checked}
-                          key={idol.id}
-                          onMouseDown={(event) => event.preventDefault()}
-                          onClick={() => toggleIdol(idol.id)}
-                          className="flex w-full cursor-pointer items-center gap-2 rounded px-2 py-1.5 text-left text-sm hover:bg-slate-50"
-                        >
-                          <input
-                            type="checkbox"
-                            checked={checked}
-                            readOnly
-                            tabIndex={-1}
-                            className="pointer-events-none h-4 w-4 shrink-0 rounded border-slate-300 text-blue-600"
-                            aria-hidden="true"
-                          />
-                          <span className="min-w-0 flex-1 truncate text-slate-800">
-                            {getIdolDisplayName(idol, preferChineseName)}
-                          </span>
-                          {Number.isFinite(idol?.work_count) ? (
-                            <span className="shrink-0 text-xs text-slate-400">
-                              {zh(`${idol.work_count} 部`, `${idol.work_count} works`)}
-                            </span>
-                          ) : null}
-                        </button>
-                      )
-                    })
-                  ) : (
-                    <div className="px-2 py-3 text-sm text-slate-500">
-                      {zh('没有匹配女优', 'No matching idols')}
-                    </div>
-                  )}
-                </div>
-              ) : null}
-            </div>
-          </section>
-
-          <section className="space-y-2">
-            <div className="text-sm font-semibold text-slate-800">{zh('标签', 'Tags')}</div>
-            {selectedTags.length > 0 ? (
-              <div className="flex flex-wrap gap-2">
-                {selectedTags.map((tag) => (
-                  <span
-                    key={`${tag.id}-${tag.provider || 0}`}
-                    className="inline-flex max-w-full items-center gap-1 rounded-full bg-emerald-50 px-2.5 py-1 text-xs font-medium text-emerald-700"
+          <div className="grid grid-cols-2 items-start gap-x-5 gap-y-4">
+            <section className="min-w-0 space-y-2">
+              <label
+                className="block text-sm font-semibold leading-5 text-slate-800"
+                htmlFor="jav-query-keyword"
+              >
+                {zh('关键词', 'Keyword')}
+              </label>
+              <div className="flex items-center gap-2 rounded border border-slate-200 bg-white px-3 py-2">
+                <SearchIcon fontSize="small" className="text-slate-400" />
+                <input
+                  id="jav-query-keyword"
+                  value={keyword}
+                  onChange={(event) => setKeyword(event.target.value)}
+                  className="min-w-0 flex-1 border-0 text-sm outline-none"
+                  placeholder={zh('番号或标题关键词', 'Code or title keyword')}
+                />
+                {keyword ? (
+                  <button
+                    type="button"
+                    onClick={() => setKeyword('')}
+                    className="inline-flex h-7 w-7 items-center justify-center rounded text-slate-400 hover:bg-slate-100"
+                    aria-label={zh('清空关键词', 'Clear keyword')}
                   >
-                    <span className="truncate">{tag.name}</span>
-                    <button
-                      type="button"
-                      onClick={() => removeTag(tag.id)}
-                      className="inline-flex h-4 w-4 items-center justify-center rounded-full hover:bg-emerald-100"
-                      aria-label={zh(`删除标签 ${tag.name}`, `Remove tag ${tag.name}`)}
-                    >
-                      <CloseOutlinedIcon fontSize="inherit" />
-                    </button>
-                  </span>
-                ))}
+                    <CloseOutlinedIcon fontSize="inherit" />
+                  </button>
+                ) : null}
               </div>
-            ) : null}
-            <div onBlur={closePickerOnBlur(setTagPickerOpen)}>
-              <input
-                value={tagSearch}
-                onFocus={() => setTagPickerOpen(true)}
-                onChange={(event) => {
-                  setTagSearch(event.target.value)
-                  setTagPickerOpen(true)
-                }}
-                className="w-full rounded border border-slate-200 px-3 py-2 text-sm outline-none focus:border-blue-500 focus:ring-1 focus:ring-blue-500"
-                placeholder={zh('搜索标签', 'Search tags')}
-              />
-              {tagPickerOpen ? (
-                <div className="mt-1 max-h-52 overflow-y-auto rounded border border-slate-200 bg-white p-1 shadow-lg">
-                  {filteredTags.length > 0 ? (
-                    filteredTags.map((tag) => {
-                      const checked = selectedTagIds.includes(Number(tag.id))
-                      return (
-                        <button
-                          type="button"
-                          role="checkbox"
-                          aria-checked={checked}
-                          key={`${tag.id}-${tag.provider || 0}`}
-                          onMouseDown={(event) => event.preventDefault()}
-                          onClick={() => toggleTag(tag.id)}
-                          className="flex w-full cursor-pointer items-center gap-2 rounded px-2 py-1.5 text-left text-sm hover:bg-slate-50"
-                        >
-                          <input
-                            type="checkbox"
-                            checked={checked}
-                            readOnly
-                            tabIndex={-1}
-                            className="pointer-events-none h-4 w-4 shrink-0 rounded border-slate-300 text-blue-600"
-                            aria-hidden="true"
-                          />
-                          <span className="min-w-0 flex-1 truncate text-slate-800">{tag.name}</span>
-                          {Number.isFinite(tag?.count) ? (
-                            <span className="shrink-0 text-xs text-slate-400">
-                              {zh(`${tag.count} 部`, `${tag.count} works`)}
-                            </span>
-                          ) : null}
-                        </button>
-                      )
-                    })
-                  ) : (
-                    <div className="px-2 py-3 text-sm text-slate-500">
-                      {zh('没有匹配标签', 'No matching tags')}
-                    </div>
-                  )}
+            </section>
+
+            <section className="min-w-0 space-y-2">
+              <div className="text-sm font-semibold leading-5 text-slate-800">
+                {zh('番号', 'Code')}
+              </div>
+              {selectedPrefixDisplay ? (
+                <div className="flex items-center justify-between gap-2 rounded border border-cyan-100 bg-cyan-50 px-3 py-2 text-sm text-cyan-800">
+                  <span className="min-w-0 flex-1 truncate font-medium">
+                    {selectedPrefixDisplay.prefix}
+                  </span>
+                  {Number.isFinite(selectedPrefixDisplay?.work_count) &&
+                  selectedPrefixDisplay.work_count > 0 ? (
+                    <span className="shrink-0 text-xs text-cyan-600">
+                      {zh(
+                        `${selectedPrefixDisplay.work_count} 部`,
+                        `${selectedPrefixDisplay.work_count} works`
+                      )}
+                    </span>
+                  ) : null}
+                  <button
+                    type="button"
+                    onClick={() => {
+                      setSelectedPrefix(null)
+                      setPrefixSearch('')
+                    }}
+                    className="inline-flex h-7 w-7 items-center justify-center rounded hover:bg-cyan-100"
+                    aria-label={zh('删除番号条件', 'Remove code filter')}
+                  >
+                    <DeleteOutlineIcon fontSize="small" />
+                  </button>
                 </div>
               ) : null}
-            </div>
-          </section>
-
-          <section className="space-y-2">
-            <div className="text-sm font-semibold text-slate-800">{zh('片商', 'Studio')}</div>
-            {selectedStudio ? (
-              <div className="flex items-center justify-between gap-2 rounded border border-violet-100 bg-violet-50 px-3 py-2 text-sm text-violet-800">
-                <span className="min-w-0 truncate font-medium">{selectedStudio.name}</span>
-                <button
-                  type="button"
-                  onClick={() => {
-                    setSelectedStudio(null)
-                    setStudioSearch('')
+              <div
+                className={selectedPrefixDisplay ? 'hidden' : ''}
+                onBlur={closePickerOnBlur(setPrefixPickerOpen)}
+              >
+                <input
+                  ref={prefixInputRef}
+                  id="jav-query-prefix"
+                  value={prefixSearch}
+                  onFocus={() => setPrefixPickerOpen(true)}
+                  onChange={(event) => {
+                    setPrefixSearch(cleanJavPrefix(event.target.value))
+                    setPrefixPickerOpen(true)
+                    setSelectedPrefix(null)
                   }}
-                  className="inline-flex h-7 w-7 items-center justify-center rounded hover:bg-violet-100"
-                  aria-label={zh('删除片商条件', 'Remove studio filter')}
-                >
-                  <DeleteOutlineIcon fontSize="small" />
-                </button>
+                  className="w-full rounded border border-slate-200 px-3 py-2 text-sm uppercase outline-none focus:border-blue-500 focus:ring-1 focus:ring-blue-500"
+                  placeholder={zh('搜索并选择番号', 'Search and choose a code')}
+                />
+                {prefixPickerOpen ? (
+                  <div className="mt-1 max-h-52 overflow-y-auto rounded border border-slate-200 bg-white p-1 shadow-lg">
+                    {filterOptionsLoading ? (
+                      <div className="px-2 py-3 text-sm text-slate-500">
+                        {zh('加载中…', 'Loading...')}
+                      </div>
+                    ) : filteredPrefixes.length > 0 ? (
+                      filteredPrefixes.map((item) => {
+                        const checked = selectedPrefix?.prefix === item.prefix
+                        return (
+                          <button
+                            key={item.prefix}
+                            type="button"
+                            role="radio"
+                            aria-checked={checked}
+                            onMouseDown={(event) => event.preventDefault()}
+                            onClick={() => {
+                              setSelectedPrefix(item)
+                              setPrefixSearch('')
+                              setPrefixPickerOpen(false)
+                              prefixInputRef.current?.blur()
+                            }}
+                            className="flex w-full cursor-pointer items-center gap-2 rounded px-2 py-1.5 text-left text-sm hover:bg-slate-50"
+                          >
+                            <input
+                              type="radio"
+                              checked={checked}
+                              readOnly
+                              tabIndex={-1}
+                              className="pointer-events-none h-4 w-4 shrink-0 border-slate-300 text-blue-600"
+                              aria-hidden="true"
+                            />
+                            <span className="min-w-0 flex-1 truncate font-medium text-slate-800">
+                              {item.prefix}
+                            </span>
+                            {item.studio_name ? (
+                              <span className="min-w-0 max-w-[45%] truncate text-xs text-slate-400">
+                                {item.studio_name}
+                              </span>
+                            ) : null}
+                            <span className="shrink-0 text-xs text-slate-400">
+                              {zh(`${item.work_count || 0} 部`, `${item.work_count || 0} works`)}
+                            </span>
+                          </button>
+                        )
+                      })
+                    ) : (
+                      <div className="px-2 py-3 text-sm text-slate-500">
+                        {zh('没有匹配番号', 'No matching codes')}
+                      </div>
+                    )}
+                  </div>
+                ) : null}
               </div>
-            ) : null}
-            <div onBlur={closePickerOnBlur(setStudioPickerOpen)}>
-              <input
-                ref={studioInputRef}
-                value={studioSearch}
-                onFocus={() => setStudioPickerOpen(true)}
-                onChange={(event) => {
-                  setStudioSearch(event.target.value)
-                  setStudioPickerOpen(true)
-                  setSelectedStudio(null)
-                }}
-                className="w-full rounded border border-slate-200 px-3 py-2 text-sm outline-none focus:border-blue-500 focus:ring-1 focus:ring-blue-500"
-                placeholder={zh('搜索并选择片商', 'Search and choose a studio')}
-              />
-              {studioPickerOpen ? (
-                <div className="mt-1 max-h-52 overflow-y-auto rounded border border-slate-200 bg-white p-1 shadow-lg">
-                  {studioLoading ? (
-                    <div className="px-2 py-3 text-sm text-slate-500">
-                      {zh('加载中…', 'Loading...')}
-                    </div>
-                  ) : studioError ? (
-                    <div className="px-2 py-3 text-sm text-rose-600">{studioError}</div>
-                  ) : filteredStudios.length > 0 ? (
-                    filteredStudios.map((studio) => {
-                      const checked = Number(selectedStudio?.id) === Number(studio.id)
-                      return (
-                        <button
-                          key={studio.id}
-                          type="button"
-                          role="radio"
-                          aria-checked={checked}
-                          onMouseDown={(event) => event.preventDefault()}
-                          onClick={() => {
-                            setSelectedStudio({ id: studio.id, name: studio.name })
-                            setStudioSearch('')
-                            setStudioPickerOpen(false)
-                            studioInputRef.current?.blur()
-                          }}
-                          className="flex w-full cursor-pointer items-center gap-2 rounded px-2 py-1.5 text-left text-sm hover:bg-slate-50"
-                        >
-                          <input
-                            type="radio"
-                            checked={checked}
-                            readOnly
-                            tabIndex={-1}
-                            className="pointer-events-none h-4 w-4 shrink-0 border-slate-300 text-blue-600"
-                            aria-hidden="true"
-                          />
-                          <span className="min-w-0 flex-1 truncate text-slate-800">
-                            {studio.name}
-                          </span>
-                          {Number(studio.id) === 0 ? null : (
+            </section>
+
+            <section className="min-w-0 space-y-2">
+              <div className="text-sm font-semibold text-slate-800">{zh('女优', 'Idols')}</div>
+              {selectedIdols.length > 0 ? (
+                <div className="flex flex-wrap gap-2">
+                  {selectedIdols.map((idol) => (
+                    <SelectedIdolChip
+                      key={idol.id}
+                      idol={idol}
+                      preferChineseName={preferChineseName}
+                      onRemove={() => removeIdol(idol.id)}
+                    />
+                  ))}
+                </div>
+              ) : null}
+              <div onBlur={closePickerOnBlur(setIdolPickerOpen)}>
+                <input
+                  value={idolSearch}
+                  onFocus={() => setIdolPickerOpen(true)}
+                  onChange={(event) => {
+                    setIdolSearch(event.target.value)
+                    setIdolPickerOpen(true)
+                  }}
+                  className="w-full rounded border border-slate-200 px-3 py-2 text-sm outline-none focus:border-blue-500 focus:ring-1 focus:ring-blue-500"
+                  placeholder={zh('搜索女优', 'Search idols')}
+                />
+                {idolPickerOpen ? (
+                  <div className="mt-1 max-h-52 overflow-y-auto rounded border border-slate-200 bg-white p-1 shadow-lg">
+                    {filterOptionsLoading ? (
+                      <div className="px-2 py-3 text-sm text-slate-500">
+                        {zh('加载中…', 'Loading...')}
+                      </div>
+                    ) : filteredIdols.length > 0 ? (
+                      filteredIdols.map((idol) => {
+                        const checked = selectedIdolIds.includes(Number(idol.id))
+                        return (
+                          <button
+                            type="button"
+                            role="checkbox"
+                            aria-checked={checked}
+                            key={idol.id}
+                            onMouseDown={(event) => event.preventDefault()}
+                            onClick={() => toggleIdol(idol.id)}
+                            className="flex w-full cursor-pointer items-center gap-2 rounded px-2 py-1.5 text-left text-sm hover:bg-slate-50"
+                          >
+                            <input
+                              type="checkbox"
+                              checked={checked}
+                              readOnly
+                              tabIndex={-1}
+                              className="pointer-events-none h-4 w-4 shrink-0 rounded border-slate-300 text-blue-600"
+                              aria-hidden="true"
+                            />
+                            <span className="min-w-0 flex-1 truncate text-slate-800">
+                              {getIdolDisplayName(idol, preferChineseName)}
+                            </span>
+                            {Number.isFinite(idol?.work_count) ? (
+                              <span className="shrink-0 text-xs text-slate-400">
+                                {zh(`${idol.work_count} 部`, `${idol.work_count} works`)}
+                              </span>
+                            ) : null}
+                          </button>
+                        )
+                      })
+                    ) : (
+                      <div className="px-2 py-3 text-sm text-slate-500">
+                        {zh('没有匹配女优', 'No matching idols')}
+                      </div>
+                    )}
+                  </div>
+                ) : null}
+              </div>
+            </section>
+
+            <section className="min-w-0 space-y-2">
+              <div className="text-sm font-semibold text-slate-800">{zh('标签', 'Tags')}</div>
+              {selectedTags.length > 0 ? (
+                <div className="flex flex-wrap gap-2">
+                  {selectedTags.map((tag) => (
+                    <span
+                      key={`${tag.id}-${tag.provider || 0}`}
+                      className="inline-flex max-w-full items-center gap-1 rounded-full bg-emerald-50 px-2.5 py-1 text-xs font-medium text-emerald-700"
+                    >
+                      <span className="truncate">{tag.name}</span>
+                      <button
+                        type="button"
+                        onClick={() => removeTag(tag.id)}
+                        className="inline-flex h-4 w-4 items-center justify-center rounded-full hover:bg-emerald-100"
+                        aria-label={zh(`删除标签 ${tag.name}`, `Remove tag ${tag.name}`)}
+                      >
+                        <CloseOutlinedIcon fontSize="inherit" />
+                      </button>
+                    </span>
+                  ))}
+                </div>
+              ) : null}
+              <div onBlur={closePickerOnBlur(setTagPickerOpen)}>
+                <input
+                  value={tagSearch}
+                  onFocus={() => setTagPickerOpen(true)}
+                  onChange={(event) => {
+                    setTagSearch(event.target.value)
+                    setTagPickerOpen(true)
+                  }}
+                  className="w-full rounded border border-slate-200 px-3 py-2 text-sm outline-none focus:border-blue-500 focus:ring-1 focus:ring-blue-500"
+                  placeholder={zh('搜索标签', 'Search tags')}
+                />
+                {tagPickerOpen ? (
+                  <div className="mt-1 max-h-52 overflow-y-auto rounded border border-slate-200 bg-white p-1 shadow-lg">
+                    {filterOptionsLoading ? (
+                      <div className="px-2 py-3 text-sm text-slate-500">
+                        {zh('加载中…', 'Loading...')}
+                      </div>
+                    ) : filteredTags.length > 0 ? (
+                      filteredTags.map((tag) => {
+                        const checked = selectedTagIds.includes(Number(tag.id))
+                        return (
+                          <button
+                            type="button"
+                            role="checkbox"
+                            aria-checked={checked}
+                            key={`${tag.id}-${tag.provider || 0}`}
+                            onMouseDown={(event) => event.preventDefault()}
+                            onClick={() => toggleTag(tag.id)}
+                            className="flex w-full cursor-pointer items-center gap-2 rounded px-2 py-1.5 text-left text-sm hover:bg-slate-50"
+                          >
+                            <input
+                              type="checkbox"
+                              checked={checked}
+                              readOnly
+                              tabIndex={-1}
+                              className="pointer-events-none h-4 w-4 shrink-0 rounded border-slate-300 text-blue-600"
+                              aria-hidden="true"
+                            />
+                            <span className="min-w-0 flex-1 truncate text-slate-800">
+                              {tag.name}
+                            </span>
+                            {Number.isFinite(tag?.count) ? (
+                              <span className="shrink-0 text-xs text-slate-400">
+                                {zh(`${tag.count} 部`, `${tag.count} works`)}
+                              </span>
+                            ) : null}
+                          </button>
+                        )
+                      })
+                    ) : (
+                      <div className="px-2 py-3 text-sm text-slate-500">
+                        {zh('没有匹配标签', 'No matching tags')}
+                      </div>
+                    )}
+                  </div>
+                ) : null}
+              </div>
+            </section>
+
+            <section className="min-w-0 space-y-2">
+              <div className="text-sm font-semibold text-slate-800">{zh('片商', 'Studio')}</div>
+              {selectedStudio ? (
+                <div className="flex items-center justify-between gap-2 rounded border border-violet-100 bg-violet-50 px-3 py-2 text-sm text-violet-800">
+                  <span className="min-w-0 truncate font-medium">{selectedStudio.name}</span>
+                  <button
+                    type="button"
+                    onClick={() => {
+                      setSelectedStudio(null)
+                      setStudioSearch('')
+                    }}
+                    className="inline-flex h-7 w-7 items-center justify-center rounded hover:bg-violet-100"
+                    aria-label={zh('删除片商条件', 'Remove studio filter')}
+                  >
+                    <DeleteOutlineIcon fontSize="small" />
+                  </button>
+                </div>
+              ) : null}
+              <div
+                className={selectedStudio ? 'hidden' : ''}
+                onBlur={closePickerOnBlur(setStudioPickerOpen)}
+              >
+                <input
+                  ref={studioInputRef}
+                  value={studioSearch}
+                  onFocus={() => setStudioPickerOpen(true)}
+                  onChange={(event) => {
+                    setStudioSearch(event.target.value)
+                    setStudioPickerOpen(true)
+                    setSelectedStudio(null)
+                  }}
+                  className="w-full rounded border border-slate-200 px-3 py-2 text-sm outline-none focus:border-blue-500 focus:ring-1 focus:ring-blue-500"
+                  placeholder={zh('搜索并选择片商', 'Search and choose a studio')}
+                />
+                {studioPickerOpen ? (
+                  <div className="mt-1 max-h-52 overflow-y-auto rounded border border-slate-200 bg-white p-1 shadow-lg">
+                    {filterOptionsLoading ? (
+                      <div className="px-2 py-3 text-sm text-slate-500">
+                        {zh('加载中…', 'Loading...')}
+                      </div>
+                    ) : filteredStudios.length > 0 ? (
+                      filteredStudios.map((studio) => {
+                        const checked = Number(selectedStudio?.id) === Number(studio.id)
+                        return (
+                          <button
+                            key={studio.id}
+                            type="button"
+                            role="radio"
+                            aria-checked={checked}
+                            onMouseDown={(event) => event.preventDefault()}
+                            onClick={() => {
+                              setSelectedStudio({ id: studio.id, name: studio.name })
+                              setStudioSearch('')
+                              setStudioPickerOpen(false)
+                              studioInputRef.current?.blur()
+                            }}
+                            className="flex w-full cursor-pointer items-center gap-2 rounded px-2 py-1.5 text-left text-sm hover:bg-slate-50"
+                          >
+                            <input
+                              type="radio"
+                              checked={checked}
+                              readOnly
+                              tabIndex={-1}
+                              className="pointer-events-none h-4 w-4 shrink-0 border-slate-300 text-blue-600"
+                              aria-hidden="true"
+                            />
+                            <span className="min-w-0 flex-1 truncate text-slate-800">
+                              {studio.name}
+                            </span>
                             <span className="shrink-0 text-xs text-slate-400">
                               {zh(
                                 `${studio.work_count || 0} 部`,
                                 `${studio.work_count || 0} works`
                               )}
                             </span>
-                          )}
-                        </button>
-                      )
-                    })
-                  ) : (
-                    <div className="px-2 py-3 text-sm text-slate-500">
-                      {zh('没有匹配片商', 'No matching studios')}
-                    </div>
-                  )}
-                </div>
-              ) : null}
-            </div>
-          </section>
-
-          <section className="space-y-2">
-            <div className="text-sm font-semibold text-slate-800">{zh('系列', 'Series')}</div>
-            {selectedSeries ? (
-              <div className="flex items-center justify-between gap-2 rounded border border-emerald-100 bg-emerald-50 px-3 py-2 text-sm text-emerald-800">
-                <span className="min-w-0 truncate font-medium">{selectedSeries.name}</span>
-                <button
-                  type="button"
-                  onClick={() => {
-                    setSelectedSeries(null)
-                    setSeriesSearch('')
-                  }}
-                  className="inline-flex h-7 w-7 items-center justify-center rounded hover:bg-emerald-100"
-                  aria-label={zh('删除系列条件', 'Remove series filter')}
-                >
-                  <DeleteOutlineIcon fontSize="small" />
-                </button>
+                          </button>
+                        )
+                      })
+                    ) : (
+                      <div className="px-2 py-3 text-sm text-slate-500">
+                        {zh('没有匹配片商', 'No matching studios')}
+                      </div>
+                    )}
+                  </div>
+                ) : null}
               </div>
-            ) : null}
-            <div onBlur={closePickerOnBlur(setSeriesPickerOpen)}>
-              <input
-                ref={seriesInputRef}
-                value={seriesSearch}
-                onFocus={() => setSeriesPickerOpen(true)}
-                onChange={(event) => {
-                  setSeriesSearch(event.target.value)
-                  setSeriesPickerOpen(true)
-                  setSelectedSeries(null)
-                }}
-                className="w-full rounded border border-slate-200 px-3 py-2 text-sm outline-none focus:border-blue-500 focus:ring-1 focus:ring-blue-500"
-                placeholder={zh('搜索并选择系列', 'Search and choose a series')}
-              />
-              {seriesPickerOpen ? (
-                <div className="mt-1 max-h-52 overflow-y-auto rounded border border-slate-200 bg-white p-1 shadow-lg">
-                  {seriesLoading ? (
-                    <div className="px-2 py-3 text-sm text-slate-500">
-                      {zh('加载中…', 'Loading...')}
-                    </div>
-                  ) : seriesError ? (
-                    <div className="px-2 py-3 text-sm text-rose-600">{seriesError}</div>
-                  ) : filteredSeries.length > 0 ? (
-                    filteredSeries.map((series) => {
-                      const checked = Number(selectedSeries?.id) === Number(series.id)
-                      return (
-                        <button
-                          key={series.id}
-                          type="button"
-                          role="radio"
-                          aria-checked={checked}
-                          onMouseDown={(event) => event.preventDefault()}
-                          onClick={() => {
-                            setSelectedSeries({ id: series.id, name: series.name })
-                            setSeriesSearch('')
-                            setSeriesPickerOpen(false)
-                            seriesInputRef.current?.blur()
-                          }}
-                          className="flex w-full cursor-pointer items-center gap-2 rounded px-2 py-1.5 text-left text-sm hover:bg-slate-50"
-                        >
-                          <input
-                            type="radio"
-                            checked={checked}
-                            readOnly
-                            tabIndex={-1}
-                            className="pointer-events-none h-4 w-4 shrink-0 border-slate-300 text-blue-600"
-                            aria-hidden="true"
-                          />
-                          <span className="min-w-0 flex-1 truncate text-slate-800">
-                            {series.name}
-                          </span>
-                          <span className="shrink-0 text-xs text-slate-400">
-                            {zh(`${series.work_count || 0} 部`, `${series.work_count || 0} works`)}
-                          </span>
-                        </button>
-                      )
-                    })
-                  ) : (
-                    <div className="px-2 py-3 text-sm text-slate-500">
-                      {zh('没有匹配系列', 'No matching series')}
-                    </div>
-                  )}
+            </section>
+
+            <section className="min-w-0 space-y-2">
+              <div className="text-sm font-semibold text-slate-800">{zh('系列', 'Series')}</div>
+              {selectedSeries ? (
+                <div className="flex items-center justify-between gap-2 rounded border border-emerald-100 bg-emerald-50 px-3 py-2 text-sm text-emerald-800">
+                  <span className="min-w-0 truncate font-medium">{selectedSeries.name}</span>
+                  <button
+                    type="button"
+                    onClick={() => {
+                      setSelectedSeries(null)
+                      setSeriesSearch('')
+                    }}
+                    className="inline-flex h-7 w-7 items-center justify-center rounded hover:bg-emerald-100"
+                    aria-label={zh('删除系列条件', 'Remove series filter')}
+                  >
+                    <DeleteOutlineIcon fontSize="small" />
+                  </button>
                 </div>
               ) : null}
-            </div>
-          </section>
+              <div
+                className={selectedSeries ? 'hidden' : ''}
+                onBlur={closePickerOnBlur(setSeriesPickerOpen)}
+              >
+                <input
+                  ref={seriesInputRef}
+                  value={seriesSearch}
+                  onFocus={() => setSeriesPickerOpen(true)}
+                  onChange={(event) => {
+                    setSeriesSearch(event.target.value)
+                    setSeriesPickerOpen(true)
+                    setSelectedSeries(null)
+                  }}
+                  className="w-full rounded border border-slate-200 px-3 py-2 text-sm outline-none focus:border-blue-500 focus:ring-1 focus:ring-blue-500"
+                  placeholder={zh('搜索并选择系列', 'Search and choose a series')}
+                />
+                {seriesPickerOpen ? (
+                  <div className="mt-1 max-h-52 overflow-y-auto rounded border border-slate-200 bg-white p-1 shadow-lg">
+                    {filterOptionsLoading ? (
+                      <div className="px-2 py-3 text-sm text-slate-500">
+                        {zh('加载中…', 'Loading...')}
+                      </div>
+                    ) : filteredSeries.length > 0 ? (
+                      filteredSeries.map((series) => {
+                        const checked = Number(selectedSeries?.id) === Number(series.id)
+                        return (
+                          <button
+                            key={series.id}
+                            type="button"
+                            role="radio"
+                            aria-checked={checked}
+                            onMouseDown={(event) => event.preventDefault()}
+                            onClick={() => {
+                              setSelectedSeries({ id: series.id, name: series.name })
+                              setSeriesSearch('')
+                              setSeriesPickerOpen(false)
+                              seriesInputRef.current?.blur()
+                            }}
+                            className="flex w-full cursor-pointer items-center gap-2 rounded px-2 py-1.5 text-left text-sm hover:bg-slate-50"
+                          >
+                            <input
+                              type="radio"
+                              checked={checked}
+                              readOnly
+                              tabIndex={-1}
+                              className="pointer-events-none h-4 w-4 shrink-0 border-slate-300 text-blue-600"
+                              aria-hidden="true"
+                            />
+                            <span className="min-w-0 flex-1 truncate text-slate-800">
+                              {series.name}
+                            </span>
+                            <span className="shrink-0 text-xs text-slate-400">
+                              {zh(
+                                `${series.work_count || 0} 部`,
+                                `${series.work_count || 0} works`
+                              )}
+                            </span>
+                          </button>
+                        )
+                      })
+                    ) : (
+                      <div className="px-2 py-3 text-sm text-slate-500">
+                        {zh('没有匹配系列', 'No matching series')}
+                      </div>
+                    )}
+                  </div>
+                ) : null}
+              </div>
+            </section>
+          </div>
         </div>
 
         <div className="flex flex-wrap items-center justify-between gap-2 border-t border-slate-200 bg-slate-50 px-5 py-4">
