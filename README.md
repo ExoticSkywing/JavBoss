@@ -1,35 +1,37 @@
 <h1 align="center">JavBoss</h1>
 
-<p align="center">本地成人视频收藏的一站式解决方案：自动扫描目录视频生成封面截图，识别 JAV 并抓取元数据，提供强大的视频和 JAV 检索功能，并通过内置 mpv 播放器快速播放。</p>
+<p align="center">本地 JAV/视频 管理一站式解决方案：自动扫描目录视频生成封面截图，识别 JAV 并抓取元数据，提供强大的视频和 JAV 检索功能，并通过内置 mpv 播放器快速播放。</p>
 
 <p align="center">
   <a href="https://github.com/Solr159/JavBoss/releases"><img alt="Release" src="https://img.shields.io/github/v/release/Solr159/JavBoss?display_name=tag"></a>
   <a href="https://github.com/Solr159/JavBoss/stargazers"><img alt="Stars" src="https://img.shields.io/github/stars/Solr159/JavBoss?style=social"></a>
   <a href="https://github.com/Solr159/JavBoss/releases"><img alt="Platform" src="https://img.shields.io/badge/Platform-Windows%20%7C%20Linux%20%7C%20macOS-1E88E5"></a>
   <a href="https://go.dev/"><img alt="Go" src="https://img.shields.io/badge/Go-1.25%2B-00ADD8?logo=go&logoColor=white"></a>
+  <a href="https://t.me/+4dje8gAi2dI2ZTE1"><img alt="Telegram Group" src="https://img.shields.io/badge/Telegram-Group-26A5E4?logo=telegram&logoColor=white"></a>
 </p>
 
-<p align="center">
-  <a href="./README.md">中文</a> | <a href="./README.en.md">English</a>
-</p>
-
-<p>
-  <img alt="Telegram" src="https://cdn.simpleicons.org/telegram/26A5E4" width="18" height="18" align="absmiddle">
-  <a href="https://t.me/+4dje8gAi2dI2ZTE1">Telegram交流群</a>
-</p>
+**此项目仍处于快速迭代中，点个 Star ⭐支持一下，不错过任何新版本功能更新，你的支持是作者积极更新的动力😊。**
 
 
-## JavBoss 是什么？
+## 为什么选择 JavBoss？
 
-JavBoss 是一个跨平台的本地web应用，提供全方位、全自动化的本地成人视频管理服务，尤其擅长日本AV的管理和检索。
+- 零配置开箱即用，小白也能轻松上手。
 
-JavBoss 的 UI 设计参考了各大主流 JAV 网站：JavDb、JavBus、JavLibrary 等等，在它们的基础之上做了优化和改进，追求的是更加直观、更加强大、更加友好的用户体验。
+- 横跨 Windows、MacOS、Linux 三大平台，也支持通过 Docker 部署在 NAS 中长期运行。
 
-得益于 MPV 播放器的强大自定义能力，JavBoss 对其进行了深度集成和完美联动，让用户的观看体验更上一个台阶。
+- 视频扫描、刮削、管理、播放等全链路完全自研，不被第三方软件卡脖子。
 
-JavBoss 完美屏蔽了繁琐的 JAV信息收集 和 视频整理 的底层细节，让用户能够把有限的精力放在更有意义的浏览、收藏、看片上。
+- 针对 JAV 场景进行深度定制，体验远超 `JAV刮削器`+`通用媒体库` 的常规组合。
 
-如果你不想折腾任何复杂工具和配置，只想简单添加目录之后就可以立刻使用，JavBoss 将是你的完美选择。
+- 可在`视频`和`JAV`两种运行模式之间自由切换，既是一个专业的 JAV 管理软件，也可作为通用视频管理软件使用。
+
+- 深度集成 MPV 播放器，支持播放进度条预览，视频截图书签等高级功能。
+
+- 零侵入式设计，运行数据单独存放，充分尊重用户视频目录，不做任何修改。
+
+- 简单直观的 UI 设计，基本不需要任何使用文档，打开就知道怎么用。
+
+> **作者比较懒，不喜欢写文档，实际上此软件还有批量删除视频、手动刮削、目录整理、导出 nfo 和封面等高级功能，请用户使用过程中自行挖掘。**
 
 ## 快速开始
 
@@ -133,9 +135,20 @@ Docker 部署下使用浏览器播放视频，不会调用本机 mpv。添加目
 **注意事项：**
   - JavBoss 只会读取不会主动修改目录里的任何内容，请放心添加。
   - 你可以随时关闭应用程序，下次打开所有任务会自动重启。
-  - JAV 模式下的女优详情、厂商、系列等信息会逐渐补齐，请耐心等待（补齐速度：女优≈厂商>系列)。
+  - JAV 模式下的女优详情、厂商、系列等信息会逐渐补齐，请耐心等待（补齐速度：女优≈厂商>系列）。
   - 如果 JAV 模式下始终没数据，中国大陆地区请确保梯子已打开外网访问通畅，然后再等待一段时间。
-  - 目录里的任何内容变化 JavBoss 都能够自动感知并更新数据。
+
+## 目录扫描和 JAV 刮削说明
+
+程序默认会自动持续对目录进行扫描，扫描过程中同步进行 JAV 刮削，相邻两次扫描间隔为1分钟。
+
+可以在`全局设置`->`目录管理`->`扫描设置`中修改相邻扫描间隔或关闭自动扫描。也可点击`手动扫描`立刻触发一次目录扫描和 JAV 刮削。
+
+一旦目录内容发生任何变化（比如有新视频入库、旧视频被删除、视频移动等），需要再进行一次目录扫描和 JAV 刮削完成内容的更新同步，请根据个人的扫描设置自行把握扫描时机。
+
+对于通过 docker 部署在 NAS 中长期运行的用户，建议调大扫描间隔或者关闭自动扫描，避免影响硬盘寿命。
+
+**请注意一次扫描并不能保证所有可刮削的视频都被成功刮削，原因是每次扫描过程中每个视频只会尝试一次刮削，可能会因为网络抖动或者网站风控等原因导致部分请求失败，个人实测每次扫描约1%左右的视频会刮削失败，需要再扫描一次。**
 
 ## 如何升级版本
 
@@ -175,6 +188,8 @@ docker compose up -d
 
 ## 部分截图
 
+**软件功能迭代比较快，截图更新可能不及时，以最新实物为准**
+
 <p align="center">
   <img src="screenshot/jav_work_1.png" width="49%">
   <img src="screenshot/jav_idol_1.png" width="49%">
@@ -210,19 +225,6 @@ docker compose up -d
   <img src="screenshot/setting_mpv_2.png" width="49%">
 </p>
 
-## 核心理念
-
-- **开箱即用，零外部依赖**：JavBoss 自身已经包含运行所需要的全部依赖，只需要简单添加本地目录，稍等片刻就可立即使用。
-<br>
-
-- **全自动化托管式目录服务**：JavBoss 提供的是托管式的本地目录服务，一旦目录内容发生任何变化，所有的数据更新都会由 JavBoss 自动完成，你可以认为 JavBoss 维护的是目录内容的实时全量映射（数据更新需要时间，所以并非零延迟，但是能保证最终一致性）。
-<br>
-
-- **零侵入式设计**：JavBoss 充分尊重用户目录的内容，只读取目录绝不做任何修改，用户无需担心 JavBoss 在自己的目录里随意生成各种垃圾（.nfo文件或者各种封面图片），这就意味着 JavBoss 可以无缝与其他视频管理工具协作而不用担心相互影响。
-<br>
-
-- **数据永不丢失**：JavBoss 所有的数据保存在项目的`data/`目录中，只要妥善保管好`data/`目录，无论是升级系统、还是更换电脑数据都永远不会丢失。
-
 
 ## ✨ 功能介绍
 
@@ -235,7 +237,6 @@ JavBoss 会从文件名中自动提取番号，例如 `IPX-633`、`SSIS-001`、`
 - 自动抓取作品标题、发行时间、封面、演员、标签等基本信息。
 - 自动抓取并补全女优信息，身高、中英文名、三围、出生日期等等。
 - 自动抓取并补全 JAV 厂商和系列信息。
-- 支持中英文 JAV 元数据抓取，可自由切换。
 - 强大的排序功能：支持多种 JAV 和女优排序方式：发行日期、时长、播放次数、身高、年龄、三围等等。
 - 强大的查找和筛选功能，支持编辑各种复杂查询（关键字、女优、标签、厂商、系列等）进行分页浏览。
 - 强大的随机浏览功能：支持全局随机显示以及任意筛选条件下随机显示。
@@ -243,7 +244,7 @@ JavBoss 会从文件名中自动提取番号，例如 `IPX-633`、`SSIS-001`、`
 
 ### 2. 📁 智能目录管理与可迁移数据
 
-添加本地视频目录后，JavBoss 会在后台持续同步目录内容。目录变化会被持续感知并及时刷新，新增、删除、移动文件都会自动反映到媒体库中，已经入库的视频可以立即浏览，扫描和资料补全会逐步完成。
+添加本地视频目录后，JavBoss 会在后台持续同步目录内容，已经入库的视频可以立即浏览，扫描和资料补全会逐步完成。
 
 - 支持多个资源目录，适合本机硬盘、NAS 挂载目录、移动硬盘等场景。
 - 自动截图生成视频封面，生成视频指纹落库，通过视频文件名尝试关联 JAV 番号。
@@ -270,7 +271,7 @@ JavBoss 集成 [mpv](https://github.com/mpv-player/mpv) 播放能力，点击视
 前端界面围绕“快速找到想看的视频”设计，不堆复杂设置，把常用操作放在筛选、排序、标签和随机浏览上。
 
 - 支持普通视频库、JAV 作品库、女优视角浏览。
-- 自适应响应式布局，更小的浏览器缩放倍数下会每行会显示更多的内容。 
+- 自适应响应式布局，更小的浏览器缩放倍数下会每行会显示更多的内容。
 - 所有可见信息将尽可能展示，不做复杂的页面嵌套。
 - 所有的操作按钮都放在触手可及的位置，尽可能的降低用户心智负担。
 
@@ -281,6 +282,24 @@ JavBoss 集成 [mpv](https://github.com/mpv-player/mpv) 播放能力，点击视
 - JAV 元数据、封面资料首次抓取依赖外部站点可访问性，中国大陆地区请自备梯子。
 - 首次导入大库时，扫描、封面抓取、资料补全和缩略图生成需要一些时间。
 - 发布包根目录会包含 `config.toml` 文件，程序默认启动端口为 8655，如有需要可修改其中 port 的值更换启动端口。
+
+
+## Client 模式说明
+
+**备注：此模式唯一的用处就是使用本机 MPV 播放器播放局域网 JavBoss 中的视频，没有此项需求的用户可忽略。**
+
+Client 模式可连接远程 JavBoss Server，浏览远程媒体库并使用本机 MPV 播放视频，同时支持本地播放器设置及截图自动同步。
+
+使用此模式需要在本地安装 JavBoss，然后在程序目录的 `config.toml` 中设置远程 JavBoss Server 地址，之后正常启动 JavBoss 即可：
+
+```toml
+server_url = "http://192.168.1.100:8655"
+```
+
+也可以通过命令行临时指定远程 Server：
+
+- Windows：`.\javboss.exe --server-url http://192.168.1.100:8655`
+- Linux / macOS：`./javboss --server-url http://192.168.1.100:8655`
 
 ## Q&A
 
@@ -299,13 +318,8 @@ JavBoss 集成 [mpv](https://github.com/mpv-player/mpv) 播放能力，点击视
 
 <br>
 
-- Q: 添加目录后，怎么知道扫描完成了？需要一直等待吗？
-- A: 不需要。JavBoss 会在后台持续扫描和补全信息，添加目录后可以直接开始使用。你也可以随时关闭应用，下次启动后扫描会继续。
-
-<br>
-
 - Q: 新下载的视频怎么入库？想删除一些视频怎么办？
-- A: 直接把视频移动进或移出被管理的目录即可。JavBoss 会同步目录状态，新增、移动、删除都会反映到媒体库。
+- A: 需要重新触发一次扫描，详情见上方的 `目录扫描和 JAV 刮削说明`。
 
 <br>
 
@@ -315,92 +329,20 @@ JavBoss 集成 [mpv](https://github.com/mpv-player/mpv) 播放能力，点击视
 <br>
 
 - Q: 某个移动硬盘不够大了，文件夹要移动到新的硬盘里怎么办？
-- A: 直接移动文件夹，然后在“目录管理”里更新目录路径，不用担心数据丢失，JavBoss 会处理好这一切。
+- A: 直接移动文件夹，然后在“目录管理”里点击编辑更新目录路径，不用担心数据丢失，JavBoss 会处理好这一切。
 
 <br>
 
 - Q: 换电脑时怎么迁移？
-- A: 同系统迁移直接复制整个 `javboss` 目录到新电脑即可运行。跨系统迁移在新电脑下载对应系统的 `javboss`，然后将旧电脑的`data/`目录复制到新电脑的 `javboss` 目录下即可。（注意如果视频目录也发生了变化，你还需要手动在目录管理中进行调整）
+- A: 在新电脑下载对应系统的 `javboss`，然后将旧电脑的`data/`目录复制到新电脑的 `javboss` 目录下即可。（如果视频目录路径也发生了变化，请在目录管理中点击编辑进行调整）
 
-## 开发者说明
+## 开发者文档
 
-### 开发环境依赖
+开发环境、常用命令及项目结构请参阅 [DEVELOPMENT.md](DEVELOPMENT.md)。
 
-- Go `1.25.1` 或更高版本
-- Node.js 和 npm
+## 风险提示与免责声明
 
-### 技术栈
-
-- Backend: Go + Gin + GORM + SQLite
-- Frontend: React + Vite + Tailwind + Zustand
-- 媒体探测: `ffprobe`
-- 缩略图截图生成: macOS 使用 `ffmpeg`，其他平台使用 `mpv`
-- 播放与手动截图: `mpv`
-
-### 常用命令
-
-下载依赖（`ffprobe` + `mpv`，macOS 额外下载 `ffmpeg`）：
-
-```bash
-./scripts/cli.sh download linux-x86_64
-```
-
-安装前端依赖：
-
-```bash
-cd web
-npm install
-```
-
-启动后端：
-
-```bash
-./scripts/cli.sh dev backend
-```
-
-按 Docker 运行时配置启动本地后端（用于调试容器模式行为）：
-
-```bash
-DOCKER_MODE=1 ./scripts/cli.sh dev backend
-```
-
-该模式会启用 `JAVBOSS_CONTAINER=1`，禁用 API token、目录选择器、桌面集成和 mpv 播放，并使用 ffmpeg 生成截图。需要本机可通过 `FFMPEG_PATH`、`internal/bin/ffmpeg` 或系统 `PATH` 找到 `ffmpeg`。本地调试默认不会把前端输入的目录自动加上 `/host` 前缀，也不会把 `127.0.0.1` 代理改写为 `host.docker.internal`；如需测试 Docker 宿主机路径映射，可使用 `DOCKER_MODE=1 JAVBOSS_HOST_PATH_PREFIX=1 ./scripts/cli.sh dev backend`，如需测试 Docker 代理网关映射，可额外设置 `JAVBOSS_PROXY_HOST_GATEWAY=1`。
-
-启动前端：
-
-```bash
-./scripts/cli.sh dev frontend
-```
-
-前端检查：
-
-```bash
-cd web
-npm run lint
-npm run build
-```
-
-打包发布：
-
-```bash
-scripts/cli.sh release linux-x86_64 v0.1.0
-```
-
-### 项目结构
-
-```text
-cmd/server             Go 服务入口
-cmd/javprovider        JAV 元数据 provider 调试入口
-internal/common        全局状态与共享配置
-internal/db            GORM 模型查询与 SQLite 存储
-internal/jav           JAV 元数据与女优资料抓取
-internal/manager       封面下载与截图任务
-internal/models        数据模型定义
-internal/mpv           mpv 播放、快捷键与手动截图配置
-internal/server        HTTP API 与静态资源路由
-internal/service       目录扫描、JAV 识别、资料补全
-internal/util          文件、系统、代理、视频探测等工具
-web/                   React + Tailwind 前端
-scripts/cli            开发、依赖下载与发布辅助 CLI
-data/                  运行期数据库、封面、缩略图与缓存
-```
+- 本项目是本人在学习 Go 语言期间开发的练手项目，仅供学习与交流。
+- 使用本项目时，请遵守所在国家或地区的法律法规。
+- 请勿将本项目用于任何商业用途。
+- 用户应自行承担使用本项目产生的一切后果，开发者不对用户的任何使用行为承担法律责任。
