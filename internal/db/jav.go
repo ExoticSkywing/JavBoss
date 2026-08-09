@@ -5,6 +5,7 @@ import (
 	"errors"
 	"fmt"
 	"math"
+	"sort"
 	"strings"
 	"time"
 
@@ -22,8 +23,18 @@ type JavTagCount struct {
 	ID             int64  `json:"id"`
 	Name           string `json:"name"`
 	SimplifiedName string `json:"simplified_name,omitempty"`
+	CategoryID     *int64 `json:"category_id,omitempty"`
+	Category       string `json:"category,omitempty"`
 	Provider       int    `json:"provider"`
 	Count          int64  `json:"count"`
+}
+
+// JavTagOrganizeResult summarizes a JavBus category import.
+type JavTagOrganizeResult struct {
+	RemoteTagCount    int `json:"remote_tag_count"`
+	MatchedTagCount   int `json:"matched_tag_count"`
+	UpdatedTagCount   int `json:"updated_tag_count"`
+	UnmatchedTagCount int `json:"unmatched_tag_count"`
 }
 
 // JavPrefixSummary represents an aggregated JAV code prefix.
@@ -538,17 +549,334 @@ func listJavTagsForProviders(ctx context.Context, directoryIDs []int64, provider
 	}
 	if err := common.DB.WithContext(ctx).
 		Table("jav_tag jt").
-		Select("jt.id, jt.name, ? AS provider, COUNT(DISTINCT CASE WHEN "+activeLocationSQL+" THEN jtm.jav_id END) AS count", outputProvider).
+		Select("jt.id, jt.name, jt.category_id, jtc.name AS category, ? AS provider, COUNT(DISTINCT CASE WHEN "+activeLocationSQL+" THEN jtm.jav_id END) AS count", outputProvider).
 		Joins(tagMapJoin, providers).
+		Joins("LEFT JOIN jav_tag_category jtc ON jtc.id = jt.category_id").
 		Joins("LEFT JOIN video_location vl ON vl.jav_id = jtm.jav_id").
 		Joins("LEFT JOIN directory d ON d.id = vl.directory_id").
 		Where("COALESCE(jt.is_user, 0) = ?", isUser).
-		Group("jt.id, jt.name").
+		Group("jt.id, jt.name, jt.category_id, jtc.name").
 		Order("jt.name").
 		Scan(&tags).Error; err != nil {
 		return nil, fmt.Errorf("list jav tags: %w", err)
 	}
 	return tags, nil
+}
+
+// ListJavTagCategories returns every manually or automatically created category.
+func ListJavTagCategories(ctx context.Context) ([]models.JavTagCategory, error) {
+	var categories []models.JavTagCategory
+	if err := common.DB.WithContext(ctx).Order("sort_order, id").Find(&categories).Error; err != nil {
+		return nil, fmt.Errorf("list jav tag categories: %w", err)
+	}
+	return categories, nil
+}
+
+// CreateJavTagCategory creates an empty category that tags can be moved into.
+func CreateJavTagCategory(ctx context.Context, name string) (*models.JavTagCategory, error) {
+	name = strings.TrimSpace(name)
+	if name == "" {
+		return nil, errors.New("category name cannot be empty")
+	}
+	category := models.JavTagCategory{Name: name}
+	if err := common.DB.WithContext(ctx).Transaction(func(tx *gorm.DB) error {
+		var maxSortOrder int
+		if err := tx.Model(&models.JavTagCategory{}).
+			Select("COALESCE(MAX(sort_order), -1)").
+			Scan(&maxSortOrder).Error; err != nil {
+			return fmt.Errorf("find last jav tag category position: %w", err)
+		}
+		category.SortOrder = maxSortOrder + 1
+		return tx.Create(&category).Error
+	}); err != nil {
+		return nil, fmt.Errorf("create jav tag category %q: %w", name, err)
+	}
+	return &category, nil
+}
+
+// ReorderJavTagCategories saves the complete category order. ID 0 reserves a
+// sortable position for the virtual default category without storing a row.
+func ReorderJavTagCategories(ctx context.Context, ids []int64) error {
+	if len(ids) == 0 {
+		return errors.New("category ids are required")
+	}
+	seen := make(map[int64]struct{}, len(ids))
+	for _, id := range ids {
+		if id < 0 {
+			return errors.New("category ids cannot be negative")
+		}
+		if _, exists := seen[id]; exists {
+			return errors.New("category ids must be unique")
+		}
+		seen[id] = struct{}{}
+	}
+	if _, hasDefaultCategory := seen[0]; !hasDefaultCategory {
+		return errors.New("category order must include the default category")
+	}
+	return common.DB.WithContext(ctx).Transaction(func(tx *gorm.DB) error {
+		var storedIDs []int64
+		if err := tx.Model(&models.JavTagCategory{}).Pluck("id", &storedIDs).Error; err != nil {
+			return fmt.Errorf("list jav tag categories for reorder: %w", err)
+		}
+		if len(storedIDs)+1 != len(ids) {
+			return errors.New("category order must include every category")
+		}
+		stored := make(map[int64]struct{}, len(storedIDs))
+		for _, id := range storedIDs {
+			stored[id] = struct{}{}
+		}
+		for sortOrder, id := range ids {
+			if id == 0 {
+				continue
+			}
+			if _, exists := stored[id]; !exists {
+				return fmt.Errorf("jav tag category %d not found", id)
+			}
+			if err := tx.Model(&models.JavTagCategory{}).
+				Where("id = ?", id).
+				Update("sort_order", sortOrder).Error; err != nil {
+				return fmt.Errorf("update jav tag category %d position: %w", id, err)
+			}
+		}
+		return nil
+	})
+}
+
+// RenameJavTagCategory changes a category name without changing tag membership.
+func RenameJavTagCategory(ctx context.Context, id int64, name string) error {
+	name = strings.TrimSpace(name)
+	if id <= 0 {
+		return errors.New("category id must be positive")
+	}
+	if name == "" {
+		return errors.New("category name cannot be empty")
+	}
+	result := common.DB.WithContext(ctx).
+		Model(&models.JavTagCategory{}).
+		Where("id = ?", id).
+		Update("name", name)
+	if result.Error != nil {
+		return fmt.Errorf("rename jav tag category: %w", result.Error)
+	}
+	if result.RowsAffected == 0 {
+		return gorm.ErrRecordNotFound
+	}
+	return nil
+}
+
+// DeleteJavTagCategory removes a category and leaves its tags uncategorized.
+func DeleteJavTagCategory(ctx context.Context, id int64) error {
+	if id <= 0 {
+		return errors.New("category id must be positive")
+	}
+	return common.DB.WithContext(ctx).Transaction(func(tx *gorm.DB) error {
+		var categories []models.JavTagCategory
+		if err := tx.Order("sort_order, id").Find(&categories).Error; err != nil {
+			return fmt.Errorf("list jav tag categories for delete: %w", err)
+		}
+		categoryOrder := javTagCategoryOrderWithDefault(categories)
+		found := false
+		nextOrder := make([]int64, 0, len(categoryOrder)-1)
+		for _, categoryID := range categoryOrder {
+			if categoryID == id {
+				found = true
+				continue
+			}
+			nextOrder = append(nextOrder, categoryID)
+		}
+		if !found {
+			return gorm.ErrRecordNotFound
+		}
+		if err := tx.Model(&models.JavTag{}).Where("category_id = ?", id).Update("category_id", nil).Error; err != nil {
+			return fmt.Errorf("clear jav tag category: %w", err)
+		}
+		result := tx.Delete(&models.JavTagCategory{}, id)
+		if result.Error != nil {
+			return fmt.Errorf("delete jav tag category: %w", result.Error)
+		}
+		if result.RowsAffected == 0 {
+			return gorm.ErrRecordNotFound
+		}
+		for sortOrder, categoryID := range nextOrder {
+			if categoryID == 0 {
+				continue
+			}
+			if err := tx.Model(&models.JavTagCategory{}).
+				Where("id = ?", categoryID).
+				Update("sort_order", sortOrder).Error; err != nil {
+				return fmt.Errorf("normalize jav tag category %d position after delete: %w", categoryID, err)
+			}
+		}
+		return nil
+	})
+}
+
+func javTagCategoryOrderWithDefault(categories []models.JavTagCategory) []int64 {
+	occupiedSortOrders := make(map[int]struct{}, len(categories))
+	for _, category := range categories {
+		if category.SortOrder >= 0 {
+			occupiedSortOrders[category.SortOrder] = struct{}{}
+		}
+	}
+	defaultSortOrder := 0
+	for {
+		if _, occupied := occupiedSortOrders[defaultSortOrder]; !occupied {
+			break
+		}
+		defaultSortOrder++
+	}
+
+	type orderedCategory struct {
+		id        int64
+		sortOrder int
+	}
+	ordered := make([]orderedCategory, 0, len(categories)+1)
+	for _, category := range categories {
+		ordered = append(ordered, orderedCategory{id: category.ID, sortOrder: category.SortOrder})
+	}
+	ordered = append(ordered, orderedCategory{id: 0, sortOrder: defaultSortOrder})
+	sort.SliceStable(ordered, func(i, j int) bool {
+		if ordered[i].sortOrder != ordered[j].sortOrder {
+			return ordered[i].sortOrder < ordered[j].sortOrder
+		}
+		return ordered[i].id < ordered[j].id
+	})
+
+	ids := make([]int64, 0, len(ordered))
+	for _, category := range ordered {
+		ids = append(ids, category.id)
+	}
+	return ids
+}
+
+// AssignJavTagsCategory moves multiple tags into one category. A nil category
+// leaves the selected tags uncategorized.
+func AssignJavTagsCategory(ctx context.Context, tagIDs []int64, categoryID *int64) error {
+	cleanTagIDs := uniqueInt64s(tagIDs)
+	if len(cleanTagIDs) == 0 {
+		return errors.New("tag ids are required")
+	}
+	if categoryID != nil {
+		if *categoryID <= 0 {
+			return errors.New("category id must be positive")
+		}
+		var count int64
+		if err := common.DB.WithContext(ctx).Model(&models.JavTagCategory{}).Where("id = ?", *categoryID).Count(&count).Error; err != nil {
+			return fmt.Errorf("find jav tag category: %w", err)
+		}
+		if count == 0 {
+			return gorm.ErrRecordNotFound
+		}
+	}
+	if err := common.DB.WithContext(ctx).
+		Model(&models.JavTag{}).
+		Where("id IN ?", cleanTagIDs).
+		Update("category_id", categoryID).Error; err != nil {
+		return fmt.Errorf("assign jav tag category: %w", err)
+	}
+	return nil
+}
+
+// OrganizeJavTagCategories applies the category map fetched from JavBus to
+// matching JAV tags while preserving manual categories on unmatched tags.
+func OrganizeJavTagCategories(ctx context.Context, genres []jav.JavBusGenreCategory) (*JavTagOrganizeResult, error) {
+	exactCategoryNames := make(map[string]string, len(genres))
+	normalizedCategoryNames := make(map[string]string, len(genres))
+	remoteNames := make(map[string]struct{}, len(genres))
+	categoryNames := make(map[string]struct{})
+	categoryNameOrder := make([]string, 0)
+	for _, genre := range genres {
+		name := strings.TrimSpace(genre.Name)
+		category := util.SimplifyChineseName(genre.Category)
+		if name == "" || category == "" {
+			continue
+		}
+		if _, exists := exactCategoryNames[name]; !exists {
+			exactCategoryNames[name] = category
+		}
+		normalizedName := normalizeJavTagCategoryName(name)
+		if _, exists := normalizedCategoryNames[normalizedName]; normalizedName != "" && !exists {
+			normalizedCategoryNames[normalizedName] = category
+		}
+		remoteNames[name] = struct{}{}
+		if _, exists := categoryNames[category]; !exists {
+			categoryNames[category] = struct{}{}
+			categoryNameOrder = append(categoryNameOrder, category)
+		}
+	}
+	if len(exactCategoryNames) == 0 {
+		return nil, errors.New("javbus category map is empty")
+	}
+
+	result := &JavTagOrganizeResult{RemoteTagCount: len(remoteNames)}
+	err := common.DB.WithContext(ctx).Transaction(func(tx *gorm.DB) error {
+		var storedCategories []models.JavTagCategory
+		if err := tx.Where("name IN ?", categoryNameOrder).Find(&storedCategories).Error; err != nil {
+			return fmt.Errorf("load jav tag categories: %w", err)
+		}
+		categoryIDs := make(map[string]int64, len(storedCategories))
+		for _, category := range storedCategories {
+			categoryIDs[category.Name] = category.ID
+		}
+		var maxSortOrder int
+		if err := tx.Model(&models.JavTagCategory{}).
+			Select("COALESCE(MAX(sort_order), -1)").
+			Scan(&maxSortOrder).Error; err != nil {
+			return fmt.Errorf("find last jav tag category position: %w", err)
+		}
+		for _, name := range categoryNameOrder {
+			if _, exists := categoryIDs[name]; exists {
+				continue
+			}
+			maxSortOrder++
+			category := models.JavTagCategory{Name: name, SortOrder: maxSortOrder}
+			if err := tx.Create(&category).Error; err != nil {
+				return fmt.Errorf("create jav tag category %q: %w", name, err)
+			}
+			categoryIDs[name] = category.ID
+		}
+
+		var tags []models.JavTag
+		if err := tx.Order("id").Find(&tags).Error; err != nil {
+			return fmt.Errorf("list jav tags for category organization: %w", err)
+		}
+		for _, tag := range tags {
+			categoryName, matched := exactCategoryNames[strings.TrimSpace(tag.Name)]
+			if !matched {
+				categoryName, matched = normalizedCategoryNames[normalizeJavTagCategoryName(tag.Name)]
+			}
+			if !matched {
+				result.UnmatchedTagCount++
+				continue
+			}
+			result.MatchedTagCount++
+			id := categoryIDs[categoryName]
+			categoryID := &id
+			if equalOptionalInt64(tag.CategoryID, categoryID) {
+				continue
+			}
+			if err := tx.Model(&models.JavTag{}).Where("id = ?", tag.ID).Update("category_id", categoryID).Error; err != nil {
+				return fmt.Errorf("update jav tag %d category: %w", tag.ID, err)
+			}
+			result.UpdatedTagCount++
+		}
+		return nil
+	})
+	if err != nil {
+		return nil, err
+	}
+	return result, nil
+}
+
+func equalOptionalInt64(a, b *int64) bool {
+	if a == nil || b == nil {
+		return a == nil && b == nil
+	}
+	return *a == *b
+}
+
+func normalizeJavTagCategoryName(name string) string {
+	return strings.ToLower(util.SimplifyChineseName(strings.TrimSpace(name)))
 }
 
 func visibleScrapedJavTagProviders() []int {
@@ -612,7 +940,7 @@ func RenameJavTag(ctx context.Context, id int64, newName string) error {
 	if err := common.DB.WithContext(ctx).
 		Model(&models.JavTag{}).
 		Where("id = ?", id).
-		Update("name", newName).Error; err != nil {
+		Updates(map[string]any{"name": newName, "category_id": nil}).Error; err != nil {
 		return fmt.Errorf("rename jav tag: %w", err)
 	}
 	return nil

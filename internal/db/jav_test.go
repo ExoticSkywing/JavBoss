@@ -1607,8 +1607,12 @@ func TestUserJavTagNameDoesNotModifyScrapedTag(t *testing.T) {
 	ctx := context.Background()
 	now := time.Unix(1710000000, 0).UTC()
 
+	category := models.JavTagCategory{Name: "主题"}
+	if err := gdb.Create(&category).Error; err != nil {
+		t.Fatalf("create category: %v", err)
+	}
 	scraped := models.JavTag{Name: "Shared Name"}
-	user := models.JavTag{Name: "Shared Name", IsUser: true}
+	user := models.JavTag{Name: "Shared Name", IsUser: true, CategoryID: &category.ID}
 	if err := gdb.Create(&scraped).Error; err != nil {
 		t.Fatalf("create scraped tag: %v", err)
 	}
@@ -1640,7 +1644,7 @@ func TestUserJavTagNameDoesNotModifyScrapedTag(t *testing.T) {
 	if err := gdb.First(&userAfter, user.ID).Error; err != nil {
 		t.Fatalf("load user tag: %v", err)
 	}
-	if userAfter.Name != "Renamed User" || !userAfter.IsUser {
+	if userAfter.Name != "Renamed User" || !userAfter.IsUser || userAfter.CategoryID != nil {
 		t.Fatalf("user tag was not renamed correctly: %#v", userAfter)
 	}
 }
@@ -1668,6 +1672,178 @@ func TestCreatedUserJavTagAppearsWithZeroCount(t *testing.T) {
 		return
 	}
 	t.Fatalf("created user tag not listed: %#v", tags)
+}
+
+func TestOrganizeJavTagCategoriesMatchesTraditionalAndSimplifiedNames(t *testing.T) {
+	gdb := openTestDB(t)
+	ctx := context.Background()
+	oldCategory := models.JavTagCategory{Name: "旧分类"}
+	if err := gdb.Create(&oldCategory).Error; err != nil {
+		t.Fatalf("create old category: %v", err)
+	}
+	tags := []models.JavTag{
+		{Name: "觸手"},
+		{Name: "制服", IsUser: true},
+		{Name: "未知", CategoryID: &oldCategory.ID},
+	}
+	if err := gdb.Create(&tags).Error; err != nil {
+		t.Fatalf("create tags: %v", err)
+	}
+
+	result, err := OrganizeJavTagCategories(ctx, []jav.JavBusGenreCategory{
+		{Name: "触手", Category: "主題"},
+		{Name: "制服", Category: "服裝"},
+	})
+	if err != nil {
+		t.Fatalf("OrganizeJavTagCategories: %v", err)
+	}
+	if result.RemoteTagCount != 2 || result.MatchedTagCount != 2 || result.UpdatedTagCount != 2 || result.UnmatchedTagCount != 1 {
+		t.Fatalf("unexpected organize result: %#v", result)
+	}
+
+	var got []models.JavTag
+	if err := gdb.Preload("Category").Order("id").Find(&got).Error; err != nil {
+		t.Fatalf("load tags: %v", err)
+	}
+	wantCategories := []string{"主题", "服装", "旧分类"}
+	for i, want := range wantCategories {
+		categoryName := ""
+		if got[i].Category != nil {
+			categoryName = got[i].Category.Name
+		}
+		if categoryName != want {
+			t.Errorf("tag %q category = %q, want %q", got[i].Name, categoryName, want)
+		}
+	}
+
+	listed, err := ListJavTags(ctx, nil)
+	if err != nil {
+		t.Fatalf("ListJavTags: %v", err)
+	}
+	for _, tag := range listed {
+		if tag.ID == tags[1].ID && tag.Category != "服装" {
+			t.Fatalf("listed user tag category = %q, want 服装", tag.Category)
+		}
+	}
+}
+
+func TestManageAndAssignJavTagCategories(t *testing.T) {
+	gdb := openTestDB(t)
+	ctx := context.Background()
+	tags := []models.JavTag{
+		{Name: "Category Tag A"},
+		{Name: "Category Tag B", IsUser: true},
+	}
+	if err := gdb.Create(&tags).Error; err != nil {
+		t.Fatalf("create tags: %v", err)
+	}
+
+	category, err := CreateJavTagCategory(ctx, " 自定义 ")
+	if err != nil {
+		t.Fatalf("CreateJavTagCategory: %v", err)
+	}
+	if category.Name != "自定义" {
+		t.Fatalf("created category name = %q, want 自定义", category.Name)
+	}
+	if category.SortOrder != 0 {
+		t.Fatalf("created category sort order = %d, want 0", category.SortOrder)
+	}
+	if _, err := CreateJavTagCategory(ctx, "自定义"); err == nil {
+		t.Fatal("expected duplicate category error")
+	}
+	secondCategory, err := CreateJavTagCategory(ctx, "第二个分类")
+	if err != nil {
+		t.Fatalf("create second category: %v", err)
+	}
+	if secondCategory.SortOrder != 1 {
+		t.Fatalf("second category sort order = %d, want 1", secondCategory.SortOrder)
+	}
+	if err := ReorderJavTagCategories(ctx, []int64{secondCategory.ID, 0, category.ID}); err != nil {
+		t.Fatalf("ReorderJavTagCategories: %v", err)
+	}
+	if err := ReorderJavTagCategories(ctx, []int64{secondCategory.ID, category.ID}); err == nil {
+		t.Fatal("expected reorder without virtual default category to fail")
+	}
+
+	if err := AssignJavTagsCategory(ctx, []int64{tags[0].ID, tags[1].ID}, &category.ID); err != nil {
+		t.Fatalf("AssignJavTagsCategory: %v", err)
+	}
+	var assigned int64
+	if err := gdb.Model(&models.JavTag{}).Where("category_id = ?", category.ID).Count(&assigned).Error; err != nil {
+		t.Fatalf("count assigned tags: %v", err)
+	}
+	if assigned != 2 {
+		t.Fatalf("assigned tag count = %d, want 2", assigned)
+	}
+
+	if err := RenameJavTagCategory(ctx, category.ID, "已修改"); err != nil {
+		t.Fatalf("RenameJavTagCategory: %v", err)
+	}
+	categories, err := ListJavTagCategories(ctx)
+	if err != nil {
+		t.Fatalf("ListJavTagCategories: %v", err)
+	}
+	if len(categories) != 2 || categories[0].ID != secondCategory.ID || categories[1].Name != "已修改" {
+		t.Fatalf("unexpected categories: %#v", categories)
+	}
+	if categories[0].SortOrder != 0 || categories[1].SortOrder != 2 {
+		t.Fatalf("unexpected category sort orders: %#v", categories)
+	}
+
+	if err := AssignJavTagsCategory(ctx, []int64{tags[0].ID}, nil); err != nil {
+		t.Fatalf("unassign tag category: %v", err)
+	}
+	if err := DeleteJavTagCategory(ctx, category.ID); err != nil {
+		t.Fatalf("DeleteJavTagCategory: %v", err)
+	}
+	var categorized int64
+	if err := gdb.Model(&models.JavTag{}).Where("category_id IS NOT NULL").Count(&categorized).Error; err != nil {
+		t.Fatalf("count categorized tags: %v", err)
+	}
+	if categorized != 0 {
+		t.Fatalf("categorized tag count after delete = %d, want 0", categorized)
+	}
+}
+
+func TestDeleteJavTagCategoryPreservesVirtualDefaultPosition(t *testing.T) {
+	gdb := openTestDB(t)
+	ctx := context.Background()
+
+	categoryA, err := CreateJavTagCategory(ctx, "A")
+	if err != nil {
+		t.Fatalf("create category A: %v", err)
+	}
+	categoryB, err := CreateJavTagCategory(ctx, "B")
+	if err != nil {
+		t.Fatalf("create category B: %v", err)
+	}
+	categoryC, err := CreateJavTagCategory(ctx, "C")
+	if err != nil {
+		t.Fatalf("create category C: %v", err)
+	}
+	if err := ReorderJavTagCategories(ctx, []int64{categoryA.ID, categoryB.ID, 0, categoryC.ID}); err != nil {
+		t.Fatalf("reorder categories: %v", err)
+	}
+
+	if err := DeleteJavTagCategory(ctx, categoryA.ID); err != nil {
+		t.Fatalf("delete category A: %v", err)
+	}
+	var categories []models.JavTagCategory
+	if err := gdb.Order("sort_order, id").Find(&categories).Error; err != nil {
+		t.Fatalf("list categories after delete: %v", err)
+	}
+	if len(categories) != 2 {
+		t.Fatalf("category count after delete = %d, want 2", len(categories))
+	}
+	if categories[0].ID != categoryB.ID || categories[0].SortOrder != 0 {
+		t.Fatalf("category B after delete = %#v, want sort order 0", categories[0])
+	}
+	if categories[1].ID != categoryC.ID || categories[1].SortOrder != 2 {
+		t.Fatalf("category C after delete = %#v, want sort order 2", categories[1])
+	}
+	if got := javTagCategoryOrderWithDefault(categories); !reflect.DeepEqual(got, []int64{categoryB.ID, 0, categoryC.ID}) {
+		t.Fatalf("category order after delete = %v, want [B default C]", got)
+	}
 }
 
 func TestAttachVisibleJavTagsIncludesSimplifiedName(t *testing.T) {
