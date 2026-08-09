@@ -1,5 +1,4 @@
 import { useEffect, useMemo, useRef, useState } from 'react'
-import AddRoundedIcon from '@mui/icons-material/AddRounded'
 import BookmarksOutlinedIcon from '@mui/icons-material/BookmarksOutlined'
 import CloseRoundedIcon from '@mui/icons-material/CloseRounded'
 import EditRoundedIcon from '@mui/icons-material/EditRounded'
@@ -9,10 +8,10 @@ import FolderRoundedIcon from '@mui/icons-material/FolderRounded'
 import SearchIcon from '@mui/icons-material/Search'
 import SettingsOutlinedIcon from '@mui/icons-material/SettingsOutlined'
 import ShuffleOutlinedIcon from '@mui/icons-material/ShuffleOutlined'
-import { Button, IconButton, Slider, Tooltip } from '@mui/material'
+import { Button, IconButton, Slider } from '@mui/material'
 import { zh } from '@/utils/i18n'
 
-const FAVORITE_MENU_RIGHT_SHIFT = 104
+const FAVORITE_MENU_RIGHT_SHIFT = 32
 
 function isModifiedClick(event) {
   return Boolean(
@@ -44,35 +43,26 @@ function FavoriteRatingFilter({ enabled, min, max, onEnabledChange, onRangeChang
   const normalizedMax = Number.isFinite(Number(max)) ? Number(max) : 5
   const range = normalizedMin <= normalizedMax ? [normalizedMin, normalizedMax] : [0.5, 5]
   const formatValue = (value) => (Number.isInteger(value) ? String(value) : value.toFixed(1))
+  const toggleLabel = enabled
+    ? zh('关闭喜爱度筛选', 'Disable favorite rating filter')
+    : zh('启用喜爱度筛选', 'Enable favorite rating filter')
 
   return (
     <div className={`favorite-rating-filter ${enabled ? 'favorite-rating-filter--active' : ''}`}>
-      <Tooltip
-        title={
-          enabled
-            ? zh('关闭喜爱度筛选', 'Disable favorite rating filter')
-            : zh('启用喜爱度筛选', 'Enable favorite rating filter')
-        }
-        arrow
+      <button
+        type="button"
+        className="favorite-rating-filter__toggle"
+        onClick={() => onEnabledChange?.(!enabled)}
+        title={toggleLabel}
+        aria-label={toggleLabel}
+        aria-pressed={Boolean(enabled)}
       >
-        <button
-          type="button"
-          className="favorite-rating-filter__toggle"
-          onClick={() => onEnabledChange?.(!enabled)}
-          aria-label={
-            enabled
-              ? zh('关闭喜爱度筛选', 'Disable favorite rating filter')
-              : zh('启用喜爱度筛选', 'Enable favorite rating filter')
-          }
-          aria-pressed={Boolean(enabled)}
-        >
-          {enabled ? (
-            <FavoriteRoundedIcon fontSize="inherit" />
-          ) : (
-            <FavoriteBorderRoundedIcon fontSize="inherit" />
-          )}
-        </button>
-      </Tooltip>
+        {enabled ? (
+          <FavoriteRoundedIcon fontSize="inherit" />
+        ) : (
+          <FavoriteBorderRoundedIcon fontSize="inherit" />
+        )}
+      </button>
       <Slider
         value={range}
         onChange={(_, value) => {
@@ -263,6 +253,23 @@ export default function TopBar({
             </Button>
           </form>
 
+          {isJavMode && javTab === 'list' ? (
+            <FavoriteRatingFilter
+              enabled={favoriteRatingEnabled}
+              min={favoriteRatingMin}
+              max={favoriteRatingMax}
+              onEnabledChange={onFavoriteRatingEnabledChange}
+              onRangeChange={onFavoriteRatingRangeChange}
+            />
+          ) : null}
+
+          {onRandomClick ? (
+            <button type="button" className="filter-action-button" onClick={onRandomClick}>
+              <ShuffleOutlinedIcon fontSize="small" />
+              <span>{zh('随机', 'Random')}</span>
+            </button>
+          ) : null}
+
           <div className="filter-topbar__filter-cluster">
             {filterItems.length > 0 ? (
               <div
@@ -276,16 +283,21 @@ export default function TopBar({
             ) : null}
 
             {onOpenFilterEditor ? (
-              <Tooltip title={zh('添加条件', 'Add filter')} arrow>
-                <button
-                  type="button"
-                  className="filter-add-button"
-                  onClick={onOpenFilterEditor}
-                  aria-label={zh('添加条件', 'Add filter')}
-                >
-                  <AddRoundedIcon fontSize="small" />
-                </button>
-              </Tooltip>
+              <button
+                type="button"
+                className="filter-clear-button"
+                onClick={onOpenFilterEditor}
+                title={zh('编辑筛选条件', 'Edit filters')}
+                aria-label={zh('编辑筛选条件', 'Edit filters')}
+              >
+                {zh('编辑', 'Edit')}
+              </button>
+            ) : null}
+
+            {hasActiveControlFilter || filterItems.length > 0 ? (
+              <button type="button" className="filter-clear-button" onClick={onClearFilters}>
+                {zh('清空', 'Clear')}
+              </button>
             ) : null}
           </div>
 
@@ -312,16 +324,6 @@ export default function TopBar({
                   {zh('清空', 'Clear')}
                 </Button>
               </div>
-            ) : null}
-
-            {isJavMode && javTab === 'list' ? (
-              <FavoriteRatingFilter
-                enabled={favoriteRatingEnabled}
-                min={favoriteRatingMin}
-                max={favoriteRatingMax}
-                onEnabledChange={onFavoriteRatingEnabledChange}
-                onRangeChange={onFavoriteRatingRangeChange}
-              />
             ) : null}
 
             {isJavMode ? (
@@ -359,19 +361,6 @@ export default function TopBar({
                   />
                 ) : null}
               </div>
-            ) : null}
-
-            {onRandomClick ? (
-              <button type="button" className="filter-action-button" onClick={onRandomClick}>
-                <ShuffleOutlinedIcon fontSize="small" />
-                <span>{zh('随机', 'Random')}</span>
-              </button>
-            ) : null}
-
-            {hasActiveControlFilter || filterItems.length > 0 ? (
-              <button type="button" className="filter-clear-button" onClick={onClearFilters}>
-                {zh('清空', 'Clear')}
-              </button>
             ) : null}
           </div>
         </div>
@@ -422,17 +411,16 @@ function FavoriteGroupMenu({
               : zh(`${list.length} 个收藏夹`, `${list.length} favorites`)}
           </div>
         </div>
-        <Tooltip title={zh('管理收藏夹', 'Manage favorites')} arrow>
-          <IconButton
-            type="button"
-            size="small"
-            onClick={() => onOpenManager?.()}
-            aria-label={zh('管理收藏夹', 'Manage favorites')}
-            sx={{ width: 30, height: 30 }}
-          >
-            <SettingsOutlinedIcon sx={{ fontSize: 18 }} />
-          </IconButton>
-        </Tooltip>
+        <IconButton
+          type="button"
+          size="small"
+          onClick={() => onOpenManager?.()}
+          title={zh('管理收藏夹', 'Manage favorites')}
+          aria-label={zh('管理收藏夹', 'Manage favorites')}
+          sx={{ width: 30, height: 30 }}
+        >
+          <SettingsOutlinedIcon sx={{ fontSize: 18 }} />
+        </IconButton>
       </div>
       <div className="min-h-0 flex-1 overflow-y-auto bg-slate-50/80 p-2">
         {error ? (
