@@ -285,7 +285,7 @@ export function IdolCard({
   return (
     <a
       href={href || '#'}
-      className="group flex cursor-pointer flex-col overflow-hidden rounded-lg border bg-white shadow-sm transition hover:shadow-lg"
+      className="content-card group flex cursor-pointer flex-col overflow-hidden rounded-lg border bg-white shadow-sm transition hover:shadow-lg"
       draggable={false}
       onClick={handleClick}
       onKeyDown={(e) => {

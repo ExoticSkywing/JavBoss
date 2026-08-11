@@ -185,7 +185,7 @@ export function SeriesCard({ item, href, onSelectSeries, onSelectStudio, onOpenF
   return (
     <a
       href={href || '#'}
-      className="group flex cursor-pointer flex-col overflow-hidden rounded-lg border bg-white shadow-sm transition hover:shadow-lg"
+      className="content-card group flex cursor-pointer flex-col overflow-hidden rounded-lg border bg-white shadow-sm transition hover:shadow-lg"
       onClick={handleClick}
       onKeyDown={(e) => {
         if (e.key === ' ') {

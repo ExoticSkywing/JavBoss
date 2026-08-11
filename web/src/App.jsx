@@ -72,6 +72,13 @@ import { zh } from '@/utils/i18n'
 import { getErrorMessage } from '@/utils/errors'
 import { getIdolDisplayName } from '@/utils/javIdol'
 import { withJavTagDisplayName } from '@/utils/javTag'
+import {
+  DARK_THEME,
+  getStoredTheme,
+  LIGHT_THEME,
+  saveTheme,
+  THEME_STORAGE_KEY,
+} from '@/utils/theme'
 import { directoryQueryIds, useStore, videoSelectionKey } from '@/store'
 import { useAuth } from '@/auth'
 
@@ -370,6 +377,22 @@ export default function App() {
   const [javResolvedIdols, setJavResolvedIdols] = useState({})
   const [toastMessage, setToastMessage] = useState('')
   const [centerToastMessage, setCenterToastMessage] = useState('')
+  const [colorTheme, setColorTheme] = useState(getStoredTheme)
+
+  const handleDarkModeChange = useCallback((enabled) => {
+    const nextTheme = saveTheme(enabled ? DARK_THEME : LIGHT_THEME)
+    setColorTheme(nextTheme)
+  }, [])
+
+  useEffect(() => {
+    const handleThemeStorage = (event) => {
+      if (event.key !== THEME_STORAGE_KEY) return
+      setColorTheme(saveTheme(event.newValue))
+    }
+
+    window.addEventListener('storage', handleThemeStorage)
+    return () => window.removeEventListener('storage', handleThemeStorage)
+  }, [])
 
   useEffect(() => {
     const updateScrolledState = () => {
@@ -4178,6 +4201,8 @@ export default function App() {
           useStore.setState({ config: cfg })
         }}
         initialViewMode={initialViewMode}
+        darkMode={colorTheme === DARK_THEME}
+        onDarkModeChange={handleDarkModeChange}
         onSaveInitialViewMode={async (mode) => {
           const cfg = await updateConfig({ initial_view_mode: normalizeInitialViewMode(mode) })
           useStore.setState({ config: cfg })

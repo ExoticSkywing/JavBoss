@@ -80,6 +80,8 @@ export default function GlobalSettingsModal({
   defaultPlayer,
   onSaveDefaultPlayer,
   initialViewMode,
+  darkMode = false,
+  onDarkModeChange,
   onSaveInitialViewMode,
   playerWindowWidth,
   playerWindowHeight,
@@ -601,6 +603,30 @@ export default function GlobalSettingsModal({
 
     return (
       <div className="space-y-5">
+        <section className="rounded-2xl border border-zinc-200 bg-white p-5 shadow-sm">
+          <div className="flex items-center justify-between gap-6">
+            <div>
+              <h4 className="text-sm font-semibold text-zinc-800">{zh('深色模式', 'Dark Mode')}</h4>
+              <p className="mt-1 text-sm text-zinc-500">
+                {zh(
+                  '使用适合夜间浏览的深色界面，设置会保存在当前浏览器中。',
+                  'Use a darker interface for nighttime viewing. This setting is saved in this browser.'
+                )}
+              </p>
+            </div>
+            <label className="relative inline-flex flex-shrink-0 cursor-pointer items-center">
+              <input
+                type="checkbox"
+                checked={darkMode}
+                onChange={(event) => onDarkModeChange?.(event.target.checked)}
+                className="peer sr-only"
+                aria-label={zh('切换深色模式', 'Toggle dark mode')}
+              />
+              <span className="h-6 w-11 rounded-full bg-zinc-300 transition-colors after:absolute after:left-0.5 after:top-0.5 after:h-5 after:w-5 after:rounded-full after:bg-white after:shadow-sm after:transition-transform after:content-[''] peer-checked:bg-blue-600 peer-checked:after:translate-x-5 peer-focus-visible:ring-2 peer-focus-visible:ring-blue-500 peer-focus-visible:ring-offset-2" />
+            </label>
+          </div>
+        </section>
+
         <section className="rounded-2xl border border-zinc-200 bg-white p-5 shadow-sm">
           <div className="space-y-4">
             <div className="flex flex-wrap items-center gap-3">

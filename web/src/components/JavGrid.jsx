@@ -2117,7 +2117,7 @@ function JavCard({
 
   return (
     <>
-      <div className="flex flex-col overflow-hidden rounded-lg border bg-white shadow-sm transition hover:shadow-lg">
+      <div className="content-card flex flex-col overflow-hidden rounded-lg border bg-white shadow-sm transition hover:shadow-lg">
         <div className="group relative aspect-[800/538] overflow-hidden bg-white">
           {cover ? (
             <JavCoverImage src={cover} alt={item?.code || zh('JAV 封面', 'JAV cover')} />
