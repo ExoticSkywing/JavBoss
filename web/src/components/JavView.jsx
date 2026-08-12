@@ -27,8 +27,8 @@ export default function JavView({
   javHasNext,
   javLoading,
   javRandomMode,
-  javTempSort,
-  javGlobalSort,
+  javResolvedSort,
+  javSortSource,
   buildJavUrl,
   setJavPage,
   setJavTempSort,
@@ -70,7 +70,7 @@ export default function JavView({
 }) {
   const contentClass = javRandomMode ? 'mt-4' : ''
   const [sortAnchorEl, setSortAnchorEl] = useState(null)
-  const effectiveSort = javTempSort || javGlobalSort
+  const effectiveSort = javResolvedSort
   const currentOption = findSortOption(JAV_SORT_OPTIONS, effectiveSort) || JAV_SORT_OPTIONS[0]
   const activeWaterfallMode = waterfallMode && !javRandomMode
 
@@ -137,6 +137,18 @@ export default function JavView({
               transformOrigin={{ vertical: 'top', horizontal: 'right' }}
             >
               <div className="pagination-sort-menu">
+                {javSortSource === 'temporary' ? (
+                  <button
+                    type="button"
+                    onClick={() => {
+                      closeSortMenu()
+                      setJavTempSort?.('')
+                    }}
+                    className="w-full border-b border-slate-100 px-3 py-2 text-left text-xs font-medium text-blue-700 hover:bg-blue-50"
+                  >
+                    {zh('恢复自动排序', 'Restore automatic sort')}
+                  </button>
+                ) : null}
                 {JAV_SORT_OPTIONS.map((option) => {
                   const active = isOptionActive(option)
                   const displayValue = active ? effectiveSort : option.defaultValue

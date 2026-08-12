@@ -1,12 +1,15 @@
 import { useState } from 'react'
 import CloseRoundedIcon from '@mui/icons-material/CloseRounded'
+import InfoOutlinedIcon from '@mui/icons-material/InfoOutlined'
 import SwapVertIcon from '@mui/icons-material/SwapVert'
 import AppModal from '@/components/AppModal'
 import {
   IDOL_SORT_OPTIONS,
   JAV_SORT_OPTIONS,
+  JAV_SORT_RULE_FILTERS,
   findSortOption,
   reverseSortValue,
+  sortLabel,
   sortLabelParts,
 } from '@/constants/jav'
 import { zh } from '@/utils/i18n'
@@ -109,6 +112,194 @@ function SettingsSwitch({ label, checked, onChange }) {
   )
 }
 
+const javSortChoices = JAV_SORT_OPTIONS.flatMap((option) => [
+  { value: option.ascValue, label: sortLabel(option, option.ascValue, zh) },
+  { value: option.descValue, label: sortLabel(option, option.descValue, zh) },
+])
+
+function nextJavSortRuleID(prefix, rules) {
+  const existing = new Set((rules || []).map((rule) => rule.id))
+  const base = `${prefix}-${Date.now()}`
+  let id = base
+  let suffix = 2
+  while (existing.has(id)) {
+    id = `${base}-${suffix}`
+    suffix += 1
+  }
+  return id
+}
+
+function javSortRuleDescription(rule) {
+  const filters = (rule.active || [])
+    .map((key) => JAV_SORT_RULE_FILTERS.find((item) => item.key === key))
+    .filter(Boolean)
+  const filterNames = filters.map((filter) => zh(filter.label[0], filter.label[1]))
+  const sortName = javSortChoices.find((choice) => choice.value === rule.sort)?.label || rule.sort
+
+  let effect
+  if (filterNames.length === 0) {
+    effect = zh(
+      '还没选择筛选条件，所以这条规则暂时不会生效。',
+      'No filter conditions have been selected, so this rule will not take effect yet.'
+    )
+  } else if (rule.mode === 'all' && filterNames.length > 1) {
+    effect = zh(
+      `当筛选条件完整包含 ${filterNames.join('、')} 时，作品会按“${sortName}”排列。`,
+      `When the filters fully include ${filterNames.join(', ')}, items are sorted by “${sortName}”.`
+    )
+  } else if (rule.mode === 'any' && filterNames.length > 1) {
+    effect = zh(
+      `当筛选条件包含 ${filterNames.join('、')} 中的任意一个选项时，作品会按“${sortName}”排列。`,
+      `When the filters include any one option from ${filterNames.join(', ')}, items are sorted by “${sortName}”.`
+    )
+  } else {
+    effect = zh(
+      `当筛选条件包含 ${filterNames[0]} 时，作品会按“${sortName}”排列。`,
+      `When the filters include ${filterNames[0]}, items are sorted by “${sortName}”.`
+    )
+  }
+
+  return rule.enabled
+    ? effect
+    : zh(`这条规则现在已停用。启用后，${effect}`, `This rule is disabled. When enabled, ${effect}`)
+}
+
+function JavSortRuleEditor({ rule, index, total, onChange, onMove, onRemove }) {
+  const update = (changes) => onChange?.({ ...rule, ...changes })
+  const toggleFilter = (key) => {
+    const current = new Set(rule.active || [])
+    if (current.has(key)) current.delete(key)
+    else current.add(key)
+    const active = JAV_SORT_RULE_FILTERS.map((item) => item.key).filter((item) => current.has(item))
+    update({ active })
+  }
+
+  return (
+    <div className="rounded-xl border border-slate-200 bg-slate-50/70 p-4">
+      <div className="flex items-center gap-2">
+        <span className="min-w-0 text-sm font-semibold text-slate-700">
+          {zh(`规则 ${index + 1}`, `Rule ${index + 1}`)}
+        </span>
+        <span className="group relative">
+          <button
+            type="button"
+            aria-label={zh(`查看规则 ${index + 1} 的当前效果`, `View rule ${index + 1} effect`)}
+            className="inline-flex h-7 w-7 items-center justify-center text-amber-500 transition hover:text-amber-600 focus:outline-none focus-visible:ring-2 focus-visible:ring-amber-500"
+          >
+            <InfoOutlinedIcon sx={{ fontSize: 18 }} />
+          </button>
+          <span
+            role="tooltip"
+            className="pointer-events-none invisible absolute left-0 top-full z-30 mt-1 w-72 max-w-[calc(100vw-4rem)] rounded-lg bg-slate-800 px-3 py-2 text-xs font-normal leading-5 text-white opacity-0 shadow-lg transition group-focus-within:visible group-focus-within:opacity-100 group-hover:visible group-hover:opacity-100"
+          >
+            {javSortRuleDescription(rule)}
+          </span>
+        </span>
+        <span className="ml-auto text-xs text-slate-500">{zh('启用', 'Enable')}</span>
+        <SettingsSwitch
+          label={zh(`启用排序规则 ${index + 1}`, `Enable sort rule ${index + 1}`)}
+          checked={rule.enabled}
+          onChange={(enabled) => update({ enabled })}
+        />
+        <button
+          type="button"
+          disabled={index === 0}
+          onClick={() => onMove?.(-1)}
+          className="h-8 w-8 rounded-md border border-slate-200 bg-white text-slate-600 disabled:opacity-30"
+          aria-label={zh('上移规则', 'Move rule up')}
+        >
+          ↑
+        </button>
+        <button
+          type="button"
+          disabled={index >= total - 1}
+          onClick={() => onMove?.(1)}
+          className="h-8 w-8 rounded-md border border-slate-200 bg-white text-slate-600 disabled:opacity-30"
+          aria-label={zh('下移规则', 'Move rule down')}
+        >
+          ↓
+        </button>
+        <button
+          type="button"
+          onClick={onRemove}
+          className="h-8 rounded-md border border-red-200 bg-white px-2 text-xs text-red-600 hover:bg-red-50"
+        >
+          {zh('删除', 'Delete')}
+        </button>
+      </div>
+
+      <div className="mt-3 grid gap-3 sm:grid-cols-2">
+        <label className="text-xs font-medium text-slate-600">
+          {zh('匹配条件', 'Match condition')}
+          <select
+            value={rule.mode}
+            onChange={(event) => update({ mode: event.target.value })}
+            className="mt-1 h-9 w-full rounded-lg border border-slate-200 bg-white px-2 text-sm"
+          >
+            <option value="all">
+              {zh(
+                '当筛选条件包含以下所有选中筛选时',
+                'When filters include all selected filter types'
+              )}
+            </option>
+            <option value="any">
+              {zh(
+                '当筛选条件包含以下任意选中筛选时',
+                'When filters include any selected filter type'
+              )}
+            </option>
+          </select>
+        </label>
+        <label className="text-xs font-medium text-slate-600">
+          {zh('命中后排序', 'Sort when matched')}
+          <select
+            value={rule.sort}
+            onChange={(event) => update({ sort: event.target.value })}
+            className="mt-1 h-9 w-full rounded-lg border border-slate-200 bg-white px-2 text-sm"
+          >
+            {javSortChoices.map((choice) => (
+              <option key={choice.value} value={choice.value}>
+                {choice.label}
+              </option>
+            ))}
+          </select>
+        </label>
+      </div>
+
+      <div className="mt-3">
+        <div className="flex flex-wrap gap-1.5">
+          {JAV_SORT_RULE_FILTERS.map((filter) => {
+            const checked = (rule.active || []).includes(filter.key)
+            return (
+              <label
+                key={filter.key}
+                className={`cursor-pointer rounded-full border px-2.5 py-1 text-xs transition ${
+                  checked
+                    ? 'border-blue-500 bg-blue-50 text-blue-700'
+                    : 'border-slate-200 bg-white text-slate-600'
+                }`}
+              >
+                <input
+                  type="checkbox"
+                  checked={checked}
+                  onChange={() => toggleFilter(filter.key)}
+                  className="sr-only"
+                />
+                {zh(filter.label[0], filter.label[1])}
+              </label>
+            )
+          })}
+        </div>
+        {(rule.active || []).length === 0 ? (
+          <p className="mt-1.5 text-xs text-amber-600">
+            {zh('请选择至少一种筛选', 'Select at least one filter')}
+          </p>
+        ) : null}
+      </div>
+    </div>
+  )
+}
+
 const controlClassName =
   'h-9 w-32 rounded-lg border border-slate-200 bg-white px-3 text-sm text-slate-700 outline-none transition hover:border-slate-300 focus:border-blue-500 focus:ring-2 focus:ring-blue-100'
 
@@ -156,6 +347,8 @@ export default function JavSettingsModal({
   onSeriesWaterfallDefaultChange,
   javSortInput,
   onJavSortChange,
+  javSortRulesInput = [],
+  onJavSortRulesChange,
   idolSortInput,
   onIdolSortChange,
   javIdolPreferChineseNameInput = false,
@@ -208,6 +401,7 @@ export default function JavSettingsModal({
         onJavHideActionsChange?.(false)
         onJavFavoriteRatingShowFullChange?.(false)
         onJavSortChange?.(JAV_SORT_OPTIONS[0]?.defaultValue || 'recent')
+        onJavSortRulesChange?.([])
         break
     }
   }
@@ -378,17 +572,93 @@ export default function JavSettingsModal({
               </div>
             </SettingsSection>
 
-            <SettingsSection title={zh('默认排序', 'Default sort')}>
+            <SettingsSection title={zh('排序规则', 'Sort rules')}>
+              <div className="mb-3 flex flex-wrap items-center justify-between gap-2">
+                <p className="text-xs leading-5 text-slate-500">
+                  {zh(
+                    '规则从上到下匹配，第一条命中的规则生效。',
+                    'Rules match top to bottom; the first match wins.'
+                  )}
+                </p>
+                <div className="flex gap-2">
+                  <button
+                    type="button"
+                    disabled={(javSortRulesInput || []).length >= 50}
+                    onClick={() =>
+                      onJavSortRulesChange?.([
+                        ...(javSortRulesInput || []),
+                        {
+                          id: nextJavSortRuleID('rule', javSortRulesInput),
+                          enabled: true,
+                          mode: 'any',
+                          active: [],
+                          sort: 'recent',
+                        },
+                      ])
+                    }
+                    className="rounded-lg border border-slate-200 bg-white px-3 py-1.5 text-xs font-medium text-slate-700 hover:border-blue-300 disabled:cursor-not-allowed disabled:opacity-40"
+                  >
+                    {zh('添加规则', 'Add rule')}
+                  </button>
+                </div>
+              </div>
               <div className="space-y-2">
-                {JAV_SORT_OPTIONS.map((option) => (
-                  <SortOptionRow
-                    key={option.base}
-                    option={option}
-                    name="jav-sort"
-                    inputValue={javSortInput}
-                    onChange={onJavSortChange}
+                {(javSortRulesInput || []).map((rule, index) => (
+                  <JavSortRuleEditor
+                    key={rule.id}
+                    rule={rule}
+                    index={index}
+                    total={javSortRulesInput.length}
+                    onChange={(nextRule) =>
+                      onJavSortRulesChange?.(
+                        javSortRulesInput.map((item, itemIndex) =>
+                          itemIndex === index ? nextRule : item
+                        )
+                      )
+                    }
+                    onMove={(direction) => {
+                      const target = index + direction
+                      if (target < 0 || target >= javSortRulesInput.length) return
+                      const next = [...javSortRulesInput]
+                      ;[next[index], next[target]] = [next[target], next[index]]
+                      onJavSortRulesChange?.(next)
+                    }}
+                    onRemove={() =>
+                      onJavSortRulesChange?.(
+                        javSortRulesInput.filter((_, itemIndex) => itemIndex !== index)
+                      )
+                    }
                   />
                 ))}
+                {(javSortRulesInput || []).length === 0 ? (
+                  <div className="rounded-lg border border-dashed border-slate-300 px-3 py-5 text-center text-xs text-slate-500">
+                    {zh('暂无排序规则', 'No sort rules')}
+                  </div>
+                ) : null}
+              </div>
+              <div className="mt-4 border-t border-slate-200 pt-4">
+                <div className="flex flex-wrap items-center justify-between gap-3">
+                  <div>
+                    <div className="text-sm font-semibold text-slate-700">
+                      {zh('默认排序（兜底）', 'Default sort (fallback)')}
+                    </div>
+                    <div className="mt-1 text-xs font-normal leading-5 text-slate-500">
+                      {zh('当所有规则都不满足时使用。', 'Used when none of the rules match.')}
+                    </div>
+                  </div>
+                  <select
+                    aria-label={zh('默认排序（兜底）', 'Default sort (fallback)')}
+                    value={javSortInput}
+                    onChange={(event) => onJavSortChange?.(event.target.value)}
+                    className="h-10 w-full rounded-lg border border-slate-200 bg-white px-3 text-sm font-normal text-slate-700 outline-none transition hover:border-slate-300 focus:border-blue-500 focus:ring-2 focus:ring-blue-100 sm:w-64"
+                  >
+                    {javSortChoices.map((choice) => (
+                      <option key={choice.value} value={choice.value}>
+                        {choice.label}
+                      </option>
+                    ))}
+                  </select>
+                </div>
               </div>
             </SettingsSection>
           </div>
