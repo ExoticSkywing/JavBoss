@@ -990,6 +990,7 @@ export default function GlobalSettingsModal({
 
   const renderToolsPanel = () => {
     const installed = Boolean(ffmpegStatus?.installed)
+    const upgradeAvailable = Boolean(ffmpegStatus?.upgrade_available)
     const downloading = Boolean(ffmpegStatus?.downloading)
     const supported = ffmpegStatus?.supported !== false
     const progress = Number(ffmpegStatus?.progress) || 0
@@ -1044,10 +1045,21 @@ export default function GlobalSettingsModal({
                     : installed
                       ? ffmpegInstalledLabel
                       : supported
-                        ? zh('下载 FFmpeg', 'Download FFmpeg')
+                        ? upgradeAvailable
+                          ? zh('更新 FFmpeg', 'Update FFmpeg')
+                          : zh('下载 FFmpeg', 'Download FFmpeg')
                         : zh('当前平台不支持', 'Unsupported platform')}
               </button>
             </div>
+
+            {upgradeAvailable && !downloading ? (
+              <div className="rounded-xl border border-blue-100 bg-blue-50 px-4 py-3 text-sm text-blue-700">
+                {zh(
+                  '检测到 FFmpeg 有新版本，可以立即更新。',
+                  'A new FFmpeg version is available. You can update now.'
+                )}
+              </div>
+            ) : null}
 
             {downloading ? (
               <div>
