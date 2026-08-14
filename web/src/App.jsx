@@ -1832,6 +1832,9 @@ export default function App() {
       const action = actionByKey.get(webHotkeyKeyId(normalizeWebHotkeyKey(event.key)))
       if (!action) return
       event.preventDefault()
+      if (document.activeElement instanceof HTMLElement) {
+        document.activeElement.blur()
+      }
 
       if (action === 'content_page_up' || action === 'content_page_down') {
         const viewportHeight = document.scrollingElement?.clientHeight || window.innerHeight || 1
