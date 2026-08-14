@@ -6,6 +6,7 @@ import VisibilityOutlinedIcon from '@mui/icons-material/VisibilityOutlined'
 import DirectoryManager from '@/components/DirectoryManager'
 import AppModal from '@/components/AppModal'
 import PlayerSettingsModal from '@/components/PlayerSettingsModal'
+import WebHotkeySettings from '@/components/WebHotkeySettings'
 import { downloadFFmpeg, fetchTools } from '@/api'
 import { parsePlayerHotkeys } from '@/utils/playerHotkeys'
 import { zh } from '@/utils/i18n'
@@ -21,6 +22,11 @@ const SETTINGS_SECTIONS = [
     id: 'display',
     title: { zh: '显示与交互', en: 'Display & Interaction' },
     summary: { zh: '界面提示与交互行为', en: 'Interface hints and interactions' },
+  },
+  {
+    id: 'shortcuts',
+    title: { zh: '快捷键', en: 'Shortcuts' },
+    summary: { zh: '自定义网页操作快捷键', en: 'Customize web shortcuts' },
   },
   {
     id: 'network',
@@ -91,6 +97,8 @@ export default function GlobalSettingsModal({
   onSavePlayerBasicSettings,
   playerHotkeys,
   onSavePlayerHotkeys,
+  webHotkeys,
+  onSaveWebHotkeys,
   onChangePassword,
   onLogout,
 }) {
@@ -962,6 +970,12 @@ export default function GlobalSettingsModal({
     )
   }
 
+  const renderShortcutsPanel = () => (
+    <div className="space-y-5">
+      <WebHotkeySettings hotkeys={webHotkeys} onSave={onSaveWebHotkeys} />
+    </div>
+  )
+
   const renderDirectoriesPanel = () => (
     <div className="space-y-2">
       <div className="flex items-center gap-1.5 text-xs font-semibold text-zinc-600">
@@ -1353,6 +1367,7 @@ export default function GlobalSettingsModal({
           }`}
         >
           {currentSection === 'display' && renderDisplayPanel()}
+          {currentSection === 'shortcuts' && renderShortcutsPanel()}
           {currentSection === 'network' && renderNetworkPanel()}
           {currentSection === 'tools' && renderToolsPanel()}
           {currentSection === 'player' && renderPlayerPanel()}

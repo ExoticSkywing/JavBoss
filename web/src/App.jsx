@@ -79,6 +79,12 @@ import { zh } from '@/utils/i18n'
 import { getErrorMessage } from '@/utils/errors'
 import { getIdolDisplayName } from '@/utils/javIdol'
 import { withJavTagDisplayName } from '@/utils/javTag'
+import {
+  isWebHotkeyEditingTarget,
+  normalizeWebHotkeyKey,
+  parseWebHotkeys,
+  webHotkeyKeyId,
+} from '@/utils/webHotkeys'
 import { directoryQueryIds, useStore, videoSelectionKey } from '@/store'
 import { useAuth } from '@/auth'
 
@@ -1739,6 +1745,116 @@ export default function App() {
   const seriesLastPage = Math.max(1, Math.ceil((seriesTotal || 0) / seriesPageSize))
   const seriesHasPrev = seriesPage > 1
   const seriesHasNext = seriesPage < seriesLastPage
+  const webHotkeys = useMemo(() => parseWebHotkeys(config?.web_hotkeys), [config?.web_hotkeys])
+  const navigateActivePageBy = useCallback(
+    (direction) => {
+      if (!isJavMode) {
+        if (randomMode || waterfallModes.video || loading) return
+        if (direction < 0 && canPrev) {
+          navigateVideoPage(page - 1)
+        } else if (direction > 0 && canNext) {
+          navigateVideoPage(page + 1)
+        }
+        return
+      }
+
+      const activeWaterfallMode = Boolean(waterfallModes[javTab])
+      if (activeWaterfallMode) return
+      if (javTab === 'idol') {
+        if (idolLoading) return
+        if (direction < 0 && idolHasPrev) setIdolPage(idolPage - 1)
+        else if (direction > 0 && idolHasNext) setIdolPage(idolPage + 1)
+      } else if (javTab === 'studio') {
+        if (studioLoading) return
+        if (direction < 0 && studioHasPrev) setStudioPage(studioPage - 1)
+        else if (direction > 0 && studioHasNext) setStudioPage(studioPage + 1)
+      } else if (javTab === 'series') {
+        if (seriesLoading) return
+        if (direction < 0 && seriesHasPrev) setSeriesPage(seriesPage - 1)
+        else if (direction > 0 && seriesHasNext) setSeriesPage(seriesPage + 1)
+      } else {
+        if (javRandomMode || javLoading) return
+        if (direction < 0 && javHasPrev) setJavPage(javPage - 1)
+        else if (direction > 0 && javHasNext) setJavPage(javPage + 1)
+      }
+    },
+    [
+      canNext,
+      canPrev,
+      idolHasNext,
+      idolHasPrev,
+      idolLoading,
+      idolPage,
+      isJavMode,
+      javHasNext,
+      javHasPrev,
+      javLoading,
+      javPage,
+      javRandomMode,
+      javTab,
+      loading,
+      navigateVideoPage,
+      page,
+      randomMode,
+      seriesHasNext,
+      seriesHasPrev,
+      seriesLoading,
+      seriesPage,
+      setIdolPage,
+      setJavPage,
+      setSeriesPage,
+      setStudioPage,
+      studioHasNext,
+      studioHasPrev,
+      studioLoading,
+      studioPage,
+      waterfallModes,
+    ]
+  )
+
+  useEffect(() => {
+    const actionByKey = new Map(webHotkeys.map((item) => [webHotkeyKeyId(item.key), item.action]))
+    const handleKeyDown = (event) => {
+      if (
+        event.defaultPrevented ||
+        event.isComposing ||
+        event.altKey ||
+        event.ctrlKey ||
+        event.metaKey ||
+        event.shiftKey ||
+        isWebHotkeyEditingTarget(event.target) ||
+        document.documentElement.classList.contains('app-modal-open') ||
+        document.querySelector('.MuiPopover-root, .MuiMenu-root')
+      ) {
+        return
+      }
+
+      const action = actionByKey.get(webHotkeyKeyId(normalizeWebHotkeyKey(event.key)))
+      if (!action) return
+      event.preventDefault()
+
+      if (action === 'content_page_up' || action === 'content_page_down') {
+        const viewportHeight = document.scrollingElement?.clientHeight || window.innerHeight || 1
+        window.scrollBy({
+          top: (action === 'content_page_up' ? -1 : 1) * Math.max(1, viewportHeight * 0.9),
+          left: 0,
+          behavior: 'auto',
+        })
+      } else if (action === 'previous_page') {
+        navigateActivePageBy(-1)
+      } else if (action === 'next_page') {
+        navigateActivePageBy(1)
+      } else if (action === 'browser_back') {
+        window.history.back()
+      } else if (action === 'browser_forward') {
+        window.history.forward()
+      }
+    }
+
+    window.addEventListener('keydown', handleKeyDown)
+    return () => window.removeEventListener('keydown', handleKeyDown)
+  }, [navigateActivePageBy, webHotkeys])
+
   const videoWaterfallHasMore =
     !randomMode && (page - 1) * pageSize + (videos?.length || 0) < (total || 0)
   const javWaterfallHasMore =
@@ -4263,6 +4379,11 @@ export default function App() {
         playerHotkeys={config?.player_hotkeys}
         onSavePlayerHotkeys={async (hotkeys) => {
           const cfg = await updateConfig({ player_hotkeys: hotkeys })
+          useStore.setState({ config: cfg })
+        }}
+        webHotkeys={config?.web_hotkeys}
+        onSaveWebHotkeys={async (hotkeys) => {
+          const cfg = await updateConfig({ web_hotkeys: hotkeys })
           useStore.setState({ config: cfg })
         }}
         onChangePassword={changePassword}

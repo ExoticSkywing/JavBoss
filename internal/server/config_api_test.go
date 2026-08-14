@@ -188,6 +188,69 @@ func TestUpdateConfigAcceptsBrowserPlayerAndLANAccess(t *testing.T) {
 	}
 }
 
+func TestUpdateConfigPersistsWebHotkeys(t *testing.T) {
+	gin.SetMode(gin.TestMode)
+	database, err := dbpkg.Open(filepath.Join(t.TempDir(), "config.db"))
+	if err != nil {
+		t.Fatalf("open database: %v", err)
+	}
+	sqlDB, err := database.DB()
+	if err != nil {
+		t.Fatalf("database handle: %v", err)
+	}
+	t.Cleanup(func() { _ = sqlDB.Close() })
+	previousDB := common.DB
+	common.DB = database
+	t.Cleanup(func() { common.DB = previousDB })
+
+	router := gin.New()
+	router.PATCH("/config", updateConfig)
+	body := []byte(`{"web_hotkeys":[{"action":"content_page_up","key":"i"},{"action":"content_page_down","key":"k"},{"action":"previous_page","key":"j"},{"action":"next_page","key":"l"},{"action":"browser_back","key":"u"},{"action":"browser_forward","key":"o"}]}`)
+	req := httptest.NewRequest(http.MethodPatch, "/config", bytes.NewReader(body))
+	req.Header.Set("Content-Type", "application/json")
+	response := httptest.NewRecorder()
+	router.ServeHTTP(response, req)
+	if response.Code != http.StatusOK {
+		t.Fatalf("update config status = %d, want %d; body=%s", response.Code, http.StatusOK, response.Body.String())
+	}
+
+	got, err := dbpkg.ListConfig(context.Background())
+	if err != nil {
+		t.Fatalf("list config: %v", err)
+	}
+	want := `[{"key":"i","action":"content_page_up"},{"key":"k","action":"content_page_down"},{"key":"j","action":"previous_page"},{"key":"l","action":"next_page"},{"key":"u","action":"browser_back"},{"key":"o","action":"browser_forward"}]`
+	if got["web_hotkeys"] != want {
+		t.Fatalf("web_hotkeys = %q, want %q", got["web_hotkeys"], want)
+	}
+}
+
+func TestUpdateConfigRejectsDuplicateWebHotkeys(t *testing.T) {
+	gin.SetMode(gin.TestMode)
+	database, err := dbpkg.Open(filepath.Join(t.TempDir(), "config.db"))
+	if err != nil {
+		t.Fatalf("open database: %v", err)
+	}
+	sqlDB, err := database.DB()
+	if err != nil {
+		t.Fatalf("database handle: %v", err)
+	}
+	t.Cleanup(func() { _ = sqlDB.Close() })
+	previousDB := common.DB
+	common.DB = database
+	t.Cleanup(func() { common.DB = previousDB })
+
+	router := gin.New()
+	router.PATCH("/config", updateConfig)
+	body := []byte(`{"web_hotkeys":[{"action":"content_page_up","key":"w"},{"action":"content_page_down","key":"W"},{"action":"previous_page","key":"a"},{"action":"next_page","key":"d"},{"action":"browser_back","key":"1"},{"action":"browser_forward","key":"2"}]}`)
+	req := httptest.NewRequest(http.MethodPatch, "/config", bytes.NewReader(body))
+	req.Header.Set("Content-Type", "application/json")
+	response := httptest.NewRecorder()
+	router.ServeHTTP(response, req)
+	if response.Code != http.StatusBadRequest {
+		t.Fatalf("update config status = %d, want %d; body=%s", response.Code, http.StatusBadRequest, response.Body.String())
+	}
+}
+
 func TestNormalizeProxyHost(t *testing.T) {
 	tests := []struct {
 		name string
