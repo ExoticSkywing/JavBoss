@@ -998,13 +998,23 @@ body.has-page-scroll .sticky-pagination {
 }
 
 .skeuo-tag--user {
-  background: #fff7ed;
-  border-color: #fed7aa;
+  background: #d1fae5;
+  border-color: #a7f3d0;
 }
 
 .skeuo-tag--scraped {
-  background: #eff6ff;
-  border-color: #bfdbfe;
+  background: #ffedd5;
+  border-color: #fed7aa;
+}
+
+.skeuo-tag--user:hover {
+  background: #a7f3d0;
+  border-color: #6ee7b7;
+}
+
+.skeuo-tag--scraped:hover {
+  background: #fed7aa;
+  border-color: #fdba74;
 }
 
 .skeuo-tag--editing {
@@ -1063,6 +1073,16 @@ body.has-page-scroll .sticky-pagination {
   font-size: 0.62rem;
   font-weight: 700;
   color: #64748b;
+}
+
+.skeuo-tag--user .skeuo-tag-count {
+  background: rgba(16, 185, 129, 0.12);
+  color: #047857;
+}
+
+.skeuo-tag--scraped .skeuo-tag-count {
+  background: rgba(249, 115, 22, 0.12);
+  color: #c2410c;
 }
 
 .skeuo-tag--active .skeuo-tag-count {
