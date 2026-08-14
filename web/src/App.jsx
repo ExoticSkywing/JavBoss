@@ -1838,7 +1838,7 @@ export default function App() {
         window.scrollBy({
           top: (action === 'content_page_up' ? -1 : 1) * Math.max(1, viewportHeight * 0.9),
           left: 0,
-          behavior: 'auto',
+          behavior: 'smooth',
         })
       } else if (action === 'previous_page') {
         navigateActivePageBy(-1)
