@@ -1818,9 +1818,12 @@ export default function App() {
     let continuousFrameId = null
     let previousFrameTime = 0
 
-    const hasShortcutBlockingOverlay = () =>
-      document.documentElement.classList.contains('app-modal-open') ||
-      Boolean(document.querySelector('.MuiPopover-root, .MuiMenu-root'))
+    const hasShortcutBlockingOverlay = (allowPageJump = false) => {
+      if (document.documentElement.classList.contains('app-modal-open')) return true
+      return Array.from(document.querySelectorAll('.MuiPopover-root, .MuiMenu-root')).some(
+        (overlay) => !allowPageJump || !overlay.querySelector('.pagination-jump-popover')
+      )
+    }
 
     const blurActiveControl = () => {
       if (document.activeElement instanceof HTMLElement) {
@@ -1863,8 +1866,7 @@ export default function App() {
         event.altKey ||
         event.ctrlKey ||
         event.metaKey ||
-        isWebHotkeyEditingTarget(event.target) ||
-        hasShortcutBlockingOverlay()
+        isWebHotkeyEditingTarget(event.target)
       ) {
         return
       }
@@ -1872,7 +1874,13 @@ export default function App() {
       const pressedKey = webHotkeyFromKeyboardEvent(event)
       const action = actionByKey.get(webHotkeyKeyId(pressedKey))
       if (!action) return
+      if (hasShortcutBlockingOverlay(action === 'open_page_jump')) return
       if (action === 'edit_jav_query' && (!isJavMode || javTab !== 'list')) return
+      const pageJumpTrigger =
+        action === 'open_page_jump'
+          ? document.querySelector('[data-page-jump-trigger="true"]:not(:disabled)')
+          : null
+      if (action === 'open_page_jump' && !pageJumpTrigger) return
       event.preventDefault()
       blurActiveControl()
 
@@ -1882,6 +1890,8 @@ export default function App() {
           setJavQueryEditorOpen(true)
           loadJavTags()
         }
+      } else if (action === 'open_page_jump') {
+        pageJumpTrigger.click()
       } else if (action === 'continuous_scroll_up' || action === 'continuous_scroll_down') {
         startContinuousScroll(action)
       } else if (action === 'content_page_up' || action === 'content_page_down') {

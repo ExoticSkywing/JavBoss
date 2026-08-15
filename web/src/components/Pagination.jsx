@@ -54,8 +54,9 @@ export default function Pagination({
   const jumpOptions = []
   for (let p = 1; p <= totalPages; p++) jumpOptions.push(p)
 
-  const openJumpPicker = (event) => {
-    setJumpAnchorEl(event.currentTarget)
+  const toggleJumpPicker = (event) => {
+    const anchor = event.currentTarget
+    setJumpAnchorEl((current) => (current ? null : anchor))
   }
 
   const closeJumpPicker = () => {
@@ -245,7 +246,8 @@ export default function Pagination({
             </a>
             <button
               type="button"
-              onClick={openJumpPicker}
+              data-page-jump-trigger="true"
+              onClick={toggleJumpPicker}
               className={`pagination-button border ${
                 paginationDisabled || !canJump ? 'cursor-not-allowed opacity-50' : 'bg-white'
               }`}

@@ -4,6 +4,7 @@ export const WEB_HOTKEY_ACTIONS = [
   { action: 'continuous_scroll_up', defaultKey: 'Shift+w' },
   { action: 'continuous_scroll_down', defaultKey: 'Shift+s' },
   { action: 'edit_jav_query', defaultKey: 'Space' },
+  { action: 'open_page_jump', defaultKey: 'f' },
   { action: 'previous_page', defaultKey: 'a' },
   { action: 'next_page', defaultKey: 'd' },
   { action: 'browser_back', defaultKey: '1' },
@@ -54,7 +55,7 @@ export function parseWebHotkeys(value) {
     }
   }
 
-  if (!Array.isArray(parsed) || ![6, 8, WEB_HOTKEY_ACTIONS.length].includes(parsed.length)) {
+  if (!Array.isArray(parsed) || ![6, 8, 9, WEB_HOTKEY_ACTIONS.length].includes(parsed.length)) {
     return defaults
   }
 

@@ -20,6 +20,7 @@ const ACTION_LABELS = {
   continuous_scroll_up: { zh: '内容持续缓慢上移', en: 'Continuously scroll content up' },
   continuous_scroll_down: { zh: '内容持续缓慢下移', en: 'Continuously scroll content down' },
   edit_jav_query: { zh: '编辑 JAV 查询条件', en: 'Edit JAV query' },
+  open_page_jump: { zh: '显示/隐藏 跳转页面下拉框', en: 'Show/hide page jump dropdown' },
   previous_page: { zh: '上一页', en: 'Previous page' },
   next_page: { zh: '下一页', en: 'Next page' },
   browser_back: { zh: '浏览器后退', en: 'Browser back' },
