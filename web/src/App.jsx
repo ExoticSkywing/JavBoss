@@ -1818,10 +1818,18 @@ export default function App() {
     let continuousFrameId = null
     let previousFrameTime = 0
 
-    const hasShortcutBlockingOverlay = (allowPageJump = false) => {
-      if (document.documentElement.classList.contains('app-modal-open')) return true
+    const hasShortcutBlockingOverlay = (action = '') => {
+      if (document.documentElement.classList.contains('app-modal-open')) {
+        const dialogs = Array.from(document.querySelectorAll('[role="dialog"][aria-modal="true"]'))
+        const onlyJavQueryEditorOpen =
+          action === 'edit_jav_query' &&
+          dialogs.length === 1 &&
+          dialogs[0].classList.contains('jav-query-editor-modal')
+        if (!onlyJavQueryEditorOpen) return true
+      }
       return Array.from(document.querySelectorAll('.MuiPopover-root, .MuiMenu-root')).some(
-        (overlay) => !allowPageJump || !overlay.querySelector('.pagination-jump-popover')
+        (overlay) =>
+          action !== 'open_page_jump' || !overlay.querySelector('.pagination-jump-popover')
       )
     }
 
@@ -1874,7 +1882,7 @@ export default function App() {
       const pressedKey = webHotkeyFromKeyboardEvent(event)
       const action = actionByKey.get(webHotkeyKeyId(pressedKey))
       if (!action) return
-      if (hasShortcutBlockingOverlay(action === 'open_page_jump')) return
+      if (hasShortcutBlockingOverlay(action)) return
       if (action === 'edit_jav_query' && (!isJavMode || javTab !== 'list')) return
       const pageJumpTrigger =
         action === 'open_page_jump'
@@ -1887,8 +1895,10 @@ export default function App() {
       if (action === 'edit_jav_query') {
         stopContinuousScroll()
         if (!event.repeat) {
-          setJavQueryEditorOpen(true)
-          loadJavTags()
+          setJavQueryEditorOpen((current) => {
+            if (!current) loadJavTags()
+            return !current
+          })
         }
       } else if (action === 'open_page_jump') {
         pageJumpTrigger.click()

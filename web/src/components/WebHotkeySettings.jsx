@@ -19,7 +19,10 @@ const ACTION_LABELS = {
   content_page_down: { zh: '内容向下滑动', en: 'Scroll content down' },
   continuous_scroll_up: { zh: '内容持续缓慢上移', en: 'Continuously scroll content up' },
   continuous_scroll_down: { zh: '内容持续缓慢下移', en: 'Continuously scroll content down' },
-  edit_jav_query: { zh: '编辑 JAV 查询条件', en: 'Edit JAV query' },
+  edit_jav_query: {
+    zh: '显示/隐藏 编辑JAV查询条件弹窗',
+    en: 'Show/hide JAV query editor dialog',
+  },
   open_page_jump: { zh: '显示/隐藏 跳转页面下拉框', en: 'Show/hide page jump dropdown' },
   previous_page: { zh: '上一页', en: 'Previous page' },
   next_page: { zh: '下一页', en: 'Next page' },
