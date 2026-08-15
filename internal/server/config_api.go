@@ -28,6 +28,7 @@ var validWebHotkeyActions = map[string]struct{}{
 	"content_page_down":      {},
 	"continuous_scroll_up":   {},
 	"continuous_scroll_down": {},
+	"edit_jav_query":         {},
 	"previous_page":          {},
 	"next_page":              {},
 	"browser_back":           {},

@@ -1869,12 +1869,20 @@ export default function App() {
         return
       }
 
-      const action = actionByKey.get(webHotkeyKeyId(webHotkeyFromKeyboardEvent(event)))
+      const pressedKey = webHotkeyFromKeyboardEvent(event)
+      const action = actionByKey.get(webHotkeyKeyId(pressedKey))
       if (!action) return
+      if (action === 'edit_jav_query' && (!isJavMode || javTab !== 'list')) return
       event.preventDefault()
       blurActiveControl()
 
-      if (action === 'continuous_scroll_up' || action === 'continuous_scroll_down') {
+      if (action === 'edit_jav_query') {
+        stopContinuousScroll()
+        if (!event.repeat) {
+          setJavQueryEditorOpen(true)
+          loadJavTags()
+        }
+      } else if (action === 'continuous_scroll_up' || action === 'continuous_scroll_down') {
         startContinuousScroll(action)
       } else if (action === 'content_page_up' || action === 'content_page_down') {
         const viewportHeight = document.scrollingElement?.clientHeight || window.innerHeight || 1
@@ -1915,7 +1923,7 @@ export default function App() {
       window.removeEventListener('blur', stopContinuousScroll)
       document.removeEventListener('visibilitychange', handleVisibilityChange)
     }
-  }, [navigateActivePageBy, webHotkeys])
+  }, [isJavMode, javTab, loadJavTags, navigateActivePageBy, webHotkeys])
 
   const videoWaterfallHasMore =
     !randomMode && (page - 1) * pageSize + (videos?.length || 0) < (total || 0)
