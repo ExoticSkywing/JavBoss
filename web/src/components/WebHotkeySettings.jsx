@@ -96,16 +96,14 @@ export default function WebHotkeySettings({ hotkeys, onSave }) {
         </p>
       </div>
 
-      <div className="mt-5 divide-y divide-zinc-100">
+      <div className="mt-4 divide-y divide-zinc-100">
         {WEB_HOTKEY_ACTIONS.map(({ action }) => {
           const item = items.find((entry) => entry.action === action)
           const label = ACTION_LABELS[action]
           const capturing = capturingAction === action
           return (
-            <div key={action} className="flex items-center justify-between gap-4 py-3">
-              <label htmlFor={`web-hotkey-${action}`} className="text-sm text-zinc-700">
-                {zh(label.zh, label.en)}
-              </label>
+            <div key={action} className="flex items-center justify-between gap-3 py-2">
+              <span className="text-sm text-zinc-700">{zh(label.zh, label.en)}</span>
               <input
                 id={`web-hotkey-${action}`}
                 readOnly
@@ -129,7 +127,7 @@ export default function WebHotkeySettings({ hotkeys, onSave }) {
                     event.currentTarget.blur()
                   }
                 }}
-                className={`w-36 cursor-pointer rounded-xl border bg-white px-3 py-2 text-center text-sm font-medium outline-none ${
+                className={`w-32 cursor-pointer rounded-lg border bg-white px-2.5 py-1.5 text-center text-sm font-medium outline-none ${
                   capturing
                     ? 'border-blue-500 ring-2 ring-blue-100'
                     : 'border-zinc-200 text-zinc-800'
