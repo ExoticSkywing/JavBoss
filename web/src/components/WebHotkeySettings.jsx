@@ -7,6 +7,7 @@ import {
   normalizeWebHotkeyKey,
   parseWebHotkeys,
   WEB_HOTKEY_ACTIONS,
+  webHotkeyFromKeyboardEvent,
   webHotkeyKeyId,
   webHotkeysEqual,
 } from '@/utils/webHotkeys'
@@ -14,8 +15,10 @@ import { zh } from '@/utils/i18n'
 import { getErrorMessage } from '@/utils/errors'
 
 const ACTION_LABELS = {
-  content_page_up: { zh: '内容向上翻页', en: 'Content page up' },
-  content_page_down: { zh: '内容向下翻页', en: 'Content page down' },
+  content_page_up: { zh: '内容向上滑动', en: 'Scroll content up' },
+  content_page_down: { zh: '内容向下滑动', en: 'Scroll content down' },
+  continuous_scroll_up: { zh: '内容持续缓慢上移', en: 'Continuously scroll content up' },
+  continuous_scroll_down: { zh: '内容持续缓慢下移', en: 'Continuously scroll content down' },
   previous_page: { zh: '上一页', en: 'Previous page' },
   next_page: { zh: '下一页', en: 'Next page' },
   browser_back: { zh: '浏览器后退', en: 'Browser back' },
@@ -30,6 +33,12 @@ export default function WebHotkeySettings({ hotkeys, onSave }) {
   const [success, setSuccess] = useState('')
   const [saving, setSaving] = useState(false)
 
+  const beginCapture = (action) => {
+    setCapturingAction(action)
+    setError('')
+    setSuccess('')
+  }
+
   const setKey = (action, rawKey) => {
     const key = normalizeWebHotkeyKey(rawKey)
     if (!isAllowedWebHotkeyKey(key)) {
@@ -39,7 +48,7 @@ export default function WebHotkeySettings({ hotkeys, onSave }) {
           'That key cannot be used. Choose a key other than Escape, Tab, or a modifier key.'
         )
       )
-      return
+      return false
     }
     const duplicate = items.find(
       (item) => item.action !== action && webHotkeyKeyId(item.key) === webHotkeyKeyId(key)
@@ -47,12 +56,13 @@ export default function WebHotkeySettings({ hotkeys, onSave }) {
     if (duplicate) {
       const label = ACTION_LABELS[duplicate.action]
       setError(zh(`该按键已用于“${label.zh}”`, `That key is already assigned to “${label.en}”`))
-      return
+      return false
     }
     setItems((current) => current.map((item) => (item.action === action ? { ...item, key } : item)))
     setCapturingAction('')
     setError('')
     setSuccess('')
+    return true
   }
 
   const handleSave = async () => {
@@ -75,8 +85,8 @@ export default function WebHotkeySettings({ hotkeys, onSave }) {
         <h4 className="text-sm font-semibold text-zinc-900">{zh('网页快捷键', 'Web Shortcuts')}</h4>
         <p className="mt-1 text-sm text-zinc-500">
           {zh(
-            '点击按键框后直接按下新按键。输入文字或打开弹窗时，网页快捷键不会触发。',
-            'Select a key field and press the new key. Shortcuts are disabled while typing or while a dialog is open.'
+            '点击按键框后直接按下新按键，支持 Shift 组合键。',
+            'Select a key field and press the new key. Shift combinations are supported.'
           )}
         </p>
       </div>
@@ -95,16 +105,15 @@ export default function WebHotkeySettings({ hotkeys, onSave }) {
                 id={`web-hotkey-${action}`}
                 readOnly
                 value={capturing ? zh('请按键…', 'Press a key…') : formatWebHotkeyKey(item?.key)}
-                onFocus={() => {
-                  setCapturingAction(action)
-                  setError('')
-                  setSuccess('')
-                }}
+                onFocus={() => beginCapture(action)}
+                onClick={() => beginCapture(action)}
                 onBlur={() => setCapturingAction('')}
                 onKeyDown={(event) => {
                   event.preventDefault()
                   event.stopPropagation()
-                  setKey(action, event.key)
+                  if (setKey(action, webHotkeyFromKeyboardEvent(event))) {
+                    event.currentTarget.blur()
+                  }
                 }}
                 className={`w-36 cursor-pointer rounded-xl border bg-white px-3 py-2 text-center text-sm font-medium outline-none ${
                   capturing

@@ -81,8 +81,8 @@ import { getIdolDisplayName } from '@/utils/javIdol'
 import { withJavTagDisplayName } from '@/utils/javTag'
 import {
   isWebHotkeyEditingTarget,
-  normalizeWebHotkeyKey,
   parseWebHotkeys,
+  webHotkeyFromKeyboardEvent,
   webHotkeyKeyId,
 } from '@/utils/webHotkeys'
 import { directoryQueryIds, useStore, videoSelectionKey } from '@/store'
@@ -1814,6 +1814,48 @@ export default function App() {
 
   useEffect(() => {
     const actionByKey = new Map(webHotkeys.map((item) => [webHotkeyKeyId(item.key), item.action]))
+    let continuousAction = ''
+    let continuousFrameId = null
+    let previousFrameTime = 0
+
+    const hasShortcutBlockingOverlay = () =>
+      document.documentElement.classList.contains('app-modal-open') ||
+      Boolean(document.querySelector('.MuiPopover-root, .MuiMenu-root'))
+
+    const blurActiveControl = () => {
+      if (document.activeElement instanceof HTMLElement) {
+        document.activeElement.blur()
+      }
+    }
+
+    const stopContinuousScroll = () => {
+      if (continuousFrameId != null) window.cancelAnimationFrame(continuousFrameId)
+      continuousAction = ''
+      continuousFrameId = null
+      previousFrameTime = 0
+    }
+
+    const runContinuousScroll = (frameTime) => {
+      if (!continuousAction || hasShortcutBlockingOverlay()) {
+        stopContinuousScroll()
+        return
+      }
+      if (previousFrameTime > 0) {
+        const elapsed = Math.min(50, frameTime - previousFrameTime)
+        const direction = continuousAction === 'continuous_scroll_up' ? -1 : 1
+        window.scrollBy({ top: direction * elapsed * 0.22, left: 0, behavior: 'auto' })
+      }
+      previousFrameTime = frameTime
+      continuousFrameId = window.requestAnimationFrame(runContinuousScroll)
+    }
+
+    const startContinuousScroll = (action) => {
+      if (continuousAction === action && continuousFrameId != null) return
+      stopContinuousScroll()
+      continuousAction = action
+      continuousFrameId = window.requestAnimationFrame(runContinuousScroll)
+    }
+
     const handleKeyDown = (event) => {
       if (
         event.defaultPrevented ||
@@ -1821,22 +1863,20 @@ export default function App() {
         event.altKey ||
         event.ctrlKey ||
         event.metaKey ||
-        event.shiftKey ||
         isWebHotkeyEditingTarget(event.target) ||
-        document.documentElement.classList.contains('app-modal-open') ||
-        document.querySelector('.MuiPopover-root, .MuiMenu-root')
+        hasShortcutBlockingOverlay()
       ) {
         return
       }
 
-      const action = actionByKey.get(webHotkeyKeyId(normalizeWebHotkeyKey(event.key)))
+      const action = actionByKey.get(webHotkeyKeyId(webHotkeyFromKeyboardEvent(event)))
       if (!action) return
       event.preventDefault()
-      if (document.activeElement instanceof HTMLElement) {
-        document.activeElement.blur()
-      }
+      blurActiveControl()
 
-      if (action === 'content_page_up' || action === 'content_page_down') {
+      if (action === 'continuous_scroll_up' || action === 'continuous_scroll_down') {
+        startContinuousScroll(action)
+      } else if (action === 'content_page_up' || action === 'content_page_down') {
         const viewportHeight = document.scrollingElement?.clientHeight || window.innerHeight || 1
         window.scrollBy({
           top: (action === 'content_page_up' ? -1 : 1) * Math.max(1, viewportHeight * 0.9),
@@ -1854,8 +1894,27 @@ export default function App() {
       }
     }
 
+    const handleKeyUp = (event) => {
+      if (!continuousAction) return
+      const action = actionByKey.get(webHotkeyKeyId(webHotkeyFromKeyboardEvent(event)))
+      if (event.key === 'Shift' || action === continuousAction) stopContinuousScroll()
+    }
+
+    const handleVisibilityChange = () => {
+      if (document.hidden) stopContinuousScroll()
+    }
+
     window.addEventListener('keydown', handleKeyDown)
-    return () => window.removeEventListener('keydown', handleKeyDown)
+    window.addEventListener('keyup', handleKeyUp)
+    window.addEventListener('blur', stopContinuousScroll)
+    document.addEventListener('visibilitychange', handleVisibilityChange)
+    return () => {
+      stopContinuousScroll()
+      window.removeEventListener('keydown', handleKeyDown)
+      window.removeEventListener('keyup', handleKeyUp)
+      window.removeEventListener('blur', stopContinuousScroll)
+      document.removeEventListener('visibilitychange', handleVisibilityChange)
+    }
   }, [navigateActivePageBy, webHotkeys])
 
   const videoWaterfallHasMore =

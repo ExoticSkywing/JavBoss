@@ -1,20 +1,29 @@
 export const WEB_HOTKEY_ACTIONS = [
   { action: 'content_page_up', defaultKey: 'w' },
   { action: 'content_page_down', defaultKey: 's' },
+  { action: 'continuous_scroll_up', defaultKey: 'Shift+w' },
+  { action: 'continuous_scroll_down', defaultKey: 'Shift+s' },
   { action: 'previous_page', defaultKey: 'a' },
   { action: 'next_page', defaultKey: 'd' },
   { action: 'browser_back', defaultKey: '1' },
   { action: 'browser_forward', defaultKey: '2' },
 ]
 
-const RESERVED_KEYS = new Set(['Alt', 'Control', 'Meta', 'Shift', 'Escape', 'Tab'])
+const RESERVED_KEYS = new Set(['alt', 'control', 'meta', 'shift', 'escape', 'tab'])
 
 export function normalizeWebHotkeyKey(value) {
-  const rawKey = String(value ?? '')
-  if (rawKey === ' ' || rawKey === 'Spacebar') return 'Space'
-  const key = rawKey.trim()
-  if (!key) return ''
-  return key.length === 1 ? key.toLowerCase() : key
+  let rawKey = String(value ?? '')
+  const shifted = rawKey.toLowerCase().startsWith('shift+')
+  if (shifted) rawKey = rawKey.slice('shift+'.length)
+  let normalizedKey = ''
+  if (rawKey === ' ' || rawKey === 'Spacebar') {
+    normalizedKey = 'Space'
+  } else {
+    const key = rawKey.trim()
+    if (!key) return ''
+    normalizedKey = key.length === 1 ? key.toLowerCase() : key
+  }
+  return shifted ? `Shift+${normalizedKey}` : normalizedKey
 }
 
 export function webHotkeyKeyId(value) {
@@ -23,7 +32,10 @@ export function webHotkeyKeyId(value) {
 
 export function isAllowedWebHotkeyKey(value) {
   const key = normalizeWebHotkeyKey(value)
-  return Boolean(key) && key.length <= 32 && !RESERVED_KEYS.has(key)
+  if (!key || key.length > 32) return false
+  const baseKey = key.startsWith('Shift+') ? key.slice('Shift+'.length) : key
+  if (key.includes('+') && key !== '+' && !key.startsWith('Shift+')) return false
+  return Boolean(baseKey) && !RESERVED_KEYS.has(baseKey.toLowerCase())
 }
 
 export function defaultWebHotkeys() {
@@ -41,7 +53,9 @@ export function parseWebHotkeys(value) {
     }
   }
 
-  if (!Array.isArray(parsed) || parsed.length !== WEB_HOTKEY_ACTIONS.length) return defaults
+  if (!Array.isArray(parsed) || ![6, WEB_HOTKEY_ACTIONS.length].includes(parsed.length)) {
+    return defaults
+  }
 
   const configured = new Map()
   const usedKeys = new Set()
@@ -61,7 +75,16 @@ export function parseWebHotkeys(value) {
     usedKeys.add(keyId)
   }
 
-  return WEB_HOTKEY_ACTIONS.map(({ action }) => ({ action, key: configured.get(action) }))
+  const items = WEB_HOTKEY_ACTIONS.map(({ action, defaultKey }) => ({
+    action,
+    key: configured.get(action) || defaultKey,
+  }))
+  if (
+    items.some((item) => !configured.has(item.action) && usedKeys.has(webHotkeyKeyId(item.key)))
+  ) {
+    return defaults
+  }
+  return items
 }
 
 export function webHotkeysEqual(left, right) {
@@ -75,7 +98,18 @@ export function webHotkeysEqual(left, right) {
 
 export function formatWebHotkeyKey(value) {
   const key = normalizeWebHotkeyKey(value)
+  if (key.startsWith('Shift+')) {
+    const baseKey = key.slice('Shift+'.length)
+    return `Shift+${baseKey.length === 1 ? baseKey.toUpperCase() : baseKey}`
+  }
   return key.length === 1 ? key.toUpperCase() : key
+}
+
+export function webHotkeyFromKeyboardEvent(event) {
+  if (event.altKey || event.ctrlKey || event.metaKey) return ''
+  const key = normalizeWebHotkeyKey(event.key)
+  if (!key || key === 'Shift') return key
+  return normalizeWebHotkeyKey(event.shiftKey ? `Shift+${key}` : key)
 }
 
 export function isWebHotkeyEditingTarget(target) {

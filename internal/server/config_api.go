@@ -24,12 +24,14 @@ const maxJavDisplayRows = 12
 const maxJavSortRules = 50
 
 var validWebHotkeyActions = map[string]struct{}{
-	"content_page_up":   {},
-	"content_page_down": {},
-	"previous_page":     {},
-	"next_page":         {},
-	"browser_back":      {},
-	"browser_forward":   {},
+	"content_page_up":        {},
+	"content_page_down":      {},
+	"continuous_scroll_up":   {},
+	"continuous_scroll_down": {},
+	"previous_page":          {},
+	"next_page":              {},
+	"browser_back":           {},
+	"browser_forward":        {},
 }
 
 type javSortRule struct {
@@ -427,10 +429,22 @@ func updateConfig(c *gin.Context) {
 			}
 
 			key := strings.TrimSpace(item.Key)
+			if utf8.RuneCountInString(key) > 32 {
+				respondLocalizedError(c, http.StatusBadRequest, "网页快捷键按键无效", "Invalid web shortcut key")
+				return
+			}
+			shifted := false
+			if strings.HasPrefix(strings.ToLower(key), "shift+") {
+				shifted = true
+				key = strings.TrimSpace(key[len("shift+"):])
+			} else if strings.Contains(key, "+") && key != "+" {
+				respondLocalizedError(c, http.StatusBadRequest, "网页快捷键组合无效", "Invalid web shortcut combination")
+				return
+			}
 			if utf8.RuneCountInString(key) == 1 {
 				key = strings.ToLower(key)
 			}
-			if key == "" || utf8.RuneCountInString(key) > 32 {
+			if key == "" {
 				respondLocalizedError(c, http.StatusBadRequest, "网页快捷键按键无效", "Invalid web shortcut key")
 				return
 			}
@@ -438,6 +452,9 @@ func updateConfig(c *gin.Context) {
 			case "alt", "control", "meta", "shift", "escape", "tab":
 				respondLocalizedError(c, http.StatusBadRequest, "该按键不能用作网页快捷键", "That key cannot be used as a web shortcut")
 				return
+			}
+			if shifted {
+				key = "Shift+" + key
 			}
 			keyID := strings.ToLower(key)
 			if _, ok := seenKeys[keyID]; ok {
