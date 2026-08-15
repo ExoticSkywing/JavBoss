@@ -525,7 +525,7 @@ export default function JavQueryEditorModal({
     <AppModal
       ariaLabel={zh('编辑 JAV 查询条件', 'Edit JAV Filters')}
       className="px-4"
-      contentClassName="flex max-h-[88vh] w-full max-w-3xl flex-col overflow-hidden rounded-xl bg-white shadow-2xl ring-1 ring-slate-200"
+      contentClassName="jav-query-editor-modal flex max-h-[88vh] w-full max-w-3xl flex-col overflow-hidden rounded-xl bg-white shadow-2xl ring-1 ring-slate-200"
       onClose={onClose}
     >
       <div className="flex items-center gap-4 border-b border-slate-200 bg-slate-50 px-5 py-4">
