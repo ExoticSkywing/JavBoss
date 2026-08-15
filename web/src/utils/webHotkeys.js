@@ -36,7 +36,7 @@ export function isAllowedWebHotkeyKey(value) {
   const key = normalizeWebHotkeyKey(value)
   if (!key || key.length > 32) return false
   const baseKey = key.startsWith('Shift+') ? key.slice('Shift+'.length) : key
-  if (key.includes('+') && key !== '+' && !key.startsWith('Shift+')) return false
+  if (baseKey.includes('+') && baseKey !== '+') return false
   return Boolean(baseKey) && !RESERVED_KEYS.has(baseKey.toLowerCase())
 }
 

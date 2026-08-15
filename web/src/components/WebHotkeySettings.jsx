@@ -114,6 +114,15 @@ export default function WebHotkeySettings({ hotkeys, onSave }) {
                 onClick={() => beginCapture(action)}
                 onBlur={() => setCapturingAction('')}
                 onKeyDown={(event) => {
+                  if (event.key === 'Tab') return
+                  if (event.key === 'Escape') {
+                    event.preventDefault()
+                    event.stopPropagation()
+                    setCapturingAction('')
+                    setError('')
+                    event.currentTarget.blur()
+                    return
+                  }
                   event.preventDefault()
                   event.stopPropagation()
                   if (setKey(action, webHotkeyFromKeyboardEvent(event))) {

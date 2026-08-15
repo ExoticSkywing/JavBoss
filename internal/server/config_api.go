@@ -439,7 +439,8 @@ func updateConfig(c *gin.Context) {
 			if strings.HasPrefix(strings.ToLower(key), "shift+") {
 				shifted = true
 				key = strings.TrimSpace(key[len("shift+"):])
-			} else if strings.Contains(key, "+") && key != "+" {
+			}
+			if strings.Contains(key, "+") && key != "+" {
 				respondLocalizedError(c, http.StatusBadRequest, "网页快捷键组合无效", "Invalid web shortcut combination")
 				return
 			}

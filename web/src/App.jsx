@@ -1758,7 +1758,8 @@ export default function App() {
         return
       }
 
-      const activeWaterfallMode = Boolean(waterfallModes[javTab])
+      const waterfallKey = javTab === 'list' ? 'jav' : javTab
+      const activeWaterfallMode = Boolean(waterfallModes[waterfallKey])
       if (activeWaterfallMode) return
       if (javTab === 'idol') {
         if (idolLoading) return
@@ -1814,7 +1815,9 @@ export default function App() {
 
   useEffect(() => {
     const actionByKey = new Map(webHotkeys.map((item) => [webHotkeyKeyId(item.key), item.action]))
+    const modifierKeys = new Set(['Alt', 'AltGraph', 'Control', 'Meta', 'OS', 'Shift'])
     let continuousAction = ''
+    let continuousBaseKeyId = ''
     let continuousFrameId = null
     let previousFrameTime = 0
 
@@ -1842,6 +1845,7 @@ export default function App() {
     const stopContinuousScroll = () => {
       if (continuousFrameId != null) window.cancelAnimationFrame(continuousFrameId)
       continuousAction = ''
+      continuousBaseKeyId = ''
       continuousFrameId = null
       previousFrameTime = 0
     }
@@ -1860,14 +1864,16 @@ export default function App() {
       continuousFrameId = window.requestAnimationFrame(runContinuousScroll)
     }
 
-    const startContinuousScroll = (action) => {
+    const startContinuousScroll = (action, baseKey) => {
       if (continuousAction === action && continuousFrameId != null) return
       stopContinuousScroll()
       continuousAction = action
+      continuousBaseKeyId = webHotkeyKeyId(baseKey)
       continuousFrameId = window.requestAnimationFrame(runContinuousScroll)
     }
 
     const handleKeyDown = (event) => {
+      if (continuousAction && modifierKeys.has(event.key)) stopContinuousScroll()
       if (
         event.defaultPrevented ||
         event.isComposing ||
@@ -1901,9 +1907,9 @@ export default function App() {
           })
         }
       } else if (action === 'open_page_jump') {
-        pageJumpTrigger.click()
+        if (!event.repeat) pageJumpTrigger.click()
       } else if (action === 'continuous_scroll_up' || action === 'continuous_scroll_down') {
-        startContinuousScroll(action)
+        startContinuousScroll(action, event.key)
       } else if (action === 'content_page_up' || action === 'content_page_down') {
         const viewportHeight = document.scrollingElement?.clientHeight || window.innerHeight || 1
         window.scrollBy({
@@ -1924,8 +1930,9 @@ export default function App() {
 
     const handleKeyUp = (event) => {
       if (!continuousAction) return
-      const action = actionByKey.get(webHotkeyKeyId(webHotkeyFromKeyboardEvent(event)))
-      if (event.key === 'Shift' || action === continuousAction) stopContinuousScroll()
+      if (modifierKeys.has(event.key) || webHotkeyKeyId(event.key) === continuousBaseKeyId) {
+        stopContinuousScroll()
+      }
     }
 
     const handleVisibilityChange = () => {

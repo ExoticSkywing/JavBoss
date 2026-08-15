@@ -251,6 +251,37 @@ func TestUpdateConfigRejectsDuplicateWebHotkeys(t *testing.T) {
 	}
 }
 
+func TestUpdateConfigRejectsNestedWebHotkeyModifiers(t *testing.T) {
+	gin.SetMode(gin.TestMode)
+	database, err := dbpkg.Open(filepath.Join(t.TempDir(), "config.db"))
+	if err != nil {
+		t.Fatalf("open database: %v", err)
+	}
+	sqlDB, err := database.DB()
+	if err != nil {
+		t.Fatalf("database handle: %v", err)
+	}
+	t.Cleanup(func() { _ = sqlDB.Close() })
+	previousDB := common.DB
+	common.DB = database
+	t.Cleanup(func() { common.DB = previousDB })
+
+	router := gin.New()
+	router.PATCH("/config", updateConfig)
+	for _, key := range []string{"Shift+Control+i", "Shift+Shift+i"} {
+		t.Run(key, func(t *testing.T) {
+			body := []byte(`{"web_hotkeys":[{"action":"content_page_up","key":"i"},{"action":"content_page_down","key":"k"},{"action":"continuous_scroll_up","key":"` + key + `"},{"action":"continuous_scroll_down","key":"Shift+k"},{"action":"edit_jav_query","key":"Space"},{"action":"open_page_jump","key":"f"},{"action":"previous_page","key":"j"},{"action":"next_page","key":"l"},{"action":"browser_back","key":"u"},{"action":"browser_forward","key":"o"}]}`)
+			req := httptest.NewRequest(http.MethodPatch, "/config", bytes.NewReader(body))
+			req.Header.Set("Content-Type", "application/json")
+			response := httptest.NewRecorder()
+			router.ServeHTTP(response, req)
+			if response.Code != http.StatusBadRequest {
+				t.Fatalf("update config status = %d, want %d; body=%s", response.Code, http.StatusBadRequest, response.Body.String())
+			}
+		})
+	}
+}
+
 func TestNormalizeProxyHost(t *testing.T) {
 	tests := []struct {
 		name string
