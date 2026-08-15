@@ -1843,7 +1843,7 @@ export default function App() {
       if (previousFrameTime > 0) {
         const elapsed = Math.min(50, frameTime - previousFrameTime)
         const direction = continuousAction === 'continuous_scroll_up' ? -1 : 1
-        window.scrollBy({ top: direction * elapsed * 0.22, left: 0, behavior: 'auto' })
+        window.scrollBy({ top: direction * elapsed * 0.4, left: 0, behavior: 'auto' })
       }
       previousFrameTime = frameTime
       continuousFrameId = window.requestAnimationFrame(runContinuousScroll)
