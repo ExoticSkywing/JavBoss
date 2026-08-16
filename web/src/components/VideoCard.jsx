@@ -118,7 +118,7 @@ export default function VideoCard({
 
   return (
     <div
-      className={`video-card group relative overflow-hidden rounded-xl border bg-white shadow transition-all ${
+      className={`card-hover-scope video-card group relative overflow-hidden rounded-xl border bg-white shadow transition-all ${
         checked ? 'border-sky-400 ring-2 ring-sky-200' : 'border-gray-200 hover:border-gray-300'
       }`}
     >
@@ -159,7 +159,7 @@ export default function VideoCard({
             {zh(`已刮削 ${javCode}`, `Scraped ${javCode}`)}
           </div>
         ) : null}
-        <div className="absolute bottom-2 left-2 z-10 opacity-0 transition-opacity group-hover:opacity-100">
+        <div className="card-hover-focus-visible absolute bottom-2 left-2 z-10 opacity-0 transition-opacity group-hover:opacity-100">
           <button
             type="button"
             onClick={handleOpenScreenshots}
@@ -311,7 +311,7 @@ export default function VideoCard({
         </div>
       </div>
 
-      <div className="pointer-events-none absolute inset-0 flex items-center justify-center bg-black/0 text-white opacity-0 transition-opacity group-hover:opacity-100">
+      <div className="card-hover-focus-visible pointer-events-none absolute inset-0 flex items-center justify-center bg-black/0 text-white opacity-0 transition-opacity group-hover:opacity-100">
         <button
           onClick={(e) => {
             e.stopPropagation()

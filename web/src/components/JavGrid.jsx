@@ -20,7 +20,6 @@ import VideoLibraryOutlinedIcon from '@mui/icons-material/VideoLibraryOutlined'
 import {
   fetchJavIdolPreview,
   fetchJavIdolOptions,
-  fetchJavJavDBURL,
   fetchJavSeriesPreview,
   fetchJavSeries,
   fetchJavStudioPreview,
@@ -1562,8 +1561,6 @@ function JavCard({
   const [coverVersion, setCoverVersion] = useState(0)
   const [editorOpen, setEditorOpen] = useState(false)
   const [detailOpen, setDetailOpen] = useState(false)
-  const [javdbURL, setJavdbURL] = useState('')
-  const [javdbOpening, setJavdbOpening] = useState(false)
   const coverBase = code ? `/jav/${encodeURIComponent(code)}/cover` : null
   const cover = coverBase ? `${coverBase}${coverVersion ? `?v=${coverVersion}` : ''}` : null
 
@@ -1619,87 +1616,65 @@ function JavCard({
     : 5 * 21
 
   useEffect(() => {
-    setJavdbURL('')
-    setJavdbOpening(false)
-  }, [code])
-
-  useEffect(() => {
     setFavoriteRating(itemFavoriteRating)
   }, [item?.id, itemFavoriteRating])
 
-  const openExternalURL = (popup, targetURL) => {
-    if (!targetURL) {
-      popup?.close()
+  const handleExternalLinkClick = (event, site) => {
+    if (site.onClick) {
+      site.onClick(event)
       return
     }
-    if (popup) {
-      popup.location.replace(targetURL)
-    } else {
-      window.open(targetURL, '_blank', 'noopener,noreferrer')
-    }
-  }
-
-  const handleOpenJavDB = async (event) => {
-    event.preventDefault()
     event.stopPropagation()
-    if (!code || !javdbSearchURL || javdbOpening) return
-
-    const popup = window.open('about:blank', '_blank')
-    if (popup) {
-      popup.opener = null
-    }
-
-    try {
-      setJavdbOpening(true)
-      let targetURL = javdbURL
-      if (!targetURL) {
-        targetURL = await fetchJavJavDBURL({ code })
-        setJavdbURL(targetURL)
-      }
-      openExternalURL(popup, targetURL || javdbSearchURL)
-    } catch (error) {
-      console.warn('open javdb movie failed', error)
-      openExternalURL(popup, javdbSearchURL)
-    } finally {
-      setJavdbOpening(false)
-    }
   }
 
   const externalLinks = encodedCode
-    ? [
-        {
-          key: 'javlibrary',
-          name: 'JavLibrary',
-          href: `https://www.javlibrary.com/cn/vl_searchbyid.php?keyword=${encodedCode}`,
-          icon: '/ico/javlibrary.ico',
-        },
-        {
-          key: 'javbus',
-          name: 'JavBus',
-          href: `https://www.javbus.com/${encodedCode}`,
-          icon: '/ico/javbus.ico',
-        },
-        {
-          key: 'javdb',
-          name: 'JavDB',
-          href: javdbURL || javdbSearchURL,
-          icon: '/ico/javdb.png',
-          onClick: handleOpenJavDB,
-          loading: javdbOpening,
-        },
-        {
-          key: 'missav',
-          name: 'MissAV',
-          href: `https://missav.ws/cn/${encodedCode}`,
-          icon: '/ico/missav.ico',
-        },
-        {
-          key: 'jabel',
-          name: 'Jabel',
-          href: `https://jable.tv/videos/${encodedCode}/`,
-          icon: '/ico/jabel.ico',
-        },
-      ]
+    ? item?.is_uncensored === true
+      ? [
+          {
+            key: 'javbus',
+            name: 'JavBus',
+            href: `https://www.javbus.com/${encodedCode}`,
+            icon: '/ico/javbus.ico',
+          },
+          {
+            key: 'avsox',
+            name: 'AVSOX',
+            href: `/jav/avsox-redirect?code=${encodedCode}`,
+            icon: '/ico/avsox.ico',
+          },
+        ]
+      : [
+          {
+            key: 'javlibrary',
+            name: 'JavLibrary',
+            href: `https://www.javlibrary.com/cn/vl_searchbyid.php?keyword=${encodedCode}`,
+            icon: '/ico/javlibrary.ico',
+          },
+          {
+            key: 'javbus',
+            name: 'JavBus',
+            href: `https://www.javbus.com/${encodedCode}`,
+            icon: '/ico/javbus.ico',
+          },
+          {
+            key: 'javdb',
+            name: 'JavDB',
+            href: javdbSearchURL,
+            icon: '/ico/javdb.png',
+          },
+          {
+            key: 'javmenu',
+            name: 'JavMenu',
+            href: `https://javmenu.com/${encodedCode}`,
+            icon: '/ico/javmenu.png',
+          },
+          {
+            key: 'missav',
+            name: 'MissAV',
+            href: `https://missav.ws/cn/${encodedCode}`,
+            icon: '/ico/missav.ico',
+          },
+        ]
     : []
 
   const handleOpenFile = (event) => {
@@ -2118,7 +2093,7 @@ function JavCard({
   return (
     <>
       <div className="flex flex-col overflow-hidden rounded-lg border bg-white shadow-sm transition hover:shadow-lg">
-        <div className="group relative aspect-[800/538] overflow-hidden bg-white">
+        <div className="card-hover-scope group relative aspect-[800/538] overflow-hidden bg-white">
           {cover ? (
             <JavCoverImage src={cover} alt={item?.code || zh('JAV 封面', 'JAV cover')} />
           ) : (
@@ -2132,7 +2107,7 @@ function JavCard({
             onClick={handleOpenDetail}
             aria-label={zh(`查看 ${code || 'JAV'} 详情`, `View ${code || 'JAV'} details`)}
           />
-          <div className="pointer-events-none absolute inset-0 z-[2] flex items-center justify-center bg-black/0 text-white opacity-0 transition-opacity group-hover:opacity-100">
+          <div className="card-hover-focus-visible pointer-events-none absolute inset-0 z-[2] flex items-center justify-center bg-black/0 text-white opacity-0 transition-opacity group-hover:opacity-100">
             <button
               onClick={handlePlay}
               disabled={!canPlay}
@@ -2184,7 +2159,7 @@ function JavCard({
                   ? 'opacity-60'
                   : favoriteRating > 0
                     ? 'opacity-100'
-                    : 'opacity-0 group-focus-within:opacity-100 group-hover:opacity-100'
+                    : 'card-hover-focus-visible opacity-0 group-hover:opacity-100'
               }`}
             >
               <span
@@ -2239,7 +2214,7 @@ function JavCard({
             </span>
           </Tooltip>
           {externalLinks.length > 0 ? (
-            <div className="absolute bottom-2 left-2 z-10 flex max-w-[calc(100%-1rem)] items-center gap-1.5 opacity-0 transition-opacity group-hover:opacity-100">
+            <div className="card-hover-focus-visible absolute bottom-2 left-2 z-10 flex max-w-[calc(100%-1rem)] items-center gap-1.5 opacity-0 transition-opacity group-hover:opacity-100">
               {externalLinks.map((site) => (
                 <Tooltip
                   key={site.key}
@@ -2253,7 +2228,7 @@ function JavCard({
                     rel="noopener noreferrer"
                     className="flex h-7 w-7 shrink-0 items-center justify-center rounded-full bg-black/70 shadow-lg shadow-black/60 transition hover:bg-black/85"
                     aria-label={zh(`在 ${site.name} 中打开`, `Open in ${site.name}`)}
-                    onClick={site.onClick || ((event) => event.stopPropagation())}
+                    onClick={(event) => handleExternalLinkClick(event, site)}
                   >
                     <img
                       src={site.icon}
@@ -2268,10 +2243,10 @@ function JavCard({
           ) : null}
           <button
             type="button"
-            className={`absolute right-2 top-2 z-10 flex h-8 w-8 items-center justify-center rounded-full shadow-lg shadow-black/40 transition ${
+            className={`card-hover-focus-visible absolute right-2 top-2 z-10 flex h-8 w-8 items-center justify-center rounded-full shadow-lg shadow-black/40 transition ${
               favoriteCount > 0
                 ? 'bg-amber-400 text-amber-950 hover:bg-amber-300'
-                : 'bg-black/65 text-white opacity-0 hover:bg-black/80 group-focus-within:opacity-100 group-hover:opacity-100'
+                : 'bg-black/65 text-white opacity-0 hover:bg-black/80 group-hover:opacity-100'
             }`}
             title={zh('加入作品收藏夹', 'Add to JAV favorite groups')}
             aria-label={zh('加入作品收藏夹', 'Add to JAV favorite groups')}
@@ -2284,7 +2259,7 @@ function JavCard({
             )}
           </button>
           {cover || canOpen ? (
-            <div className="absolute bottom-2 right-2 z-10 flex items-center gap-2 opacity-0 transition-opacity group-hover:opacity-100">
+            <div className="card-hover-focus-visible absolute bottom-2 right-2 z-10 flex items-center gap-2 opacity-0 transition-opacity group-hover:opacity-100">
               {cover ? (
                 <button
                   type="button"
@@ -2343,7 +2318,7 @@ function JavCard({
                 </Tooltip>
                 <a
                   href={buildStudioFilterHref(item.studio)}
-                  className={`block min-w-0 flex-1 truncate text-left ${
+                  className={`block min-w-0 truncate text-left ${
                     canFilterStudio ? 'cursor-pointer hover:text-blue-700 hover:underline' : ''
                   }`}
                   onClick={(event) =>
