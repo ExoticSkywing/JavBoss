@@ -67,7 +67,7 @@ func getConfig(c *gin.Context) {
 		respondLocalizedError(c, http.StatusInternalServerError, "加载配置失败", "Failed to load configuration")
 		return
 	}
-	applyRuntimeConfigFields(cfg)
+	applyRuntimeConfigFields(cfg, c.Request.RemoteAddr)
 	c.JSON(http.StatusOK, cfg)
 }
 
@@ -121,6 +121,7 @@ func updateConfig(c *gin.Context) {
 		PlayerReuseWindow      *bool                 `json:"player_reuse_window"`
 		PlayerResumePlayback   *bool                 `json:"player_resume_playback"`
 		PlayerShowHotkeyHint   *bool                 `json:"player_show_hotkey_hint"`
+		BrowserShowHotkeyHint  *bool                 `json:"browser_player_show_hotkey_hint"`
 		PlayerHotkeys          []playerHotkeyPayload `json:"player_hotkeys"`
 		WebHotkeys             []webHotkeyPayload    `json:"web_hotkeys"`
 	}
@@ -364,6 +365,9 @@ func updateConfig(c *gin.Context) {
 	if req.PlayerShowHotkeyHint != nil {
 		entries["player_show_hotkey_hint"] = strconv.FormatBool(*req.PlayerShowHotkeyHint)
 	}
+	if req.BrowserShowHotkeyHint != nil {
+		entries["browser_player_show_hotkey_hint"] = strconv.FormatBool(*req.BrowserShowHotkeyHint)
+	}
 	if req.PlayerHotkeys != nil {
 		clean := make([]playerHotkeyPayload, 0, len(req.PlayerHotkeys))
 		seen := make(map[string]struct{}, len(req.PlayerHotkeys))
@@ -518,17 +522,28 @@ func updateConfig(c *gin.Context) {
 		return
 	}
 	util.SetProxyFromStrings(cfg["proxy_host"], cfg["proxy_port"])
-	applyRuntimeConfigFields(cfg)
+	applyRuntimeConfigFields(cfg, c.Request.RemoteAddr)
 	c.JSON(http.StatusOK, cfg)
 }
 
-func applyRuntimeConfigFields(cfg map[string]string) {
+func applyRuntimeConfigFields(cfg map[string]string, remoteAddr string) {
 	cfg["runtime_container"] = strconv.FormatBool(runtimeconfig.ContainerMode())
 	cfg["directory_picker_enabled"] = strconv.FormatBool(!runtimeconfig.DisableDirectoryPicker())
 	cfg["desktop_integration_enabled"] = strconv.FormatBool(!runtimeconfig.DisableDesktopIntegration())
 	cfg["mpv_enabled"] = strconv.FormatBool(!runtimeconfig.DisableMPVPlayback())
-	cfg["browser_playback_only"] = strconv.FormatBool(runtimeconfig.DisableMPVPlayback() && runtimeconfig.DisableDesktopIntegration())
+	browserPlaybackOnly := runtimeconfig.DisableMPVPlayback() && runtimeconfig.DisableDesktopIntegration()
+	cfg["browser_playback_only"] = strconv.FormatBool(browserPlaybackOnly || isRemoteRequest(remoteAddr))
 	cfg["host_path_prefix_enabled"] = strconv.FormatBool(runtimeconfig.HostPathPrefixEnabled())
+}
+
+func isRemoteRequest(remoteAddr string) bool {
+	host := strings.TrimSpace(remoteAddr)
+	if parsedHost, _, err := net.SplitHostPort(host); err == nil {
+		host = parsedHost
+	}
+	host = strings.Trim(host, "[]")
+	ip := net.ParseIP(host)
+	return ip != nil && !ip.IsLoopback()
 }
 
 func normalizeProxyHost(host string) (string, bool) {

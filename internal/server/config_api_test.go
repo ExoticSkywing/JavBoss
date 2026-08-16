@@ -167,7 +167,7 @@ func TestUpdateConfigAcceptsBrowserPlayerAndLANAccess(t *testing.T) {
 	req := httptest.NewRequest(
 		http.MethodPatch,
 		"/config",
-		bytes.NewReader([]byte(`{"default_player":"browser","allow_lan_access":true}`)),
+		bytes.NewReader([]byte(`{"default_player":"browser","allow_lan_access":true,"browser_player_show_hotkey_hint":false}`)),
 	)
 	req.Header.Set("Content-Type", "application/json")
 	response := httptest.NewRecorder()
@@ -185,6 +185,35 @@ func TestUpdateConfigAcceptsBrowserPlayerAndLANAccess(t *testing.T) {
 	}
 	if got["allow_lan_access"] != "true" {
 		t.Fatalf("allow_lan_access = %q, want true", got["allow_lan_access"])
+	}
+	if got["browser_player_show_hotkey_hint"] != "false" {
+		t.Fatalf(
+			"browser_player_show_hotkey_hint = %q, want false",
+			got["browser_player_show_hotkey_hint"],
+		)
+	}
+}
+
+func TestIsRemoteRequest(t *testing.T) {
+	tests := []struct {
+		name       string
+		remoteAddr string
+		want       bool
+	}{
+		{name: "IPv4 loopback", remoteAddr: "127.0.0.1:17654", want: false},
+		{name: "IPv6 loopback", remoteAddr: "[::1]:17654", want: false},
+		{name: "LAN IPv4", remoteAddr: "192.168.1.25:54321", want: true},
+		{name: "LAN IPv6", remoteAddr: "[fd00::25]:54321", want: true},
+		{name: "address without port", remoteAddr: "10.0.0.8", want: true},
+		{name: "unknown address", remoteAddr: "", want: false},
+	}
+
+	for _, test := range tests {
+		t.Run(test.name, func(t *testing.T) {
+			if got := isRemoteRequest(test.remoteAddr); got != test.want {
+				t.Fatalf("isRemoteRequest(%q) = %t, want %t", test.remoteAddr, got, test.want)
+			}
+		})
 	}
 }
 
