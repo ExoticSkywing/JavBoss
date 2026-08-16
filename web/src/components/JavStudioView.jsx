@@ -186,6 +186,7 @@ export function StudioCard({
   onOpenEditor,
   buildSeriesUrl,
   directoryIds = [],
+  seriesListModalZIndex = 1500,
 }) {
   const cover = item?.sample_code ? `/jav/${encodeURIComponent(item.sample_code)}/cover` : null
   const name = item?.name || zh('未知片商', 'Unknown studio')
@@ -225,7 +226,7 @@ export function StudioCard({
     : []
   const searchName = String(item?.name || '').trim()
   const javDBSearchURL = searchName
-    ? `https://javdb.com/search?q=${encodeURIComponent(searchName)}&f=all`
+    ? `https://javdb.com/search?f=maker&q=${encodeURIComponent(searchName)}`
     : ''
   const [previewSeries, setPreviewSeries] = useState(null)
   const [seriesHoverAnchorEl, setSeriesHoverAnchorEl] = useState(null)
@@ -706,16 +707,16 @@ export function StudioCard({
               <AppModal
                 ariaLabel={zh('片商系列', 'Studio series')}
                 className="p-4"
-                contentClassName="max-h-[84vh] w-[min(72rem,calc(100vw-2rem))] overflow-y-auto rounded-lg border border-gray-200 bg-white shadow-xl"
+                contentClassName="flex max-h-[84vh] w-[min(72rem,calc(100vw-2rem))] flex-col overflow-hidden rounded-lg border border-gray-200 bg-white shadow-xl"
                 contentProps={{ onClick: (event) => event.stopPropagation() }}
                 onClose={(event) => {
                   event?.preventDefault()
                   event?.stopPropagation()
                   closeSeriesList()
                 }}
-                zIndex={1500}
+                zIndex={seriesListModalZIndex}
               >
-                <div className="sticky top-0 z-10 mb-2 flex items-center justify-between gap-3 border-b border-gray-100 bg-white px-3 py-2">
+                <div className="flex shrink-0 items-center justify-between gap-3 border-b border-gray-100 bg-white px-3 py-2">
                   <div className="text-xs font-semibold text-gray-700">
                     {zh(
                       `片商：${name}，共${seriesItems.length}个系列`,
@@ -734,22 +735,24 @@ export function StudioCard({
                     {zh('关闭', 'Close')}
                   </button>
                 </div>
-                <div className="grid grid-cols-3 gap-3 p-3 md:grid-cols-4 xl:grid-cols-5">
-                  {seriesItems.map((series) => {
-                    return (
-                      <SeriesCard
-                        key={series.id}
-                        item={series}
-                        href={buildSeriesUrl?.(series)}
-                        onSelectSeries={(selectedSeries) => {
-                          closeSeriesList()
-                          onSelectSeries?.(selectedSeries)
-                        }}
-                        onSelectStudio={(studio) => onSelectStudio?.(studio)}
-                        onOpenFavorites={onOpenSeriesFavorites}
-                      />
-                    )
-                  })}
+                <div className="min-h-0 flex-1 overflow-y-auto">
+                  <div className="grid grid-cols-3 gap-3 p-3 md:grid-cols-4 xl:grid-cols-5">
+                    {seriesItems.map((series) => {
+                      return (
+                        <SeriesCard
+                          key={series.id}
+                          item={series}
+                          href={buildSeriesUrl?.(series)}
+                          onSelectSeries={(selectedSeries) => {
+                            closeSeriesList()
+                            onSelectSeries?.(selectedSeries)
+                          }}
+                          onSelectStudio={(studio) => onSelectStudio?.(studio)}
+                          onOpenFavorites={onOpenSeriesFavorites}
+                        />
+                      )
+                    })}
+                  </div>
                 </div>
               </AppModal>
             ) : null}
