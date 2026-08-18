@@ -1,6 +1,7 @@
 import { useCallback, useEffect, useMemo, useState } from 'react'
 import {
   createJavDiscoverySubscription,
+  createCloudDriveDownload,
   deleteJavDiscoverySubscription,
   fetchJavDiscoveryItems,
   fetchJavDiscoverySubscriptions,
@@ -9,6 +10,7 @@ import {
   updateJavDiscoveryWanted,
 } from '@/api'
 import JavDiscoveryDetailModal from '@/components/JavDiscoveryDetailModal'
+import JavDiscoveryDownloadsView from '@/components/JavDiscoveryDownloadsView'
 import { getErrorMessage } from '@/utils/errors'
 import { zh } from '@/utils/i18n'
 
@@ -65,6 +67,7 @@ export default function JavDiscoveryView() {
   const [syncing, setSyncing] = useState(false)
   const [loadingHistory, setLoadingHistory] = useState(false)
   const [busyItemIds, setBusyItemIds] = useState(() => new Set())
+  const [busyMagnetUrls, setBusyMagnetUrls] = useState(() => new Set())
   const [error, setError] = useState('')
   const [notice, setNotice] = useState('')
   const [selectedItem, setSelectedItem] = useState(null)
@@ -210,6 +213,33 @@ export default function JavDiscoveryView() {
     }
   }
 
+  const handleDownload = async (item, magnet) => {
+    const magnetUrl = String(magnet?.url || '')
+    if (!magnetUrl) return
+    setBusyMagnetUrls((current) => new Set(current).add(magnetUrl))
+    setError('')
+    setNotice('')
+    try {
+      await createCloudDriveDownload(item.id, magnetUrl)
+      setNotice(
+        zh(
+          `${item.code} 已加入下载队列，可在“下载队列”中查看进度`,
+          `${item.code} was added to the download queue; track it under Downloads`
+        )
+      )
+      setSelectedItem(null)
+      setActiveTab('downloads')
+    } catch (downloadError) {
+      setError(getErrorMessage(downloadError))
+    } finally {
+      setBusyMagnetUrls((current) => {
+        const next = new Set(current)
+        next.delete(magnetUrl)
+        return next
+      })
+    }
+  }
+
   const subscriptionCountLabel = useMemo(
     () => zh(`${subscriptions.length} 个女优订阅`, `${subscriptions.length} idol subscriptions`),
     [subscriptions.length]
@@ -274,6 +304,10 @@ export default function JavDiscoveryView() {
     {
       id: 'wanted',
       label: zh('我想要', 'Wanted'),
+    },
+    {
+      id: 'downloads',
+      label: zh('下载队列', 'Downloads'),
     },
   ]
 
@@ -423,6 +457,8 @@ export default function JavDiscoveryView() {
                 )}
               </div>
             </section>
+          ) : activeTab === 'downloads' ? (
+            <JavDiscoveryDownloadsView />
           ) : (
             <section>
               {wantedOnly ? (
@@ -605,6 +641,8 @@ export default function JavDiscoveryView() {
           onClose={() => setSelectedItem(null)}
           onResolved={handleDetailsResolved}
           onToggleWanted={handleWanted}
+          onDownload={handleDownload}
+          downloadBusy={(magnet) => busyMagnetUrls.has(String(magnet?.url || ''))}
         />
       ) : null}
     </div>

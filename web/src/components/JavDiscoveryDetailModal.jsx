@@ -30,6 +30,8 @@ export default function JavDiscoveryDetailModal({
   item,
   wantedBusy = false,
   onClose,
+  onDownload,
+  downloadBusy = () => false,
   onResolved,
   onToggleWanted,
 }) {
@@ -349,6 +351,9 @@ export default function JavDiscoveryDetailModal({
                       <th className="w-28 px-2 py-2.5 text-center font-semibold sm:w-32 sm:px-3">
                         {zh('分享日期', 'Share date')}
                       </th>
+                      <th className="w-24 px-2 py-2.5 text-center font-semibold sm:w-28 sm:px-3">
+                        {zh('操作', 'Action')}
+                      </th>
                     </tr>
                   </thead>
                   <tbody>
@@ -389,6 +394,18 @@ export default function JavDiscoveryDetailModal({
                           <a href={magnet.url} className="block px-3 py-2.5">
                             {magnet.share_date || '—'}
                           </a>
+                        </td>
+                        <td className="px-2 py-2 text-center">
+                          <button
+                            type="button"
+                            disabled={downloadBusy(magnet)}
+                            onClick={() => onDownload?.(displayItem, magnet)}
+                            className="rounded-md bg-blue-600 px-2.5 py-1.5 text-[11px] font-semibold text-white hover:bg-blue-700 disabled:cursor-not-allowed disabled:opacity-50"
+                          >
+                            {downloadBusy(magnet)
+                              ? zh('加入中…', 'Adding...')
+                              : zh('下载到本地', 'Download')}
+                          </button>
                         </td>
                       </tr>
                     ))}

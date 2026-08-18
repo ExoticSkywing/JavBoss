@@ -686,6 +686,67 @@ export async function triggerJavDiscoverySync() {
   return res.json()
 }
 
+export async function fetchCloudDriveSettings() {
+  const res = await apiFetch('/jav/discovery/clouddrive/settings', { cache: 'no-store' })
+  if (!res.ok) throw await apiError(res)
+  return res.json()
+}
+
+export async function updateCloudDriveSettings(payload) {
+  const res = await apiFetch('/jav/discovery/clouddrive/settings', {
+    method: 'PUT',
+    headers: jsonHeaders,
+    body: JSON.stringify(payload),
+  })
+  if (!res.ok) throw await apiError(res)
+  return res.json()
+}
+
+export async function testCloudDriveSettings() {
+  const res = await apiFetch('/jav/discovery/clouddrive/test', { method: 'POST' })
+  if (!res.ok) throw await apiError(res)
+  return res.json()
+}
+
+export async function fetchCloudDriveDownloads({ limit = 100 } = {}) {
+  const res = await apiFetch(`/jav/discovery/downloads?limit=${encodeURIComponent(limit)}`, {
+    cache: 'no-store',
+  })
+  if (!res.ok) throw await apiError(res)
+  return res.json()
+}
+
+export async function createCloudDriveDownload(itemId, magnetUrl, directoryId = null) {
+  const res = await apiFetch(`/jav/discovery/items/${encodeURIComponent(itemId)}/downloads`, {
+    method: 'POST',
+    headers: jsonHeaders,
+    body: JSON.stringify({ magnet_url: magnetUrl, directory_id: directoryId }),
+  })
+  if (!res.ok) throw await apiError(res)
+  return res.json()
+}
+
+export async function retryCloudDriveDownload(id) {
+  const res = await apiFetch(`/jav/discovery/downloads/${encodeURIComponent(id)}/retry`, {
+    method: 'POST',
+  })
+  if (!res.ok) throw await apiError(res)
+}
+
+export async function cancelCloudDriveDownload(id) {
+  const res = await apiFetch(`/jav/discovery/downloads/${encodeURIComponent(id)}/cancel`, {
+    method: 'POST',
+  })
+  if (!res.ok) throw await apiError(res)
+}
+
+export async function deleteCloudDriveDownload(id) {
+  const res = await apiFetch(`/jav/discovery/downloads/${encodeURIComponent(id)}`, {
+    method: 'DELETE',
+  })
+  if (!res.ok) throw await apiError(res)
+}
+
 function javSampleImagesRequest(id, directoryIds) {
   const javId = Number(id)
   const normalizedDirectoryIds = directoryIds
