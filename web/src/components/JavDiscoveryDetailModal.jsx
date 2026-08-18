@@ -155,7 +155,7 @@ export default function JavDiscoveryDetailModal({
         aria-modal="true"
         aria-labelledby={titleId}
         tabIndex={-1}
-        className="relative z-10 flex max-h-[95vh] w-full max-w-[77rem] flex-col overflow-hidden rounded-xl bg-white shadow-2xl outline-none"
+        className="relative z-10 flex max-h-[95vh] w-full max-w-[86rem] flex-col overflow-hidden rounded-xl bg-white shadow-2xl outline-none"
       >
         <div className="flex items-start justify-between gap-3 border-b border-gray-200 px-4 py-3 sm:px-5">
           <h2
@@ -198,8 +198,8 @@ export default function JavDiscoveryDetailModal({
               </button>
             </div>
           ) : null}
-          <div className="grid gap-6 md:grid-cols-[minmax(20rem,28rem)_minmax(0,1fr)] xl:grid-cols-[minmax(26rem,40rem)_minmax(0,32rem)] xl:justify-center">
-            <div className="relative mx-auto h-[min(48vh,33.333rem)] w-full max-w-[28rem] overflow-hidden rounded-lg border border-gray-200 bg-gray-100 shadow-sm xl:max-w-[40rem]">
+          <div className="grid gap-6 md:grid-cols-[minmax(20rem,28rem)_minmax(0,1fr)] xl:grid-cols-[minmax(26rem,59.5rem)_32rem] xl:justify-center">
+            <div className="relative mx-auto aspect-[400/269] w-full max-w-[28rem] overflow-hidden rounded-lg border border-gray-200 bg-gray-100 shadow-sm xl:max-w-none">
               {detailsResolved && metadata.cover_url ? (
                 <>
                   {!coverLoaded && !coverError ? (
