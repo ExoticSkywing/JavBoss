@@ -87,6 +87,68 @@ func TestFetchJavBusActressWorksReturnsBoundedWindow(t *testing.T) {
 	}
 }
 
+func TestFetchJavBusDiscoveryItemDetailsIncludesMagnetLinks(t *testing.T) {
+	client := util.DefaultHTTPClient()
+	originalTransport := client.Transport
+	t.Cleanup(func() {
+		client.Transport = originalTransport
+		resetJavBusRateLimiterForTest()
+	})
+
+	requests := 0
+	client.Transport = roundTripFunc(func(req *http.Request) (*http.Response, error) {
+		requests++
+		var body string
+		switch req.URL.Path {
+		case "/ABC-001":
+			body = `<html><body>
+				<h3>ABC-001 Test title</h3>
+				<p><span>識別碼:</span><span>ABC-001</span></p>
+				<script>var gid = 12345; var uc = 0; var img = '/pics/cover/test.jpg';</script>
+			</body></html>`
+		case "/ajax/uncledatoolsbyajax.php":
+			if req.URL.Query().Get("gid") != "12345" ||
+				req.URL.Query().Get("uc") != "0" ||
+				req.URL.Query().Get("img") != "/pics/cover/test.jpg" {
+				t.Errorf("magnet query = %q", req.URL.RawQuery)
+			}
+			if req.Header.Get("Referer") != "https://www.javbus.com/ABC-001" {
+				t.Errorf("magnet referer = %q", req.Header.Get("Referer"))
+			}
+			body = `<tr>
+				<td><a href="magnet:?xt=urn:btih:ABCDEF123456&amp;dn=ABC-001-HD">ABC-001-HD</a><span title="包含高清HD的磁力連結">高清</span><span title="包含字幕的磁力連結">字幕</span></td>
+				<td>2.50GB</td><td>2026-08-18</td>
+			</tr>`
+		default:
+			t.Fatalf("unexpected request URL: %s", req.URL)
+		}
+		return &http.Response{
+			StatusCode: http.StatusOK,
+			Status:     "200 OK",
+			Header:     make(http.Header),
+			Body:       io.NopCloser(strings.NewReader(body)),
+			Request:    req,
+		}, nil
+	})
+
+	resetJavBusRateLimiterForTest()
+	details, err := FetchJavBusDiscoveryItemDetails(context.Background(), "ABC-001")
+	if err != nil {
+		t.Fatalf("fetch discovery details: %v", err)
+	}
+	if requests != 2 {
+		t.Fatalf("requests = %d, want detail and magnet requests", requests)
+	}
+	if len(details.MagnetLinks) != 1 {
+		t.Fatalf("magnet links = %#v", details.MagnetLinks)
+	}
+	link := details.MagnetLinks[0]
+	if link.Name != "ABC-001-HD" || link.Size != "2.50GB" || link.ShareDate != "2026-08-18" ||
+		!link.HD || !link.Subtitled || !strings.HasPrefix(link.URL, "magnet:?xt=urn:btih:") {
+		t.Fatalf("magnet link = %#v", link)
+	}
+}
+
 func TestResolveJavBusActressSubscriptionUsesExactCodeOnly(t *testing.T) {
 	client := util.DefaultHTTPClient()
 	originalTransport := client.Transport

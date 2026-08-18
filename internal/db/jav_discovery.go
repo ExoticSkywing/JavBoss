@@ -364,7 +364,18 @@ func UpdateJavDiscoveryItemDetails(ctx context.Context, id int64, details jav.Ja
 	if err != nil {
 		return nil, fmt.Errorf("marshal jav discovery item details: %w", err)
 	}
-	updates := map[string]any{"metadata_json": string(metadata)}
+	magnetLinks := details.MagnetLinks
+	if magnetLinks == nil {
+		magnetLinks = []jav.JavBusMagnetLink{}
+	}
+	magnetLinksJSON, err := json.Marshal(magnetLinks)
+	if err != nil {
+		return nil, fmt.Errorf("marshal jav discovery item magnet links: %w", err)
+	}
+	updates := map[string]any{
+		"metadata_json":     string(metadata),
+		"magnet_links_json": string(magnetLinksJSON),
+	}
 	if details.ReleaseUnix > 0 {
 		updates["release_unix"] = details.ReleaseUnix
 	}

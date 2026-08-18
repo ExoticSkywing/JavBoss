@@ -177,6 +177,9 @@ func TestJavDiscoveryDetailsSurviveListingRefresh(t *testing.T) {
 		IsUncensored:     &uncensored,
 		Source:           "javbus",
 		DetailsFetchedAt: &fetchedAt,
+		MagnetLinks: []jav.JavBusMagnetLink{{
+			Name: "ABP-001-HD", URL: "magnet:?xt=urn:btih:ABC123&dn=ABP-001-HD", Size: "4.2GB",
+		}},
 	}
 	if _, err := UpdateJavDiscoveryItemDetails(ctx, items[0].ID, details); err != nil {
 		t.Fatalf("update details: %v", err)
@@ -204,6 +207,13 @@ func TestJavDiscoveryDetailsSurviveListingRefresh(t *testing.T) {
 		len(metadata.Tags) != len(details.Tags) ||
 		metadata.DetailsFetchedAt == nil {
 		t.Fatalf("full details were overwritten by listing refresh: %#v", metadata)
+	}
+	var magnetLinks []jav.JavBusMagnetLink
+	if err := json.Unmarshal([]byte(record.MagnetLinksJSON), &magnetLinks); err != nil {
+		t.Fatalf("unmarshal magnet links: %v", err)
+	}
+	if len(magnetLinks) != 1 || magnetLinks[0].URL != details.MagnetLinks[0].URL {
+		t.Fatalf("magnet links were not preserved: %#v", magnetLinks)
 	}
 	coverURL, err := GetJavDiscoveryItemCoverURL(ctx, items[0].ID)
 	if err != nil || coverURL != details.CoverURL {

@@ -188,7 +188,8 @@ func resolveJavDiscoveryItemDetails(c *gin.Context) {
 	var cached jav.JavBusDiscoveryItem
 	if json.Unmarshal([]byte(record.MetadataJSON), &cached) == nil &&
 		cached.DetailsFetchedAt != nil &&
-		cached.DetailsFetchedAt.After(time.Now().Add(-javDiscoveryDetailsTTL)) {
+		cached.DetailsFetchedAt.After(time.Now().Add(-javDiscoveryDetailsTTL)) &&
+		javDiscoveryMagnetLinksFetched(record.MagnetLinksJSON) {
 		respondJavDiscoveryDetails(c, record)
 		return
 	}
@@ -221,11 +222,25 @@ func respondJavDiscoveryDetails(c *gin.Context, record *models.JavDiscoveryItem)
 	if !json.Valid(metadata) {
 		metadata = json.RawMessage(`{}`)
 	}
+	magnetLinks := json.RawMessage(strings.TrimSpace(record.MagnetLinksJSON))
+	if !json.Valid(magnetLinks) || string(magnetLinks) == "null" {
+		magnetLinks = json.RawMessage(`[]`)
+	}
 	c.JSON(http.StatusOK, gin.H{
 		"metadata":     metadata,
+		"magnet_links": magnetLinks,
 		"release_unix": record.ReleaseUnix,
 		"updated_at":   record.UpdatedAt,
 	})
+}
+
+func javDiscoveryMagnetLinksFetched(value string) bool {
+	value = strings.TrimSpace(value)
+	if value == "" || value == "null" {
+		return false
+	}
+	var links []jav.JavBusMagnetLink
+	return json.Unmarshal([]byte(value), &links) == nil
 }
 
 func getJavDiscoveryItemCover(c *gin.Context) {

@@ -9,6 +9,13 @@ function metadataList(value) {
   return value.map((item) => String(item || '').trim()).filter(Boolean)
 }
 
+function magnetLinkList(value) {
+  if (!Array.isArray(value)) return []
+  return value.filter(
+    (item) => item && typeof item === 'object' && String(item.url || '').startsWith('magnet:?')
+  )
+}
+
 function formatReleaseDate(releaseUnix) {
   const value = Number(releaseUnix)
   if (!Number.isFinite(value) || value <= 0) return zh('未知', 'Unknown')
@@ -43,6 +50,7 @@ export default function JavDiscoveryDetailModal({
   const actresses = metadataList(metadata.actresses)
   const tags = metadataList(metadata.tags)
   const subscriptions = metadataList(displayItem?.subscriptions)
+  const magnetLinks = magnetLinkList(displayItem?.magnet_links)
   const coverPath = `/jav/discovery/items/${encodeURIComponent(displayItem?.id)}/cover?v=${encodeURIComponent(
     displayItem?.updated_at || ''
   )}`
@@ -62,6 +70,7 @@ export default function JavDiscoveryDetailModal({
         const next = {
           ...currentItem,
           metadata: payload?.metadata || currentItem.metadata || {},
+          magnet_links: Array.isArray(payload?.magnet_links) ? payload.magnet_links : [],
           release_unix: Number(payload?.release_unix) || currentItem.release_unix,
           updated_at: payload?.updated_at || currentItem.updated_at,
         }
@@ -283,6 +292,45 @@ export default function JavDiscoveryDetailModal({
                       >
                         {tag}
                       </span>
+                    ))}
+                  </div>
+                </section>
+              ) : null}
+
+              {magnetLinks.length > 0 ? (
+                <section>
+                  <h3 className="mb-1.5 text-xs font-semibold text-gray-800">
+                    {zh('磁力链接', 'Magnet links')}
+                  </h3>
+                  <div className="max-h-60 space-y-1.5 overflow-y-auto rounded-lg border border-gray-200 p-2">
+                    {magnetLinks.map((magnet) => (
+                      <a
+                        key={magnet.url}
+                        href={magnet.url}
+                        title={magnet.url}
+                        className="block rounded-md bg-gray-50 px-2.5 py-2 text-xs hover:bg-blue-50"
+                      >
+                        <div className="flex min-w-0 items-start gap-1.5">
+                          <span className="min-w-0 flex-1 break-words font-medium text-blue-700">
+                            {magnet.name || displayItem?.code || zh('磁力链接', 'Magnet link')}
+                          </span>
+                          {magnet.hd ? (
+                            <span className="shrink-0 rounded bg-blue-100 px-1.5 py-0.5 text-[10px] font-semibold text-blue-700">
+                              HD
+                            </span>
+                          ) : null}
+                          {magnet.subtitled ? (
+                            <span className="shrink-0 rounded bg-amber-100 px-1.5 py-0.5 text-[10px] font-semibold text-amber-700">
+                              {zh('字幕', 'Sub')}
+                            </span>
+                          ) : null}
+                        </div>
+                        {magnet.size || magnet.share_date ? (
+                          <div className="mt-1 text-[11px] text-gray-500">
+                            {[magnet.size, magnet.share_date].filter(Boolean).join(' · ')}
+                          </div>
+                        ) : null}
+                      </a>
                     ))}
                   </div>
                 </section>

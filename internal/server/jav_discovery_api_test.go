@@ -168,6 +168,9 @@ func TestJavDiscoveryItemsAPIKeepsWantedInsideDiscoveredSet(t *testing.T) {
 			Tags:             []string{"Tag A", "Tag B"},
 			Source:           "javbus",
 			DetailsFetchedAt: &detailsFetchedAt,
+			MagnetLinks: []jav.JavBusMagnetLink{{
+				Name: "ABC-001-HD", URL: "magnet:?xt=urn:btih:ABC123&dn=ABC-001-HD", Size: "4.2GB",
+			}},
 		}, nil
 	}
 	t.Cleanup(func() { fetchJavBusDetails = previousDetailsFetch })
@@ -189,6 +192,7 @@ func TestJavDiscoveryItemsAPIKeepsWantedInsideDiscoveredSet(t *testing.T) {
 				Series string   `json:"series"`
 				Tags   []string `json:"tags"`
 			} `json:"metadata"`
+			MagnetLinks []jav.JavBusMagnetLink `json:"magnet_links"`
 		}
 		if err := json.Unmarshal(details.Body.Bytes(), &payload); err != nil {
 			t.Fatalf("decode details: %v", err)
@@ -198,6 +202,9 @@ func TestJavDiscoveryItemsAPIKeepsWantedInsideDiscoveredSet(t *testing.T) {
 			payload.Metadata.Series != "Test Series" ||
 			len(payload.Metadata.Tags) != 2 {
 			t.Fatalf("unexpected details payload: %+v", payload)
+		}
+		if len(payload.MagnetLinks) != 1 || payload.MagnetLinks[0].Name != "ABC-001-HD" {
+			t.Fatalf("unexpected magnet links payload: %+v", payload.MagnetLinks)
 		}
 	}
 	if detailCalls != 1 {

@@ -237,13 +237,14 @@ type JavDiscoverySubscription struct {
 // catalog. Wanted is deliberately a property of an existing discovery item,
 // making the wanted collection a strict subset of discovered items.
 type JavDiscoveryItem struct {
-	ID           int64     `json:"id" gorm:"primaryKey"`
-	Code         string    `json:"code" gorm:"not null;uniqueIndex"`
-	ReleaseUnix  int64     `json:"release_unix" gorm:"not null;default:0;index"`
-	MetadataJSON string    `json:"-" gorm:"type:text;not null;default:'{}'"`
-	Wanted       bool      `json:"wanted" gorm:"not null;default:0;index"`
-	CreatedAt    time.Time `json:"created_at"`
-	UpdatedAt    time.Time `json:"updated_at"`
+	ID              int64     `json:"id" gorm:"primaryKey"`
+	Code            string    `json:"code" gorm:"not null;uniqueIndex"`
+	ReleaseUnix     int64     `json:"release_unix" gorm:"not null;default:0;index"`
+	MetadataJSON    string    `json:"-" gorm:"type:text;not null;default:'{}'"`
+	Wanted          bool      `json:"wanted" gorm:"not null;default:0;index"`
+	CreatedAt       time.Time `json:"created_at"`
+	UpdatedAt       time.Time `json:"updated_at"`
+	MagnetLinksJSON string    `json:"-" gorm:"type:text;not null;default:'null'"`
 }
 
 // JavDiscoverySubscriptionItem records which subscriptions yielded an item.

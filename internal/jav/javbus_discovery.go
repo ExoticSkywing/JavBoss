@@ -22,9 +22,16 @@ const (
 	javBusBaseURL                = "https://www.javbus.com"
 	javBusDiscoveryMaxPages      = 100
 	javBusDiscoveryRequestTimout = 30 * time.Second
+	javBusMagnetResponseMaxBytes = 4 * 1024 * 1024
 )
 
 var javBusProviderKeyPattern = regexp.MustCompile(`^[A-Za-z0-9_-]+$`)
+
+var (
+	javBusMagnetGIDPattern = regexp.MustCompile(`(?m)\bvar\s+gid\s*=\s*(\d+)\s*;`)
+	javBusMagnetUCPattern  = regexp.MustCompile(`(?m)\bvar\s+uc\s*=\s*(\d+)\s*;`)
+	javBusMagnetImgPattern = regexp.MustCompile(`(?m)\bvar\s+img\s*=\s*['"]([^'"]+)['"]\s*;`)
+)
 
 var errJavBusVerificationRequired = errors.New("javbus: age verification required")
 
@@ -42,23 +49,33 @@ type JavBusActressWorksOptions struct {
 	ReleasedBefore    int64
 }
 
+type JavBusMagnetLink struct {
+	Name      string `json:"name"`
+	URL       string `json:"url"`
+	Size      string `json:"size"`
+	ShareDate string `json:"share_date"`
+	HD        bool   `json:"hd"`
+	Subtitled bool   `json:"subtitled"`
+}
+
 // JavBusDiscoveryItem is the metadata available from a JavBus actress listing.
 type JavBusDiscoveryItem struct {
-	Code             string        `json:"code"`
-	Title            string        `json:"title"`
-	ReleaseUnix      int64         `json:"release_unix"`
-	DurationMin      int           `json:"duration_min"`
-	CoverURL         string        `json:"cover_url"`
-	ThumbnailURL     string        `json:"thumbnail_url"`
-	DetailURL        string        `json:"detail_url"`
-	Actresses        []string      `json:"actresses"`
-	Studio           string        `json:"studio"`
-	Series           string        `json:"series"`
-	Tags             []string      `json:"tags"`
-	SampleImages     []SampleImage `json:"sample_images"`
-	IsUncensored     *bool         `json:"is_uncensored,omitempty"`
-	Source           string        `json:"source"`
-	DetailsFetchedAt *time.Time    `json:"details_fetched_at,omitempty"`
+	Code             string             `json:"code"`
+	Title            string             `json:"title"`
+	ReleaseUnix      int64              `json:"release_unix"`
+	DurationMin      int                `json:"duration_min"`
+	CoverURL         string             `json:"cover_url"`
+	ThumbnailURL     string             `json:"thumbnail_url"`
+	DetailURL        string             `json:"detail_url"`
+	Actresses        []string           `json:"actresses"`
+	Studio           string             `json:"studio"`
+	Series           string             `json:"series"`
+	Tags             []string           `json:"tags"`
+	SampleImages     []SampleImage      `json:"sample_images"`
+	IsUncensored     *bool              `json:"is_uncensored,omitempty"`
+	Source           string             `json:"source"`
+	DetailsFetchedAt *time.Time         `json:"details_fetched_at,omitempty"`
+	MagnetLinks      []JavBusMagnetLink `json:"-"`
 }
 
 // FetchJavBusDiscoveryItemDetails resolves full metadata from a JavBus movie
@@ -82,6 +99,10 @@ func FetchJavBusDiscoveryItemDetails(ctx context.Context, code string) (*JavBusD
 	}
 	info.CoverURL = parseJavBusCoverURL(doc, detailURL)
 	info.SampleImages = parseSampleImages(doc, detailURL)
+	magnetLinks, err := fetchJavBusMagnetLinks(ctx, doc, detailURL)
+	if err != nil {
+		return nil, fmt.Errorf("fetch javbus magnet links: %w", err)
+	}
 	if rewrite != nil {
 		normalizeJavBusRewrittenInfo(info, rewrite)
 	}
@@ -101,7 +122,122 @@ func FetchJavBusDiscoveryItemDetails(ctx context.Context, code string) (*JavBusD
 		IsUncensored:     info.IsUncensored,
 		Source:           "javbus",
 		DetailsFetchedAt: &fetchedAt,
+		MagnetLinks:      magnetLinks,
 	}, nil
+}
+
+type javBusMagnetRequestParameters struct {
+	GID string
+	UC  string
+	Img string
+}
+
+func fetchJavBusMagnetLinks(ctx context.Context, doc *html.Node, detailURL string) ([]JavBusMagnetLink, error) {
+	parameters, ok := parseJavBusMagnetRequestParameters(doc)
+	if !ok {
+		return []JavBusMagnetLink{}, nil
+	}
+	target, err := url.Parse(javBusBaseURL + "/ajax/uncledatoolsbyajax.php")
+	if err != nil {
+		return nil, fmt.Errorf("build magnet URL: %w", err)
+	}
+	query := target.Query()
+	query.Set("gid", parameters.GID)
+	query.Set("lang", "zh")
+	query.Set("img", parameters.Img)
+	query.Set("uc", parameters.UC)
+	query.Set("floor", fmt.Sprintf("%d", time.Now().UnixNano()%1000+1))
+	target.RawQuery = query.Encode()
+
+	requestCtx, cancel := context.WithTimeout(ctx, javBusDiscoveryRequestTimout)
+	defer cancel()
+	req, err := buildRequest(requestCtx, target.String())
+	if err != nil {
+		return nil, err
+	}
+	req.Header.Set("Accept", "text/html, */*; q=0.01")
+	req.Header.Set("Referer", detailURL)
+	req.Header.Set("X-Requested-With", "XMLHttpRequest")
+	logging.Info("javbus magnet request: %s", target.Redacted())
+	resp, err := doJavBusRequest(req)
+	if err != nil {
+		return nil, err
+	}
+	defer resp.Body.Close()
+	if resp.StatusCode != http.StatusOK {
+		return nil, fmt.Errorf("javbus magnet request returned http %d", resp.StatusCode)
+	}
+	body, err := io.ReadAll(io.LimitReader(resp.Body, javBusMagnetResponseMaxBytes+1))
+	if err != nil {
+		return nil, fmt.Errorf("read javbus magnet response: %w", err)
+	}
+	if len(body) > javBusMagnetResponseMaxBytes {
+		return nil, errors.New("javbus magnet response is too large")
+	}
+	wrappedBody := []byte("<html><body><table><tbody>" + string(body) + "</tbody></table></body></html>")
+	doc, err = parseHTMLDocument(wrappedBody)
+	if err != nil {
+		return nil, fmt.Errorf("parse javbus magnet response: %w", err)
+	}
+	return parseJavBusMagnetLinks(doc), nil
+}
+
+func parseJavBusMagnetRequestParameters(doc *html.Node) (javBusMagnetRequestParameters, bool) {
+	var scripts strings.Builder
+	documentSelection(doc).Find("script").Each(func(_ int, script *goquery.Selection) {
+		scripts.WriteString(script.Text())
+		scripts.WriteByte('\n')
+	})
+	text := scripts.String()
+	parameter := javBusMagnetRequestParameters{
+		GID: firstJavBusPatternMatch(javBusMagnetGIDPattern, text),
+		UC:  firstJavBusPatternMatch(javBusMagnetUCPattern, text),
+		Img: firstJavBusPatternMatch(javBusMagnetImgPattern, text),
+	}
+	return parameter, parameter.GID != "" && parameter.UC != "" && parameter.Img != ""
+}
+
+func firstJavBusPatternMatch(pattern *regexp.Regexp, value string) string {
+	match := pattern.FindStringSubmatch(value)
+	if len(match) < 2 {
+		return ""
+	}
+	return strings.TrimSpace(match[1])
+}
+
+func parseJavBusMagnetLinks(doc *html.Node) []JavBusMagnetLink {
+	seen := make(map[string]struct{})
+	links := make([]JavBusMagnetLink, 0)
+	documentSelection(doc).Find("tr").Each(func(_ int, row *goquery.Selection) {
+		cells := row.Find("td")
+		if cells.Length() < 3 {
+			return
+		}
+		anchor := cells.Eq(0).Find(`a[href^="magnet:"]`).First()
+		magnetURL := strings.TrimSpace(selectionAttr(anchor, "href"))
+		parsed, err := url.Parse(magnetURL)
+		if err != nil || !strings.EqualFold(parsed.Scheme, "magnet") ||
+			!strings.HasPrefix(strings.ToLower(parsed.Query().Get("xt")), "urn:btih:") {
+			return
+		}
+		if _, exists := seen[magnetURL]; exists {
+			return
+		}
+		seen[magnetURL] = struct{}{}
+		name := strings.TrimSpace(parsed.Query().Get("dn"))
+		if name == "" {
+			name = cleanSelectionText(anchor)
+		}
+		links = append(links, JavBusMagnetLink{
+			Name:      name,
+			URL:       magnetURL,
+			Size:      cleanSelectionText(cells.Eq(1)),
+			ShareDate: cleanSelectionText(cells.Eq(2)),
+			HD:        row.Find(`[title*="高清"]`).Length() > 0,
+			Subtitled: row.Find(`[title*="字幕"]`).Length() > 0,
+		})
+	})
+	return links
 }
 
 // ResolveJavBusActressSubscription verifies that referenceCode resolves to an
