@@ -336,17 +336,17 @@ export default function JavDiscoveryDetailModal({
               <h3 className="mb-2 text-sm font-semibold text-gray-900">
                 {zh('磁力链接', 'Magnet links')}
               </h3>
-              <div className="max-h-72 overflow-auto rounded-lg border border-gray-200">
-                <table className="w-full min-w-[40rem] border-collapse text-xs">
-                  <thead className="sticky top-0 z-10 bg-gray-100 text-gray-600">
+              <div className="rounded-lg border border-gray-200">
+                <table className="w-full table-fixed border-collapse text-xs">
+                  <thead className="bg-gray-100 text-gray-600">
                     <tr>
                       <th className="px-3 py-2.5 text-left font-semibold">
                         {zh('磁力名称', 'Magnet name')}
                       </th>
-                      <th className="w-28 px-3 py-2.5 text-center font-semibold">
+                      <th className="w-24 px-2 py-2.5 text-center font-semibold sm:w-28 sm:px-3">
                         {zh('文件大小', 'File size')}
                       </th>
-                      <th className="w-32 px-3 py-2.5 text-center font-semibold">
+                      <th className="w-28 px-2 py-2.5 text-center font-semibold sm:w-32 sm:px-3">
                         {zh('分享日期', 'Share date')}
                       </th>
                     </tr>
