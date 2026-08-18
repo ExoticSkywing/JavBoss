@@ -297,45 +297,6 @@ export default function JavDiscoveryDetailModal({
                 </section>
               ) : null}
 
-              {magnetLinks.length > 0 ? (
-                <section>
-                  <h3 className="mb-1.5 text-xs font-semibold text-gray-800">
-                    {zh('磁力链接', 'Magnet links')}
-                  </h3>
-                  <div className="max-h-60 space-y-1.5 overflow-y-auto rounded-lg border border-gray-200 p-2">
-                    {magnetLinks.map((magnet) => (
-                      <a
-                        key={magnet.url}
-                        href={magnet.url}
-                        title={magnet.url}
-                        className="block rounded-md bg-gray-50 px-2.5 py-2 text-xs hover:bg-blue-50"
-                      >
-                        <div className="flex min-w-0 items-start gap-1.5">
-                          <span className="min-w-0 flex-1 break-words font-medium text-blue-700">
-                            {magnet.name || displayItem?.code || zh('磁力链接', 'Magnet link')}
-                          </span>
-                          {magnet.hd ? (
-                            <span className="shrink-0 rounded bg-blue-100 px-1.5 py-0.5 text-[10px] font-semibold text-blue-700">
-                              HD
-                            </span>
-                          ) : null}
-                          {magnet.subtitled ? (
-                            <span className="shrink-0 rounded bg-amber-100 px-1.5 py-0.5 text-[10px] font-semibold text-amber-700">
-                              {zh('字幕', 'Sub')}
-                            </span>
-                          ) : null}
-                        </div>
-                        {magnet.size || magnet.share_date ? (
-                          <div className="mt-1 text-[11px] text-gray-500">
-                            {[magnet.size, magnet.share_date].filter(Boolean).join(' · ')}
-                          </div>
-                        ) : null}
-                      </a>
-                    ))}
-                  </div>
-                </section>
-              ) : null}
-
               <section className="mt-auto">
                 <h3 className="mb-1.5 text-xs font-semibold text-gray-800">
                   {zh('操作', 'Actions')}
@@ -369,6 +330,73 @@ export default function JavDiscoveryDetailModal({
               </section>
             </div>
           </div>
+
+          {magnetLinks.length > 0 ? (
+            <section className="mt-6">
+              <h3 className="mb-2 text-sm font-semibold text-gray-900">
+                {zh('磁力链接', 'Magnet links')}
+              </h3>
+              <div className="max-h-72 overflow-auto rounded-lg border border-gray-200">
+                <table className="w-full min-w-[40rem] border-collapse text-xs">
+                  <thead className="sticky top-0 z-10 bg-gray-100 text-gray-600">
+                    <tr>
+                      <th className="px-3 py-2.5 text-left font-semibold">
+                        {zh('磁力名称', 'Magnet name')}
+                      </th>
+                      <th className="w-28 px-3 py-2.5 text-center font-semibold">
+                        {zh('文件大小', 'File size')}
+                      </th>
+                      <th className="w-32 px-3 py-2.5 text-center font-semibold">
+                        {zh('分享日期', 'Share date')}
+                      </th>
+                    </tr>
+                  </thead>
+                  <tbody>
+                    {magnetLinks.map((magnet, index) => (
+                      <tr
+                        key={magnet.url}
+                        className={`border-t border-gray-200 hover:bg-blue-50 ${
+                          index % 2 === 0 ? 'bg-white' : 'bg-gray-50'
+                        }`}
+                      >
+                        <td className="p-0">
+                          <a
+                            href={magnet.url}
+                            title={magnet.url}
+                            className="flex min-w-0 items-center gap-1.5 px-3 py-2.5 text-blue-700"
+                          >
+                            <span className="min-w-0 break-words font-medium">
+                              {magnet.name || displayItem?.code || zh('磁力链接', 'Magnet link')}
+                            </span>
+                            {magnet.hd ? (
+                              <span className="shrink-0 rounded bg-blue-600 px-1.5 py-0.5 text-[10px] font-semibold text-white">
+                                HD
+                              </span>
+                            ) : null}
+                            {magnet.subtitled ? (
+                              <span className="shrink-0 rounded bg-amber-500 px-1.5 py-0.5 text-[10px] font-semibold text-white">
+                                {zh('字幕', 'Sub')}
+                              </span>
+                            ) : null}
+                          </a>
+                        </td>
+                        <td className="p-0 text-center text-gray-600">
+                          <a href={magnet.url} className="block px-3 py-2.5">
+                            {magnet.size || '—'}
+                          </a>
+                        </td>
+                        <td className="p-0 text-center text-gray-600">
+                          <a href={magnet.url} className="block px-3 py-2.5">
+                            {magnet.share_date || '—'}
+                          </a>
+                        </td>
+                      </tr>
+                    ))}
+                  </tbody>
+                </table>
+              </div>
+            </section>
+          ) : null}
         </div>
       </div>
     </div>
