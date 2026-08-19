@@ -6,6 +6,7 @@ const (
 	CloudDriveDownloadQueued             = "queued"
 	CloudDriveDownloadOfflineDownloading = "offline_downloading"
 	CloudDriveDownloadResolvingFiles     = "resolving_files"
+	CloudDriveDownloadWaitingLocal       = "waiting_local_download"
 	CloudDriveDownloadLocalDownloading   = "local_downloading"
 	CloudDriveDownloadCompleted          = "completed"
 	CloudDriveDownloadFailed             = "failed"
@@ -15,14 +16,15 @@ const (
 // CloudDriveSettings is a single-row configuration for the CloudDrive2
 // integration. APIToken is write-only at the HTTP API boundary.
 type CloudDriveSettings struct {
-	ID           int64     `json:"-" gorm:"primaryKey"`
-	Address      string    `json:"address" gorm:"not null;default:''"`
-	APIToken     string    `json:"-" gorm:"type:text;not null;default:''"`
-	RemoteFolder string    `json:"remote_folder" gorm:"not null;default:''"`
-	DirectoryID  *int64    `json:"directory_id" gorm:"index"`
-	Enabled      bool      `json:"enabled" gorm:"not null;default:0"`
-	CreatedAt    time.Time `json:"created_at"`
-	UpdatedAt    time.Time `json:"updated_at"`
+	ID               int64     `json:"-" gorm:"primaryKey"`
+	Address          string    `json:"address" gorm:"not null;default:''"`
+	APIToken         string    `json:"-" gorm:"type:text;not null;default:''"`
+	RemoteFolder     string    `json:"remote_folder" gorm:"not null;default:''"`
+	DirectoryID      *int64    `json:"directory_id" gorm:"index"`
+	Enabled          bool      `json:"enabled" gorm:"not null;default:0"`
+	CreatedAt        time.Time `json:"created_at"`
+	UpdatedAt        time.Time `json:"updated_at"`
+	LocalConcurrency int       `json:"local_concurrency" gorm:"not null;default:2"`
 }
 
 // JavDiscoveryDownload is a persistent one-click download job. The remote

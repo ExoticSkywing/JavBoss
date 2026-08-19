@@ -16,6 +16,7 @@ const statusLabels = {
   queued: ['等待处理', 'Queued'],
   offline_downloading: ['云端离线中', 'Offline downloading'],
   resolving_files: ['正在解析文件', 'Resolving files'],
+  waiting_local_download: ['等待本地下载', 'Waiting for local download'],
   local_downloading: ['正在下载到本地', 'Downloading locally'],
   completed: ['已完成', 'Completed'],
   failed: ['失败', 'Failed'],
@@ -26,6 +27,7 @@ const activeStatuses = new Set([
   'queued',
   'offline_downloading',
   'resolving_files',
+  'waiting_local_download',
   'local_downloading',
 ])
 
@@ -68,6 +70,7 @@ export default function JavDiscoveryDownloadsView() {
     apiToken: '',
     remoteFolder: '',
     directoryId: '',
+    localConcurrency: 2,
     enabled: false,
   })
   const [loading, setLoading] = useState(true)
@@ -93,6 +96,7 @@ export default function JavDiscoveryDownloadsView() {
       apiToken: '',
       remoteFolder: nextSettings?.remote_folder || '',
       directoryId: nextSettings?.directory_id ? String(nextSettings.directory_id) : '',
+      localConcurrency: Number(nextSettings?.local_concurrency) || 2,
       enabled: Boolean(nextSettings?.enabled),
     })
   }, [])
@@ -145,6 +149,7 @@ export default function JavDiscoveryDownloadsView() {
         address: form.address.trim(),
         remote_folder: form.remoteFolder.trim(),
         directory_id: form.directoryId ? Number(form.directoryId) : null,
+        local_concurrency: Number(form.localConcurrency),
         enabled: Boolean(form.enabled),
       }
       if (form.apiToken.trim()) payload.api_token = form.apiToken.trim()
@@ -168,6 +173,7 @@ export default function JavDiscoveryDownloadsView() {
         address: form.address.trim(),
         remote_folder: form.remoteFolder.trim(),
         directory_id: form.directoryId ? Number(form.directoryId) : null,
+        local_concurrency: Number(form.localConcurrency),
         enabled: Boolean(form.enabled),
       }
       if (form.apiToken.trim()) payload.api_token = form.apiToken.trim()
@@ -293,6 +299,31 @@ export default function JavDiscoveryDownloadsView() {
               {directories.map((directory) => (
                 <option key={directory.id} value={String(directory.id)}>
                   {directory.path}
+                </option>
+              ))}
+            </select>
+            <span className="mt-1 block font-normal text-gray-400">
+              {zh(
+                '云端离线任务可并行；此项仅限制同时写入本地的任务数。',
+                'Cloud offline jobs run in parallel; this only limits simultaneous local transfers.'
+              )}
+            </span>
+          </label>
+          <label className="text-xs font-medium text-gray-600">
+            {zh('本地下载并发数', 'Concurrent local downloads')}
+            <select
+              value={form.localConcurrency}
+              onChange={(event) =>
+                setForm((current) => ({
+                  ...current,
+                  localConcurrency: Number(event.target.value),
+                }))
+              }
+              className="mt-1 h-10 w-full rounded-lg border border-gray-300 bg-white px-3 text-sm outline-none focus:border-blue-500 focus:ring-2 focus:ring-blue-100"
+            >
+              {[1, 2, 3, 4, 5].map((value) => (
+                <option key={value} value={value}>
+                  {value}
                 </option>
               ))}
             </select>

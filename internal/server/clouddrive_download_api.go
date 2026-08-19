@@ -20,11 +20,12 @@ import (
 )
 
 type cloudDriveSettingsResponse struct {
-	Address         string `json:"address"`
-	RemoteFolder    string `json:"remote_folder"`
-	DirectoryID     *int64 `json:"directory_id"`
-	Enabled         bool   `json:"enabled"`
-	TokenConfigured bool   `json:"token_configured"`
+	Address          string `json:"address"`
+	RemoteFolder     string `json:"remote_folder"`
+	DirectoryID      *int64 `json:"directory_id"`
+	LocalConcurrency int    `json:"local_concurrency"`
+	Enabled          bool   `json:"enabled"`
+	TokenConfigured  bool   `json:"token_configured"`
 }
 
 func getCloudDriveSettings(c *gin.Context) {
@@ -38,12 +39,13 @@ func getCloudDriveSettings(c *gin.Context) {
 
 func updateCloudDriveSettings(c *gin.Context) {
 	var request struct {
-		Address       string  `json:"address"`
-		APIToken      *string `json:"api_token"`
-		ClearAPIToken bool    `json:"clear_api_token"`
-		RemoteFolder  string  `json:"remote_folder"`
-		DirectoryID   *int64  `json:"directory_id"`
-		Enabled       bool    `json:"enabled"`
+		Address          string  `json:"address"`
+		APIToken         *string `json:"api_token"`
+		ClearAPIToken    bool    `json:"clear_api_token"`
+		RemoteFolder     string  `json:"remote_folder"`
+		DirectoryID      *int64  `json:"directory_id"`
+		LocalConcurrency *int    `json:"local_concurrency"`
+		Enabled          bool    `json:"enabled"`
 	}
 	if err := c.ShouldBindJSON(&request); err != nil {
 		respondLocalizedError(c, http.StatusBadRequest, "CloudDrive2 配置格式不正确", "Invalid CloudDrive2 settings")
@@ -77,13 +79,24 @@ func updateCloudDriveSettings(c *gin.Context) {
 			return
 		}
 	}
+	localConcurrency := current.LocalConcurrency
+	if localConcurrency < 1 || localConcurrency > 5 {
+		localConcurrency = 2
+	}
+	if request.LocalConcurrency != nil {
+		if *request.LocalConcurrency < 1 || *request.LocalConcurrency > 5 {
+			respondLocalizedError(c, http.StatusBadRequest, "本地下载并发数必须在 1 到 5 之间", "Local download concurrency must be between 1 and 5")
+			return
+		}
+		localConcurrency = *request.LocalConcurrency
+	}
 	if request.Enabled && (address == "" || token == "" || remoteFolder == "" || request.DirectoryID == nil) {
 		respondLocalizedError(c, http.StatusBadRequest, "请完整配置地址、Token、云端目录和本地目录", "Configure the address, token, remote folder, and local directory")
 		return
 	}
 	settings := models.CloudDriveSettings{
 		ID: 1, Address: address, APIToken: token, RemoteFolder: remoteFolder,
-		DirectoryID: request.DirectoryID, Enabled: request.Enabled,
+		DirectoryID: request.DirectoryID, LocalConcurrency: localConcurrency, Enabled: request.Enabled,
 	}
 	if err := db.SaveCloudDriveSettings(c.Request.Context(), &settings); err != nil {
 		respondLocalizedError(c, http.StatusInternalServerError, "保存 CloudDrive2 配置失败", "Failed to save CloudDrive2 settings")
@@ -150,7 +163,8 @@ func testCloudDriveSettings(c *gin.Context) {
 func cloudDriveSettingsPayload(settings *models.CloudDriveSettings) cloudDriveSettingsResponse {
 	return cloudDriveSettingsResponse{
 		Address: settings.Address, RemoteFolder: settings.RemoteFolder, DirectoryID: settings.DirectoryID,
-		Enabled: settings.Enabled, TokenConfigured: strings.TrimSpace(settings.APIToken) != "",
+		LocalConcurrency: settings.LocalConcurrency, Enabled: settings.Enabled,
+		TokenConfigured: strings.TrimSpace(settings.APIToken) != "",
 	}
 }
 

@@ -31,7 +31,7 @@ func GetCloudDriveSettings(ctx context.Context) (*models.CloudDriveSettings, err
 	var settings models.CloudDriveSettings
 	err := common.DB.WithContext(ctx).First(&settings, 1).Error
 	if errors.Is(err, gorm.ErrRecordNotFound) {
-		return &models.CloudDriveSettings{ID: 1}, nil
+		return &models.CloudDriveSettings{ID: 1, LocalConcurrency: 2}, nil
 	}
 	if err != nil {
 		return nil, fmt.Errorf("get cloud drive settings: %w", err)
@@ -49,9 +49,12 @@ func SaveCloudDriveSettings(ctx context.Context, settings *models.CloudDriveSett
 	settings.ID = 1
 	settings.Address = strings.TrimSpace(settings.Address)
 	settings.RemoteFolder = strings.TrimSpace(settings.RemoteFolder)
+	if settings.LocalConcurrency < 1 || settings.LocalConcurrency > 5 {
+		settings.LocalConcurrency = 2
+	}
 	if err := common.DB.WithContext(ctx).Clauses(clause.OnConflict{
 		Columns:   []clause.Column{{Name: "id"}},
-		DoUpdates: clause.AssignmentColumns([]string{"address", "api_token", "remote_folder", "directory_id", "enabled", "updated_at"}),
+		DoUpdates: clause.AssignmentColumns([]string{"address", "api_token", "remote_folder", "directory_id", "local_concurrency", "enabled", "updated_at"}),
 	}).Create(settings).Error; err != nil {
 		return fmt.Errorf("save cloud drive settings: %w", err)
 	}
@@ -132,6 +135,7 @@ func ResetInterruptedCloudDriveDownloads(ctx context.Context) error {
 	active := []string{
 		models.CloudDriveDownloadOfflineDownloading,
 		models.CloudDriveDownloadResolvingFiles,
+		models.CloudDriveDownloadWaitingLocal,
 		models.CloudDriveDownloadLocalDownloading,
 	}
 	if err := common.DB.WithContext(ctx).Model(&models.JavDiscoveryDownload{}).
@@ -142,22 +146,39 @@ func ResetInterruptedCloudDriveDownloads(ctx context.Context) error {
 	return nil
 }
 
-func NextQueuedCloudDriveDownload(ctx context.Context) (*models.JavDiscoveryDownload, error) {
+func ClaimNextQueuedCloudDriveDownload(ctx context.Context) (*models.JavDiscoveryDownload, error) {
 	if common.DB == nil {
-		return nil, errors.New("next cloud drive download: nil db")
+		return nil, errors.New("claim cloud drive download: nil db")
 	}
-	var job models.JavDiscoveryDownload
-	err := common.DB.WithContext(ctx).
-		Where("status = ?", models.CloudDriveDownloadQueued).
-		Order("created_at, id").
-		First(&job).Error
-	if errors.Is(err, gorm.ErrRecordNotFound) {
-		return nil, nil
+	for attempts := 0; attempts < 10; attempts++ {
+		var job models.JavDiscoveryDownload
+		err := common.DB.WithContext(ctx).
+			Where("status = ?", models.CloudDriveDownloadQueued).
+			Order("created_at, id").
+			First(&job).Error
+		if errors.Is(err, gorm.ErrRecordNotFound) {
+			return nil, nil
+		}
+		if err != nil {
+			return nil, fmt.Errorf("claim cloud drive download: %w", err)
+		}
+		result := common.DB.WithContext(ctx).Model(&models.JavDiscoveryDownload{}).
+			Where("id = ? AND status = ?", job.ID, models.CloudDriveDownloadQueued).
+			Updates(map[string]any{
+				"status":   models.CloudDriveDownloadOfflineDownloading,
+				"progress": 0, "error_message": "",
+			})
+		if result.Error != nil {
+			return nil, fmt.Errorf("claim cloud drive download: %w", result.Error)
+		}
+		if result.RowsAffected == 1 {
+			job.Status = models.CloudDriveDownloadOfflineDownloading
+			job.Progress = 0
+			job.ErrorMessage = ""
+			return &job, nil
+		}
 	}
-	if err != nil {
-		return nil, fmt.Errorf("next cloud drive download: %w", err)
-	}
-	return &job, nil
+	return nil, errors.New("claim cloud drive download: too much contention")
 }
 
 func UpdateCloudDriveDownload(ctx context.Context, id int64, updates map[string]any) error {

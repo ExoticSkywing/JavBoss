@@ -24,9 +24,11 @@ import (
 )
 
 const (
-	cloudDrivePollInterval = 10 * time.Second
-	cloudDriveRPCTimeout   = 30 * time.Second
-	cloudDriveMaxWait      = 7 * 24 * time.Hour
+	cloudDrivePollInterval  = 10 * time.Second
+	cloudDriveRPCTimeout    = 30 * time.Second
+	cloudDriveMaxWait       = 7 * 24 * time.Hour
+	cloudDriveDispatchEvery = 3 * time.Second
+	cloudDriveMaxActiveJobs = 20
 )
 
 var (
@@ -38,14 +40,18 @@ var (
 )
 
 type downloadManager struct {
-	ctx     context.Context
-	wake    chan struct{}
-	mu      sync.Mutex
-	cancels map[int64]context.CancelFunc
+	ctx          context.Context
+	wake         chan struct{}
+	mu           sync.Mutex
+	cancels      map[int64]context.CancelFunc
+	localLimiter *localDownloadLimiter
 }
 
 func StartCloudDriveDownloadManager(ctx context.Context) {
-	manager := &downloadManager{ctx: ctx, wake: make(chan struct{}, 1), cancels: make(map[int64]context.CancelFunc)}
+	manager := &downloadManager{
+		ctx: ctx, wake: make(chan struct{}, 1), cancels: make(map[int64]context.CancelFunc),
+		localLimiter: newLocalDownloadLimiter(2),
+	}
 	cloudDriveManagerMu.Lock()
 	cloudDriveManager = manager
 	cloudDriveManagerMu.Unlock()
@@ -88,52 +94,153 @@ func (m *downloadManager) signal() {
 }
 
 func (m *downloadManager) run() {
+	ticker := time.NewTicker(cloudDriveDispatchEvery)
+	defer ticker.Stop()
 	for {
+		m.dispatch()
 		select {
 		case <-m.ctx.Done():
 			return
 		case <-m.wake:
-		}
-		for {
-			job, err := db.NextQueuedCloudDriveDownload(m.ctx)
-			if err != nil {
-				if !errors.Is(err, context.Canceled) {
-					logging.Error("load CloudDrive2 download queue failed: %v", err)
-				}
-				break
-			}
-			if job == nil {
-				break
-			}
-			jobCtx, cancel := context.WithCancel(m.ctx)
-			m.mu.Lock()
-			m.cancels[job.ID] = cancel
-			m.mu.Unlock()
-			err = processCloudDriveDownload(jobCtx, job)
-			cancel()
-			m.mu.Lock()
-			delete(m.cancels, job.ID)
-			m.mu.Unlock()
-			if err != nil {
-				current, loadErr := db.GetCloudDriveDownload(context.Background(), job.ID)
-				if loadErr == nil && current.Status != models.CloudDriveDownloadCanceled {
-					message := strings.TrimSpace(err.Error())
-					if len(message) > 1000 {
-						message = message[:1000]
-					}
-					_ = db.UpdateCloudDriveDownload(context.Background(), job.ID, map[string]any{
-						"status": models.CloudDriveDownloadFailed, "error_message": message,
-					})
-				}
-				if !errors.Is(err, context.Canceled) {
-					logging.Error("CloudDrive2 download job failed id=%d: %v", job.ID, err)
-				}
-			}
+		case <-ticker.C:
 		}
 	}
 }
 
-func processCloudDriveDownload(ctx context.Context, job *models.JavDiscoveryDownload) error {
+func (m *downloadManager) dispatch() {
+	settings, err := db.GetCloudDriveSettings(m.ctx)
+	if err != nil {
+		if !errors.Is(err, context.Canceled) {
+			logging.Error("load CloudDrive2 download settings failed: %v", err)
+		}
+		return
+	}
+	m.localLimiter.setLimit(settings.LocalConcurrency)
+	if !settings.Enabled {
+		return
+	}
+	for {
+		m.mu.Lock()
+		active := len(m.cancels)
+		m.mu.Unlock()
+		if active >= cloudDriveMaxActiveJobs {
+			return
+		}
+		job, err := db.ClaimNextQueuedCloudDriveDownload(m.ctx)
+		if err != nil {
+			if !errors.Is(err, context.Canceled) {
+				logging.Error("claim CloudDrive2 download queue job failed: %v", err)
+			}
+			return
+		}
+		if job == nil {
+			return
+		}
+		jobCtx, cancel := context.WithCancel(m.ctx)
+		m.mu.Lock()
+		m.cancels[job.ID] = cancel
+		m.mu.Unlock()
+		current, loadErr := db.GetCloudDriveDownload(m.ctx, job.ID)
+		if loadErr != nil || current.Status != models.CloudDriveDownloadOfflineDownloading {
+			cancel()
+			m.mu.Lock()
+			delete(m.cancels, job.ID)
+			m.mu.Unlock()
+			if loadErr != nil && !errors.Is(loadErr, context.Canceled) {
+				logging.Error("verify claimed CloudDrive2 download job failed id=%d: %v", job.ID, loadErr)
+			}
+			continue
+		}
+		go m.process(jobCtx, cancel, job)
+	}
+}
+
+func (m *downloadManager) process(ctx context.Context, cancel context.CancelFunc, job *models.JavDiscoveryDownload) {
+	err := processCloudDriveDownload(ctx, job, m.localLimiter)
+	cancel()
+	m.mu.Lock()
+	delete(m.cancels, job.ID)
+	m.mu.Unlock()
+	if err != nil && m.ctx.Err() == nil {
+		current, loadErr := db.GetCloudDriveDownload(context.Background(), job.ID)
+		if loadErr == nil && current.Status != models.CloudDriveDownloadCanceled {
+			message := strings.TrimSpace(err.Error())
+			if len(message) > 1000 {
+				message = message[:1000]
+			}
+			_ = db.UpdateCloudDriveDownload(context.Background(), job.ID, map[string]any{
+				"status": models.CloudDriveDownloadFailed, "error_message": message,
+			})
+		}
+		if !errors.Is(err, context.Canceled) {
+			logging.Error("CloudDrive2 download job failed id=%d: %v", job.ID, err)
+		}
+	}
+	m.signal()
+}
+
+type localDownloadLimiter struct {
+	mu      sync.Mutex
+	limit   int
+	active  int
+	changed chan struct{}
+}
+
+func newLocalDownloadLimiter(limit int) *localDownloadLimiter {
+	return &localDownloadLimiter{limit: normalizedLocalConcurrency(limit), changed: make(chan struct{})}
+}
+
+func normalizedLocalConcurrency(limit int) int {
+	if limit < 1 || limit > 5 {
+		return 2
+	}
+	return limit
+}
+
+func (l *localDownloadLimiter) setLimit(limit int) {
+	limit = normalizedLocalConcurrency(limit)
+	l.mu.Lock()
+	defer l.mu.Unlock()
+	if l.limit == limit {
+		return
+	}
+	l.limit = limit
+	l.notifyLocked()
+}
+
+func (l *localDownloadLimiter) acquire(ctx context.Context) error {
+	for {
+		l.mu.Lock()
+		if l.active < l.limit {
+			l.active++
+			l.mu.Unlock()
+			return nil
+		}
+		changed := l.changed
+		l.mu.Unlock()
+		select {
+		case <-ctx.Done():
+			return ctx.Err()
+		case <-changed:
+		}
+	}
+}
+
+func (l *localDownloadLimiter) release() {
+	l.mu.Lock()
+	if l.active > 0 {
+		l.active--
+	}
+	l.notifyLocked()
+	l.mu.Unlock()
+}
+
+func (l *localDownloadLimiter) notifyLocked() {
+	close(l.changed)
+	l.changed = make(chan struct{})
+}
+
+func processCloudDriveDownload(ctx context.Context, job *models.JavDiscoveryDownload, localLimiter *localDownloadLimiter) error {
 	settings, err := db.GetCloudDriveSettings(ctx)
 	if err != nil {
 		return err
@@ -224,6 +331,16 @@ func processCloudDriveDownload(ctx context.Context, job *models.JavDiscoveryDown
 			total += file.GetSize()
 		}
 	}
+	if err := db.UpdateCloudDriveDownload(ctx, job.ID, map[string]any{
+		"status": models.CloudDriveDownloadWaitingLocal, "bytes_total": total,
+		"bytes_downloaded": 0, "progress": 0,
+	}); err != nil {
+		return err
+	}
+	if err := localLimiter.acquire(ctx); err != nil {
+		return err
+	}
+	defer localLimiter.release()
 	if err := db.UpdateCloudDriveDownload(ctx, job.ID, map[string]any{
 		"status": models.CloudDriveDownloadLocalDownloading, "bytes_total": total,
 		"bytes_downloaded": 0, "progress": 0,

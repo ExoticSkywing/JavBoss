@@ -48,7 +48,8 @@ func TestCloudDriveDownloadAPIKeepsTokenWriteOnlyAndQueuesKnownMagnet(t *testing
 	RegisterRoutes(router)
 	settingsBody, _ := json.Marshal(map[string]any{
 		"address": "http://127.0.0.1:19798", "api_token": "secret-token",
-		"remote_folder": "/115/JavBoss", "directory_id": directory.ID, "enabled": true,
+		"remote_folder": "/115/JavBoss", "directory_id": directory.ID,
+		"local_concurrency": 3, "enabled": true,
 	})
 	saved := performDiscoveryRequest(t, router, http.MethodPut, "/jav/discovery/clouddrive/settings", settingsBody)
 	if saved.Code != http.StatusOK {
@@ -56,6 +57,9 @@ func TestCloudDriveDownloadAPIKeepsTokenWriteOnlyAndQueuesKnownMagnet(t *testing
 	}
 	if value := saved.Body.String(); strings.Contains(value, "secret-token") {
 		t.Fatalf("settings response exposed token: %s", value)
+	}
+	if value := saved.Body.String(); !strings.Contains(value, `"local_concurrency":3`) {
+		t.Fatalf("settings response omitted local concurrency: %s", value)
 	}
 	loaded := performDiscoveryRequest(t, router, http.MethodGet, "/jav/discovery/clouddrive/settings", nil)
 	if loaded.Code != http.StatusOK || strings.Contains(loaded.Body.String(), "secret-token") {

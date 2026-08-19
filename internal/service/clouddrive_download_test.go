@@ -1,8 +1,10 @@
 package service
 
 import (
+	"context"
 	"path/filepath"
 	"testing"
+	"time"
 
 	cloudpb "javboss/internal/clouddrive/proto"
 )
@@ -64,4 +66,46 @@ func TestSafeLocalNamePreservesUnicodeAndExtension(t *testing.T) {
 	if got := safeLocalName("作品：ABC-001.mp4"); got != "作品：ABC-001.mp4" {
 		t.Fatalf("safeLocalName() = %q", got)
 	}
+}
+
+func TestLocalDownloadLimiterCanIncreaseWhileJobsWait(t *testing.T) {
+	limiter := newLocalDownloadLimiter(1)
+	if err := limiter.acquire(context.Background()); err != nil {
+		t.Fatalf("acquire first slot: %v", err)
+	}
+
+	acquired := make(chan error, 1)
+	go func() {
+		acquired <- limiter.acquire(context.Background())
+	}()
+	select {
+	case err := <-acquired:
+		t.Fatalf("second slot acquired before limit changed: %v", err)
+	case <-time.After(25 * time.Millisecond):
+	}
+
+	limiter.setLimit(2)
+	select {
+	case err := <-acquired:
+		if err != nil {
+			t.Fatalf("acquire second slot: %v", err)
+		}
+	case <-time.After(time.Second):
+		t.Fatal("second slot did not acquire after limit increased")
+	}
+	limiter.release()
+	limiter.release()
+}
+
+func TestLocalDownloadLimiterWaitHonorsCancellation(t *testing.T) {
+	limiter := newLocalDownloadLimiter(1)
+	if err := limiter.acquire(context.Background()); err != nil {
+		t.Fatalf("acquire first slot: %v", err)
+	}
+	ctx, cancel := context.WithCancel(context.Background())
+	cancel()
+	if err := limiter.acquire(ctx); err != context.Canceled {
+		t.Fatalf("waiting acquire error = %v, want context.Canceled", err)
+	}
+	limiter.release()
 }
