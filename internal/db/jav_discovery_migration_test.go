@@ -42,6 +42,7 @@ func TestJavDiscoveryMigrationAppliesAfterCurrentSchema(t *testing.T) {
 		"downloader_settings",
 		"downloader_provider_settings",
 		"jav_discovery_download",
+		"download_job",
 	)
 
 	if err := goose.UpToContext(ctx, sqlDB, migrationDir, javDiscoveryMigrationVersion); err != nil {
@@ -54,8 +55,15 @@ func TestJavDiscoveryMigrationAppliesAfterCurrentSchema(t *testing.T) {
 		"jav_discovery_subscription_item",
 		"downloader_settings",
 		"downloader_provider_settings",
-		"jav_discovery_download",
+		"download_job",
 	)
+	assertTablesExist(t, sqlDB, false, "jav_discovery_download")
+	if _, err := sqlDB.ExecContext(ctx, `
+		INSERT INTO jav_discovery_subscription (kind, name, reference_code, provider_locator)
+		VALUES ("idol", "actress", "ABC-001", "/uncensored/star/abc")
+	`); err != nil {
+		t.Fatalf("insert subscription with provider locator: %v", err)
+	}
 	if _, err := sqlDB.ExecContext(ctx, `INSERT INTO jav_discovery_item (code) VALUES (?)`, "ABC-001"); err != nil {
 		t.Fatalf("insert discovery item with final defaults: %v", err)
 	}
