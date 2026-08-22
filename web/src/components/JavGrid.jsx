@@ -18,6 +18,7 @@ import VideocamOutlinedIcon from '@mui/icons-material/VideocamOutlined'
 import VideoLibraryOutlinedIcon from '@mui/icons-material/VideoLibraryOutlined'
 
 import {
+  createJavTag,
   fetchJavIdolPreview,
   fetchJavIdolOptions,
   fetchJavSeriesPreview,
@@ -606,6 +607,25 @@ function editableJavTitle(item) {
   return String(item?.title || '')
 }
 
+function parseJavEditNameList(value) {
+  const seen = new Set()
+  return String(value || '')
+    .split(/[\n,，;；]+/)
+    .map((name) => name.trim())
+    .filter((name) => {
+      if (!name || seen.has(name)) return false
+      seen.add(name)
+      return true
+    })
+}
+
+function scrapedJavTagNames(item) {
+  const names = Array.isArray(item?.tags)
+    ? item.tags.filter((tag) => !isUserJavTag(tag)).map((tag) => tag?.name)
+    : []
+  return parseJavEditNameList(names.join('\n'))
+}
+
 function JavEditModal({ open, item, directoryIds, preferChineseName = false, onClose, onSaved }) {
   const tagOptions = useStore((state) => state.javTagOptions || [])
   const loadJavTags = useStore((state) => state.loadJavTags)
@@ -613,6 +633,9 @@ function JavEditModal({ open, item, directoryIds, preferChineseName = false, onC
   const [coverUrl, setCoverUrl] = useState('')
   const [selectedTagIds, setSelectedTagIds] = useState([])
   const [selectedIdolIds, setSelectedIdolIds] = useState([])
+  const [manualIdolNames, setManualIdolNames] = useState([])
+  const [selectedScrapedTagNames, setSelectedScrapedTagNames] = useState([])
+  const [createdUserTags, setCreatedUserTags] = useState([])
   const [selectedStudioId, setSelectedStudioId] = useState('')
   const [selectedSeriesId, setSelectedSeriesId] = useState('')
   const [idolOptions, setIdolOptions] = useState([])
@@ -620,10 +643,12 @@ function JavEditModal({ open, item, directoryIds, preferChineseName = false, onC
   const [seriesOptions, setSeriesOptions] = useState([])
   const [idolSearch, setIdolSearch] = useState('')
   const [tagSearch, setTagSearch] = useState('')
+  const [scrapedTagSearch, setScrapedTagSearch] = useState('')
   const [studioSearch, setStudioSearch] = useState('')
   const [seriesSearch, setSeriesSearch] = useState('')
   const [idolPickerOpen, setIdolPickerOpen] = useState(false)
   const [tagPickerOpen, setTagPickerOpen] = useState(false)
+  const [scrapedTagPickerOpen, setScrapedTagPickerOpen] = useState(false)
   const [studioDropdownOpen, setStudioDropdownOpen] = useState(false)
   const [seriesDropdownOpen, setSeriesDropdownOpen] = useState(false)
   const [optionsLoading, setOptionsLoading] = useState(false)
@@ -631,18 +656,23 @@ function JavEditModal({ open, item, directoryIds, preferChineseName = false, onC
   const [releaseDate, setReleaseDate] = useState('')
   const [durationMin, setDurationMin] = useState('')
   const [saving, setSaving] = useState(false)
+  const [creatingUserTag, setCreatingUserTag] = useState(false)
   const [error, setError] = useState('')
   const code = String(item?.code || '').trim()
   const itemTitle = item ? getJavDisplayTitle(item) : ''
   const userTagOptions = useMemo(() => tagOptions.filter((tag) => isUserJavTag(tag)), [tagOptions])
+  const scrapedTagOptions = useMemo(
+    () => tagOptions.filter((tag) => !isUserJavTag(tag)),
+    [tagOptions]
+  )
   const currentUserTags = useMemo(
     () => (Array.isArray(item?.tags) ? item.tags.filter((tag) => isUserJavTag(tag)) : []),
     [item?.tags]
   )
   const currentSeries = item?.series
   const mergedUserTagOptions = useMemo(
-    () => mergeOptionsById(userTagOptions, currentUserTags),
-    [currentUserTags, userTagOptions]
+    () => mergeOptionsById(userTagOptions, [...currentUserTags, ...createdUserTags]),
+    [createdUserTags, currentUserTags, userTagOptions]
   )
   const mergedStudioOptions = useMemo(
     () => mergeOptionsById(studioOptions, item?.studio ? [item.studio] : []),
@@ -694,6 +724,10 @@ function JavEditModal({ open, item, directoryIds, preferChineseName = false, onC
       ),
     [mergedUserTagOptions, selectedTagIds, tagSearch]
   )
+  const visibleScrapedTagOptions = useMemo(
+    () => filterOptionsByName(scrapedTagOptions, scrapedTagSearch),
+    [scrapedTagOptions, scrapedTagSearch]
+  )
   const selectedIdolOptions = useMemo(
     () => optionsByIds(mergedIdolOptions, selectedIdolIds),
     [mergedIdolOptions, selectedIdolIds]
@@ -709,6 +743,13 @@ function JavEditModal({ open, item, directoryIds, preferChineseName = false, onC
   const availableTagOptions = useMemo(
     () => visibleTagOptions.filter((tag) => !selectedTagIds.includes(String(tag.id))),
     [selectedTagIds, visibleTagOptions]
+  )
+  const availableScrapedTagOptions = useMemo(
+    () =>
+      visibleScrapedTagOptions.filter(
+        (tag) => !selectedScrapedTagNames.includes(String(tag?.name || '').trim())
+      ),
+    [selectedScrapedTagNames, visibleScrapedTagOptions]
   )
 
   useEffect(() => {
@@ -728,14 +769,19 @@ function JavEditModal({ open, item, directoryIds, preferChineseName = false, onC
             .map((id) => String(id))
         : []
     )
+    setManualIdolNames([])
+    setSelectedScrapedTagNames(scrapedJavTagNames(item))
+    setCreatedUserTags([])
     setSelectedStudioId(item?.studio?.id ? String(item.studio.id) : '')
     setSelectedSeriesId(currentSeries?.id ? String(currentSeries.id) : '')
     setIdolSearch('')
     setTagSearch('')
+    setScrapedTagSearch('')
     setStudioSearch('')
     setSeriesSearch('')
     setIdolPickerOpen(false)
     setTagPickerOpen(false)
+    setScrapedTagPickerOpen(false)
     setStudioDropdownOpen(false)
     setSeriesDropdownOpen(false)
     setOptionsError('')
@@ -743,6 +789,7 @@ function JavEditModal({ open, item, directoryIds, preferChineseName = false, onC
     setDurationMin(item?.duration_min ? String(item.duration_min) : '')
     setError('')
     setSaving(false)
+    setCreatingUserTag(false)
     void loadJavTags?.({ skipUnchanged: true })
   }, [currentSeries?.id, item, loadJavTags, open])
 
@@ -805,6 +852,47 @@ function JavEditModal({ open, item, directoryIds, preferChineseName = false, onC
     })
   }
 
+  const addManualIdolName = (value = idolSearch) => {
+    const names = parseJavEditNameList(value)
+    if (names.length === 0) return
+    setManualIdolNames((current) => parseJavEditNameList([...current, ...names].join('\n')))
+    setIdolSearch('')
+    if (error) setError('')
+  }
+
+  const addScrapedTagNames = (value = scrapedTagSearch) => {
+    const names = parseJavEditNameList(value)
+    if (names.length === 0) return
+    setSelectedScrapedTagNames((current) => parseJavEditNameList([...current, ...names].join('\n')))
+    setScrapedTagSearch('')
+    if (error) setError('')
+  }
+
+  const addCustomTag = async (value = tagSearch) => {
+    const name = value.trim()
+    if (!name || creatingUserTag) return
+    const existing = mergedUserTagOptions.find((tag) => String(tag?.name || '').trim() === name)
+    if (existing?.id) {
+      toggleTag(existing.id, true)
+      setTagSearch('')
+      return
+    }
+    setCreatingUserTag(true)
+    setError('')
+    try {
+      const created = await createJavTag(name)
+      if (!created?.id) throw new Error(zh('创建自定义标签失败', 'Failed to create custom tag'))
+      setCreatedUserTags((current) => mergeOptionsById(current, [created]))
+      toggleTag(created.id, true)
+      setTagSearch('')
+      void loadJavTags?.({ force: true })
+    } catch (err) {
+      setError(getErrorMessage(err))
+    } finally {
+      setCreatingUserTag(false)
+    }
+  }
+
   const handleSave = async () => {
     if (!item?.id) {
       setError(zh('缺少 JAV ID', 'Missing JAV ID'))
@@ -818,22 +906,31 @@ function JavEditModal({ open, item, directoryIds, preferChineseName = false, onC
     setSaving(true)
     setError('')
     const trimmedCoverUrl = coverUrl.trim()
+    const scrapedTags = parseJavEditNameList(selectedScrapedTagNames.join('\n'))
+    const enteredIdolNames = parseJavEditNameList(manualIdolNames.join('\n'))
     try {
       const payload = {
         title: title.trim(),
         ...(trimmedCoverUrl ? { cover_url: trimmedCoverUrl } : {}),
         tag_ids: selectedTagIds.map((id) => Number(id)).filter(Boolean),
         idol_ids: selectedIdolIds.map((id) => Number(id)).filter(Boolean),
+        idol_names: enteredIdolNames,
+        scraped_tags: scrapedTags,
         studio_id: selectedStudioId ? Number(selectedStudioId) : 0,
         series_id: selectedSeriesId ? Number(selectedSeriesId) : 0,
         release_date: releaseDate,
         duration_min: duration,
       }
       const updated = await updateJavItem(item.id, payload, { directoryIds })
+      void loadJavTags?.({ force: true })
       const normalizedUpdated = {
         ...updated,
-        ...(payload.idol_ids.length === 0 ? { idols: [] } : {}),
-        ...(payload.tag_ids.length === 0 && !Array.isArray(updated?.tags) ? { tags: [] } : {}),
+        ...(payload.idol_ids.length === 0 && payload.idol_names.length === 0 ? { idols: [] } : {}),
+        ...(payload.tag_ids.length === 0 &&
+        payload.scraped_tags.length === 0 &&
+        !Array.isArray(updated?.tags)
+          ? { tags: [] }
+          : {}),
         ...(payload.studio_id ? {} : { studio_id: null, studio: null }),
         ...(payload.series_id ? {} : { series_id: null, series: null }),
       }
@@ -852,7 +949,7 @@ function JavEditModal({ open, item, directoryIds, preferChineseName = false, onC
     <AppModal
       ariaLabel={zh('编辑 JAV 信息', 'Edit JAV info')}
       className="p-4"
-      closeDisabled={saving}
+      closeDisabled={saving || creatingUserTag}
       contentClassName="flex max-h-[90vh] w-full max-w-2xl flex-col rounded-lg bg-white shadow-2xl"
       onClose={onClose}
       zIndex={1600}
@@ -869,6 +966,7 @@ function JavEditModal({ open, item, directoryIds, preferChineseName = false, onC
           type="button"
           className="mr-5 mt-5 rounded px-2 py-1 text-xl leading-none text-gray-500 hover:bg-gray-100 hover:text-gray-900"
           onClick={onClose}
+          disabled={saving || creatingUserTag}
           aria-label={zh('关闭', 'Close')}
         >
           ×
@@ -973,56 +1071,88 @@ function JavEditModal({ open, item, directoryIds, preferChineseName = false, onC
           />
         </div>
         <div>
-          <div className="flex items-center justify-between gap-3">
-            <div className="text-sm font-medium text-gray-700">{zh('女优', 'Idols')}</div>
+          <div className="text-sm font-medium text-gray-700">{zh('女优', 'Idols')}</div>
+          <div className="mt-2 flex flex-wrap items-center gap-2">
+            {selectedIdolOptions.map((idol) => (
+              <SelectedChip
+                key={idol.id}
+                label={getIdolDisplayName(idol, preferChineseName)}
+                disabled={saving}
+                onRemove={() => toggleIdol(idol.id, false)}
+              />
+            ))}
+            {manualIdolNames.map((name) => (
+              <SelectedChip
+                key={`manual-${name}`}
+                label={name}
+                disabled={saving}
+                onRemove={() =>
+                  setManualIdolNames((current) => current.filter((item) => item !== name))
+                }
+              />
+            ))}
             <button
               type="button"
-              className="inline-flex items-center gap-1 rounded-md border border-gray-300 px-2 py-1 text-xs text-gray-700 hover:bg-gray-50 disabled:cursor-not-allowed disabled:opacity-60"
-              onClick={() => setIdolPickerOpen((current) => !current)}
-              disabled={saving || optionsLoading}
+              className="inline-flex h-7 w-7 items-center justify-center rounded-md border border-gray-300 text-gray-700 hover:bg-gray-50 disabled:cursor-not-allowed disabled:opacity-60"
+              onClick={() => {
+                setIdolPickerOpen((current) => !current)
+                setScrapedTagPickerOpen(false)
+                setTagPickerOpen(false)
+                setScrapedTagSearch('')
+                setTagSearch('')
+              }}
+              disabled={saving}
+              title={zh('新增女优', 'Add idol')}
+              aria-label={zh('新增女优', 'Add idol')}
             >
               <AddIcon sx={{ fontSize: 15 }} />
-              {zh('新增', 'Add')}
             </button>
           </div>
-          {selectedIdolOptions.length > 0 ? (
-            <div className="mt-2 flex flex-wrap gap-2">
-              {selectedIdolOptions.map((idol) => (
-                <SelectedChip
-                  key={idol.id}
-                  label={getIdolDisplayName(idol, preferChineseName)}
-                  disabled={saving}
-                  onRemove={() => toggleIdol(idol.id, false)}
-                />
-              ))}
-            </div>
-          ) : null}
           {idolPickerOpen ? (
             <div className="mt-2 rounded-md border border-gray-200 p-2">
               <div className="mb-2 flex items-center gap-2">
                 <input
-                  type="search"
+                  type="text"
                   value={idolSearch}
                   onChange={(event) => setIdolSearch(event.target.value)}
-                  placeholder={zh('搜索已有女优', 'Search existing idols')}
+                  onKeyDown={(event) => {
+                    if (event.key !== 'Enter' || event.nativeEvent.isComposing) return
+                    event.preventDefault()
+                    addManualIdolName()
+                  }}
+                  placeholder={zh('搜索或输入女优名称', 'Search or enter an idol name')}
                   className="min-w-0 flex-1 rounded border border-gray-300 px-2 py-1.5 text-sm outline-none focus:border-blue-500 focus:ring-2 focus:ring-blue-100"
-                  disabled={saving || optionsLoading}
+                  disabled={saving}
                 />
                 <button
                   type="button"
                   className="inline-flex shrink-0 items-center gap-1 rounded-md border border-gray-300 px-2 py-1.5 text-xs text-gray-700 hover:bg-gray-50"
-                  onClick={() => setIdolPickerOpen(false)}
+                  onClick={() => {
+                    setIdolSearch('')
+                    setIdolPickerOpen(false)
+                  }}
                 >
                   <CloseOutlinedIcon sx={{ fontSize: 14 }} />
                   {zh('完成', 'Done')}
                 </button>
               </div>
               <div className="max-h-44 overflow-y-auto">
+                {idolSearch.trim() ? (
+                  <button
+                    type="button"
+                    className="mb-1 flex w-full items-center gap-1 rounded bg-blue-50 px-2 py-1.5 text-left text-sm text-blue-700 hover:bg-blue-100"
+                    onClick={() => addManualIdolName()}
+                    disabled={saving}
+                  >
+                    <AddIcon sx={{ fontSize: 15 }} />
+                    {zh(`添加“${idolSearch.trim()}”`, `Add “${idolSearch.trim()}”`)}
+                  </button>
+                ) : null}
                 {optionsLoading ? (
                   <div className="px-2 py-1 text-sm text-gray-500">
                     {zh('加载中...', 'Loading...')}
                   </div>
-                ) : availableIdolOptions.length === 0 ? (
+                ) : availableIdolOptions.length === 0 && !idolSearch.trim() ? (
                   <div className="px-2 py-1 text-sm text-gray-500">
                     {zh('暂无可添加女优', 'No idols to add')}
                   </div>
@@ -1045,52 +1175,167 @@ function JavEditModal({ open, item, directoryIds, preferChineseName = false, onC
         </div>
         {optionsError ? <div className="text-sm text-red-600">{optionsError}</div> : null}
         <div>
-          <div className="flex items-center justify-between gap-3">
-            <div className="text-sm font-medium text-gray-700">{zh('标签', 'Tags')}</div>
+          <div className="text-sm font-medium text-gray-700">{zh('刮削标签', 'Scraped tags')}</div>
+          <div className="mt-2 flex flex-wrap items-center gap-2">
+            {selectedScrapedTagNames.map((name) => (
+              <SelectedChip
+                key={name}
+                label={name}
+                disabled={saving}
+                onRemove={() =>
+                  setSelectedScrapedTagNames((current) => current.filter((item) => item !== name))
+                }
+              />
+            ))}
             <button
               type="button"
-              className="inline-flex items-center gap-1 rounded-md border border-gray-300 px-2 py-1 text-xs text-gray-700 hover:bg-gray-50 disabled:cursor-not-allowed disabled:opacity-60"
-              onClick={() => setTagPickerOpen((current) => !current)}
+              className="inline-flex h-7 w-7 items-center justify-center rounded-md border border-gray-300 text-gray-700 hover:bg-gray-50 disabled:cursor-not-allowed disabled:opacity-60"
+              onClick={() => {
+                setScrapedTagPickerOpen((current) => !current)
+                setIdolPickerOpen(false)
+                setTagPickerOpen(false)
+                setIdolSearch('')
+                setTagSearch('')
+              }}
               disabled={saving}
+              title={zh('新增刮削标签', 'Add scraped tag')}
+              aria-label={zh('新增刮削标签', 'Add scraped tag')}
             >
               <AddIcon sx={{ fontSize: 15 }} />
-              {zh('新增', 'Add')}
             </button>
           </div>
-          {selectedTagOptions.length > 0 ? (
-            <div className="mt-2 flex flex-wrap gap-2">
-              {selectedTagOptions.map((tag) => (
-                <SelectedChip
-                  key={`${tag.id}-${tag.provider || 0}`}
-                  label={tag.name}
-                  disabled={saving}
-                  onRemove={() => toggleTag(tag.id, false)}
-                />
-              ))}
-            </div>
-          ) : null}
-          {tagPickerOpen ? (
+          {scrapedTagPickerOpen ? (
             <div className="mt-2 rounded-md border border-gray-200 p-2">
               <div className="mb-2 flex items-center gap-2">
                 <input
-                  type="search"
-                  value={tagSearch}
-                  onChange={(event) => setTagSearch(event.target.value)}
-                  placeholder={zh('搜索已有标签', 'Search existing tags')}
+                  type="text"
+                  value={scrapedTagSearch}
+                  onChange={(event) => setScrapedTagSearch(event.target.value)}
+                  onKeyDown={(event) => {
+                    if (event.key !== 'Enter' || event.nativeEvent.isComposing) return
+                    event.preventDefault()
+                    addScrapedTagNames()
+                  }}
+                  placeholder={zh('搜索或输入刮削标签', 'Search or enter a scraped tag')}
                   className="min-w-0 flex-1 rounded border border-gray-300 px-2 py-1.5 text-sm outline-none focus:border-blue-500 focus:ring-2 focus:ring-blue-100"
                   disabled={saving}
                 />
                 <button
                   type="button"
                   className="inline-flex shrink-0 items-center gap-1 rounded-md border border-gray-300 px-2 py-1.5 text-xs text-gray-700 hover:bg-gray-50"
-                  onClick={() => setTagPickerOpen(false)}
+                  onClick={() => {
+                    setScrapedTagSearch('')
+                    setScrapedTagPickerOpen(false)
+                  }}
                 >
                   <CloseOutlinedIcon sx={{ fontSize: 14 }} />
                   {zh('完成', 'Done')}
                 </button>
               </div>
               <div className="max-h-40 overflow-y-auto">
-                {availableTagOptions.length === 0 ? (
+                {scrapedTagSearch.trim() ? (
+                  <button
+                    type="button"
+                    className="mb-1 flex w-full items-center gap-1 rounded bg-blue-50 px-2 py-1.5 text-left text-sm text-blue-700 hover:bg-blue-100"
+                    onClick={() => addScrapedTagNames()}
+                    disabled={saving}
+                  >
+                    <AddIcon sx={{ fontSize: 15 }} />
+                    {zh(`添加“${scrapedTagSearch.trim()}”`, `Add “${scrapedTagSearch.trim()}”`)}
+                  </button>
+                ) : null}
+                {availableScrapedTagOptions.length === 0 && !scrapedTagSearch.trim() ? (
+                  <div className="px-2 py-1 text-sm text-gray-500">
+                    {zh('暂无可添加刮削标签', 'No scraped tags to add')}
+                  </div>
+                ) : (
+                  availableScrapedTagOptions.map((tag) => (
+                    <button
+                      key={`${tag.id}-${tag.name}`}
+                      type="button"
+                      className="block w-full rounded px-2 py-1.5 text-left text-sm text-gray-800 hover:bg-gray-50"
+                      onClick={() => addScrapedTagNames(tag.name)}
+                      disabled={saving}
+                    >
+                      {tag.name}
+                    </button>
+                  ))
+                )}
+              </div>
+            </div>
+          ) : null}
+        </div>
+        <div>
+          <div className="text-sm font-medium text-gray-700">{zh('自定义标签', 'Custom tags')}</div>
+          <div className="mt-2 flex flex-wrap items-center gap-2">
+            {selectedTagOptions.map((tag) => (
+              <SelectedChip
+                key={`${tag.id}-${tag.provider || 0}`}
+                label={tag.name}
+                disabled={saving}
+                onRemove={() => toggleTag(tag.id, false)}
+              />
+            ))}
+            <button
+              type="button"
+              className="inline-flex h-7 w-7 items-center justify-center rounded-md border border-gray-300 text-gray-700 hover:bg-gray-50 disabled:cursor-not-allowed disabled:opacity-60"
+              onClick={() => {
+                setTagPickerOpen((current) => !current)
+                setIdolPickerOpen(false)
+                setScrapedTagPickerOpen(false)
+                setIdolSearch('')
+                setScrapedTagSearch('')
+              }}
+              disabled={saving || creatingUserTag}
+              title={zh('新增自定义标签', 'Add custom tag')}
+              aria-label={zh('新增自定义标签', 'Add custom tag')}
+            >
+              <AddIcon sx={{ fontSize: 15 }} />
+            </button>
+          </div>
+          {tagPickerOpen ? (
+            <div className="mt-2 rounded-md border border-gray-200 p-2">
+              <div className="mb-2 flex items-center gap-2">
+                <input
+                  type="text"
+                  value={tagSearch}
+                  onChange={(event) => setTagSearch(event.target.value)}
+                  onKeyDown={(event) => {
+                    if (event.key !== 'Enter' || event.nativeEvent.isComposing) return
+                    event.preventDefault()
+                    void addCustomTag()
+                  }}
+                  placeholder={zh('搜索或输入自定义标签', 'Search or enter a custom tag')}
+                  className="min-w-0 flex-1 rounded border border-gray-300 px-2 py-1.5 text-sm outline-none focus:border-blue-500 focus:ring-2 focus:ring-blue-100"
+                  disabled={saving || creatingUserTag}
+                />
+                <button
+                  type="button"
+                  className="inline-flex shrink-0 items-center gap-1 rounded-md border border-gray-300 px-2 py-1.5 text-xs text-gray-700 hover:bg-gray-50"
+                  onClick={() => {
+                    setTagSearch('')
+                    setTagPickerOpen(false)
+                  }}
+                >
+                  <CloseOutlinedIcon sx={{ fontSize: 14 }} />
+                  {zh('完成', 'Done')}
+                </button>
+              </div>
+              <div className="max-h-40 overflow-y-auto">
+                {tagSearch.trim() ? (
+                  <button
+                    type="button"
+                    className="mb-1 flex w-full items-center gap-1 rounded bg-blue-50 px-2 py-1.5 text-left text-sm text-blue-700 hover:bg-blue-100 disabled:cursor-wait disabled:opacity-60"
+                    onClick={() => void addCustomTag()}
+                    disabled={saving || creatingUserTag}
+                  >
+                    <AddIcon sx={{ fontSize: 15 }} />
+                    {creatingUserTag
+                      ? zh('创建中...', 'Creating...')
+                      : zh(`添加“${tagSearch.trim()}”`, `Add “${tagSearch.trim()}”`)}
+                  </button>
+                ) : null}
+                {availableTagOptions.length === 0 && !tagSearch.trim() ? (
                   <div className="px-2 py-1 text-sm text-gray-500">
                     {zh('暂无可添加标签', 'No tags to add')}
                   </div>
@@ -1118,7 +1363,7 @@ function JavEditModal({ open, item, directoryIds, preferChineseName = false, onC
           type="button"
           className="rounded-md border border-gray-300 px-4 py-2 text-sm text-gray-700 hover:bg-gray-50"
           onClick={onClose}
-          disabled={saving}
+          disabled={saving || creatingUserTag}
         >
           {zh('取消', 'Cancel')}
         </button>
@@ -1128,7 +1373,7 @@ function JavEditModal({ open, item, directoryIds, preferChineseName = false, onC
             saving ? 'cursor-wait bg-blue-400' : 'bg-blue-600 hover:bg-blue-700'
           }`}
           onClick={handleSave}
-          disabled={saving}
+          disabled={saving || creatingUserTag}
         >
           {saving ? zh('保存中...', 'Saving...') : zh('保存', 'Save')}
         </button>

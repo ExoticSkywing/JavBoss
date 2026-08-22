@@ -1,5 +1,7 @@
 import { useEffect, useState } from 'react'
+import CloseOutlinedIcon from '@mui/icons-material/CloseOutlined'
 import SearchIcon from '@mui/icons-material/Search'
+import { Tooltip } from '@mui/material'
 import AppModal from '@/components/AppModal'
 import { zh } from '@/utils/i18n'
 import { getErrorMessage } from '@/utils/errors'
@@ -9,6 +11,7 @@ const MANUAL_OVERRIDE_PREFIX = ':manual:'
 const AUTO_SOURCE_FILENAME = 'filename'
 const AUTO_SOURCE_CODE = 'code'
 const CODE_PATTERN = /^[A-Z0-9_-]+$/
+const CODE_INPUT_PATTERN = '[A-Z0-9_\\-]+'
 
 const emptyManualInfo = {
   code: '',
@@ -50,10 +53,66 @@ function listToText(values) {
 }
 
 function textToList(value) {
+  const seen = new Set()
   return String(value || '')
-    .split(/[\n,]+/)
+    .split(/[\n,，;；]+/)
     .map((item) => item.trim())
-    .filter(Boolean)
+    .filter((item) => {
+      if (!item || seen.has(item)) return false
+      seen.add(item)
+      return true
+    })
+}
+
+function ManualListEditor({
+  values,
+  input,
+  onInputChange,
+  onAdd,
+  onRemove,
+  disabled,
+  placeholder,
+}) {
+  return (
+    <div
+      className={`min-h-24 rounded border px-2 py-2 focus-within:border-blue-500 focus-within:ring-1 focus-within:ring-blue-500 ${
+        disabled ? 'bg-gray-50' : 'bg-white'
+      }`}
+    >
+      <div className="flex flex-wrap items-center gap-2">
+        {values.map((value) => (
+          <span
+            key={value}
+            className="inline-flex min-w-0 items-center gap-1 rounded-full bg-gray-100 px-2 py-1 text-sm text-gray-800"
+          >
+            <span className="max-w-48 truncate">{value}</span>
+            <button
+              type="button"
+              className="inline-flex h-4 w-4 shrink-0 items-center justify-center rounded-full text-gray-500 hover:bg-gray-200 hover:text-gray-900 disabled:cursor-not-allowed disabled:opacity-50"
+              onClick={() => onRemove(value)}
+              disabled={disabled}
+              aria-label={zh(`移除 ${value}`, `Remove ${value}`)}
+            >
+              <CloseOutlinedIcon sx={{ fontSize: 13 }} />
+            </button>
+          </span>
+        ))}
+        <input
+          type="text"
+          value={input}
+          onChange={(event) => onInputChange(event.target.value)}
+          onKeyDown={(event) => {
+            if (event.key !== 'Enter' || event.nativeEvent.isComposing) return
+            event.preventDefault()
+            onAdd()
+          }}
+          disabled={disabled}
+          placeholder={values.length === 0 ? placeholder : ''}
+          className="min-w-40 flex-1 bg-transparent px-1 py-1 text-sm outline-none disabled:cursor-not-allowed"
+        />
+      </div>
+    </div>
+  )
 }
 
 function initialManualInfo(video) {
@@ -115,14 +174,19 @@ export default function VideoScrapeSettingsModal({
   onFetchPossibleCodes,
   onLookupMetadata,
   onManualScrape,
+  onLinkExistingJav,
 }) {
   const [mode, setMode] = useState('auto')
   const [autoSource, setAutoSource] = useState(AUTO_SOURCE_FILENAME)
   const [code, setCode] = useState('')
   const [manualInfo, setManualInfo] = useState(emptyManualInfo)
+  const [tagInput, setTagInput] = useState('')
+  const [actorInput, setActorInput] = useState('')
   const [lookupLoading, setLookupLoading] = useState(false)
   const [lookupProvider, setLookupProvider] = useState('')
   const [lookupError, setLookupError] = useState('')
+  const [linkLoading, setLinkLoading] = useState(false)
+  const [linkError, setLinkError] = useState('')
   const [possibleCodesOpen, setPossibleCodesOpen] = useState(false)
   const [possibleCodesLoading, setPossibleCodesLoading] = useState(false)
   const [possibleCodesError, setPossibleCodesError] = useState('')
@@ -135,9 +199,13 @@ export default function VideoScrapeSettingsModal({
     setAutoSource(next.autoSource)
     setCode(next.code)
     setManualInfo(initialManualInfo(video))
+    setTagInput('')
+    setActorInput('')
     setLookupLoading(false)
     setLookupProvider('')
     setLookupError('')
+    setLinkLoading(false)
+    setLinkError('')
     setPossibleCodesOpen(false)
     setPossibleCodesLoading(false)
     setPossibleCodesError('')
@@ -157,9 +225,12 @@ export default function VideoScrapeSettingsModal({
     manualDuration === '' ||
     (Number.isFinite(Number.parseInt(manualDuration, 10)) &&
       Number.parseInt(manualDuration, 10) >= 0)
+  const manualTags = textToList(manualInfo.tags_text)
+  const manualActors = textToList(manualInfo.actors_text)
   const canSave =
     !saving &&
     !lookupLoading &&
+    !linkLoading &&
     (mode === 'skip' ||
       (mode === 'auto' && autoSource === AUTO_SOURCE_FILENAME) ||
       (codeValid && (mode !== 'manual' || manualDurationValid)))
@@ -170,6 +241,7 @@ export default function VideoScrapeSettingsModal({
     const nextCode = value.toUpperCase()
     setCode(nextCode)
     setManualInfo((current) => ({ ...current, code: nextCode }))
+    if (linkError) setLinkError('')
   }
 
   const testPossibleCodes = async () => {
@@ -198,6 +270,8 @@ export default function VideoScrapeSettingsModal({
       const nextInfo = infoFromProvider(data, normalizedCode)
       setCode(nextInfo.code)
       setManualInfo((current) => ({ ...current, ...nextInfo }))
+      setTagInput('')
+      setActorInput('')
     } catch (err) {
       setLookupError(getErrorMessage(err))
     } finally {
@@ -206,10 +280,47 @@ export default function VideoScrapeSettingsModal({
     }
   }
 
+  const linkExistingJav = async () => {
+    if (!codeValid || saving || lookupLoading || linkLoading || !onLinkExistingJav) return
+    setLinkLoading(true)
+    setLinkError('')
+    try {
+      await onLinkExistingJav(normalizedCode)
+    } catch (err) {
+      setLinkError(getErrorMessage(err))
+    } finally {
+      setLinkLoading(false)
+    }
+  }
+
+  const addManualListValues = (field, value, clearInput) => {
+    const additions = textToList(value)
+    if (additions.length === 0) return
+    setManualInfo((current) => ({
+      ...current,
+      [field]: listToText([...textToList(current[field]), ...additions]),
+    }))
+    clearInput('')
+  }
+
+  const removeManualListValue = (field, value) => {
+    setManualInfo((current) => ({
+      ...current,
+      [field]: listToText(textToList(current[field]).filter((item) => item !== value)),
+    }))
+  }
+
   const submit = () => {
     if (!canSave) return
     if (mode === 'manual') {
-      onManualScrape?.(manualPayload({ ...manualInfo, code: normalizedCode }))
+      onManualScrape?.(
+        manualPayload({
+          ...manualInfo,
+          code: normalizedCode,
+          tags_text: listToText([...manualTags, ...textToList(tagInput)]),
+          actors_text: listToText([...manualActors, ...textToList(actorInput)]),
+        })
+      )
       return
     }
     onSave?.({
@@ -320,7 +431,7 @@ export default function VideoScrapeSettingsModal({
                       onChange={(event) => updateCode(event.target.value)}
                       disabled={saving || lookupLoading || autoSource !== AUTO_SOURCE_CODE}
                       placeholder="IPX-001"
-                      pattern="[A-Z0-9_-]+"
+                      pattern={CODE_INPUT_PATTERN}
                       aria-label={zh('指定番号', 'Specified code')}
                       aria-invalid={autoSource === AUTO_SOURCE_CODE && codeInvalid}
                       className={`w-full rounded border px-3 py-1.5 text-sm uppercase focus:outline-none focus:ring-1 disabled:bg-gray-50 sm:w-44 ${
@@ -377,7 +488,7 @@ export default function VideoScrapeSettingsModal({
                     onChange={(event) => updateCode(event.target.value)}
                     disabled={saving || lookupLoading}
                     placeholder="IPX-001"
-                    pattern="[A-Z0-9_-]+"
+                    pattern={CODE_INPUT_PATTERN}
                     aria-invalid={codeInvalid}
                     className={`w-full rounded border px-3 py-1.5 text-sm uppercase focus:outline-none focus:ring-1 disabled:bg-gray-50 ${
                       codeInvalid
@@ -385,6 +496,39 @@ export default function VideoScrapeSettingsModal({
                         : 'focus:border-blue-500 focus:ring-blue-500'
                     }`}
                   />
+                  <div className="mt-2">
+                    <Tooltip
+                      arrow
+                      title={zh(
+                        '如果该番号在 JAV 库中已存在，可直接关联，无需手动填入信息。',
+                        'If this code already exists in the JAV library, link it directly without entering metadata manually.'
+                      )}
+                    >
+                      <span className="inline-flex">
+                        <button
+                          type="button"
+                          onClick={() => void linkExistingJav()}
+                          disabled={
+                            !codeValid ||
+                            saving ||
+                            lookupLoading ||
+                            linkLoading ||
+                            !onLinkExistingJav
+                          }
+                          className="rounded border border-blue-300 bg-white px-3 py-1 text-xs font-medium text-blue-700 hover:border-blue-500 hover:bg-blue-50 disabled:opacity-50"
+                        >
+                          {linkLoading
+                            ? zh('关联中…', 'Linking...')
+                            : zh('直接关联已有番号', 'Link existing JAV directly')}
+                        </button>
+                      </span>
+                    </Tooltip>
+                  </div>
+                  {linkError ? (
+                    <div role="alert" className="mt-1 text-xs text-red-600">
+                      {linkError}
+                    </div>
+                  ) : null}
                   <div className="mt-2 flex flex-wrap items-center gap-2">
                     <span className="mr-1 text-xs font-medium text-gray-500">
                       {zh('自动填充', 'Autofill')}
@@ -485,26 +629,31 @@ export default function VideoScrapeSettingsModal({
                   <label className="mb-1 block text-xs font-medium text-gray-500">
                     {zh('标签', 'Tags')}
                   </label>
-                  <textarea
-                    rows={4}
-                    value={manualInfo.tags_text}
-                    onChange={(event) => updateManual({ tags_text: event.target.value })}
+                  <ManualListEditor
+                    values={manualTags}
+                    input={tagInput}
+                    onInputChange={setTagInput}
+                    onAdd={() => addManualListValues('tags_text', tagInput, setTagInput)}
+                    onRemove={(value) => removeManualListValue('tags_text', value)}
                     disabled={saving || lookupLoading}
-                    placeholder={zh('每行一个，不要有多余空格', 'One per line, no extra spaces')}
-                    className="w-full resize-y rounded border px-3 py-1.5 text-sm focus:border-blue-500 focus:outline-none focus:ring-1 focus:ring-blue-500 disabled:bg-gray-50"
+                    placeholder={zh('输入标签后按回车添加', 'Type a tag and press Enter')}
                   />
                 </div>
                 <div>
                   <label className="mb-1 block text-xs font-medium text-gray-500">
                     {zh('女优', 'Actors')}
                   </label>
-                  <textarea
-                    rows={4}
-                    value={manualInfo.actors_text}
-                    onChange={(event) => updateManual({ actors_text: event.target.value })}
+                  <ManualListEditor
+                    values={manualActors}
+                    input={actorInput}
+                    onInputChange={setActorInput}
+                    onAdd={() => addManualListValues('actors_text', actorInput, setActorInput)}
+                    onRemove={(value) => removeManualListValue('actors_text', value)}
                     disabled={saving || lookupLoading}
-                    placeholder={zh('每行一个，不要有多余空格', 'One per line, no extra spaces')}
-                    className="w-full resize-y rounded border px-3 py-1.5 text-sm focus:border-blue-500 focus:outline-none focus:ring-1 focus:ring-blue-500 disabled:bg-gray-50"
+                    placeholder={zh(
+                      '输入女优名称后按回车添加',
+                      'Type an actor name and press Enter'
+                    )}
                   />
                 </div>
                 <div className="md:col-span-2">

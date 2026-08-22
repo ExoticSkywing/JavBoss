@@ -93,14 +93,16 @@ type JavScanVideo struct {
 
 // JavUpdateInput contains user-editable JAV metadata fields.
 type JavUpdateInput struct {
-	Title          *string
-	StudioID       *int64
-	SeriesID       *int64
-	IdolIDs        *[]int64
-	UserTagIDs     *[]int64
-	ReleaseUnix    *int64
-	DurationMin    *int
-	FavoriteRating *float64
+	Title           *string
+	StudioID        *int64
+	SeriesID        *int64
+	IdolIDs         *[]int64
+	IdolNames       *[]string
+	UserTagIDs      *[]int64
+	ScrapedTagNames *[]string
+	ReleaseUnix     *int64
+	DurationMin     *int
+	FavoriteRating  *float64
 }
 
 // JavIdolUpdateInput contains user-editable JAV idol profile fields.
@@ -501,13 +503,26 @@ func UpdateJav(ctx context.Context, javID int64, input JavUpdateInput, directory
 				return fmt.Errorf("update jav metadata: %w", err)
 			}
 		}
-		if input.IdolIDs != nil {
-			if err := replaceJavIdolsTx(tx, javID, *input.IdolIDs); err != nil {
+		if input.IdolIDs != nil || input.IdolNames != nil {
+			var idolIDs []int64
+			if input.IdolIDs != nil {
+				idolIDs = *input.IdolIDs
+			}
+			var idolNames []string
+			if input.IdolNames != nil {
+				idolNames = *input.IdolNames
+			}
+			if err := replaceJavIdolsWithNamesTx(tx, javID, idolIDs, idolNames); err != nil {
 				return err
 			}
 		}
 		if input.UserTagIDs != nil {
 			if err := replaceJavUserTagsTx(tx, []int64{javID}, *input.UserTagIDs); err != nil {
+				return err
+			}
+		}
+		if input.ScrapedTagNames != nil {
+			if err := replaceJavScrapedTagsTx(tx, javID, *input.ScrapedTagNames); err != nil {
 				return err
 			}
 		}
@@ -886,6 +901,7 @@ func visibleScrapedJavTagProviders() []int {
 		int(jav.ProviderAvmoo),
 		int(jav.ProviderAvsox),
 		int(jav.ProviderJavMenu),
+		int(jav.ProviderManualScrape),
 	}
 }
 
@@ -2822,6 +2838,87 @@ func SaveJavInfoAndLinkVideoLocations(ctx context.Context, info *jav.JavInfo, vi
 	return javRec, nil
 }
 
+// SaveManualJavInfoAndLinkVideoLocations atomically upserts manually entered JAV
+// metadata, records the manual scrape override, and associates every location
+// for the video with the resulting JAV record.
+func SaveManualJavInfoAndLinkVideoLocations(ctx context.Context, info *jav.JavInfo, videoID int64) (*models.Jav, error) {
+	if info == nil {
+		return nil, errors.New("jav info is nil")
+	}
+	if videoID <= 0 {
+		return nil, errors.New("video id cannot be zero")
+	}
+
+	var javRec *models.Jav
+	err := common.DB.WithContext(ctx).Transaction(func(tx *gorm.DB) error {
+		rec, err := saveJavInfoTx(tx, info)
+		if err != nil {
+			return err
+		}
+		res := tx.Model(&models.VideoLocation{}).
+			Where("video_id = ?", videoID).
+			UpdateColumn("jav_id", rec.ID)
+		if res.Error != nil {
+			return fmt.Errorf("link video locations to jav: %w", res.Error)
+		}
+		if res.RowsAffected == 0 {
+			return gorm.ErrRecordNotFound
+		}
+		override := models.JavScrapeOverrideManualPrefix + strings.ToUpper(strings.TrimSpace(info.Code))
+		if err := updateVideoJavScrapeOverrideTx(tx, videoID, override); err != nil {
+			return err
+		}
+		javRec = rec
+		return nil
+	})
+	if err != nil {
+		if errors.Is(err, gorm.ErrRecordNotFound) {
+			return nil, nil
+		}
+		return nil, err
+	}
+	return javRec, nil
+}
+
+// LinkVideoLocationsToExistingJav atomically records a manual scrape override
+// and associates every location for a video with an existing JAV record without
+// changing that record's metadata.
+func LinkVideoLocationsToExistingJav(ctx context.Context, code string, videoID int64) (*models.Jav, error) {
+	code = strings.ToUpper(strings.TrimSpace(code))
+	if code == "" {
+		return nil, errors.New("jav code is required")
+	}
+	if videoID <= 0 {
+		return nil, errors.New("video id cannot be zero")
+	}
+
+	var javRec *models.Jav
+	err := common.DB.WithContext(ctx).Transaction(func(tx *gorm.DB) error {
+		rec, err := lockJavByCodeTx(tx, code)
+		if err != nil {
+			return err
+		}
+		if rec == nil {
+			return nil
+		}
+		if err := tx.Model(&models.VideoLocation{}).
+			Where("video_id = ?", videoID).
+			UpdateColumn("jav_id", rec.ID).Error; err != nil {
+			return fmt.Errorf("link video locations to existing jav: %w", err)
+		}
+		override := models.JavScrapeOverrideManualPrefix + code
+		if err := updateVideoJavScrapeOverrideTx(tx, videoID, override); err != nil {
+			return err
+		}
+		javRec = rec
+		return nil
+	})
+	if err != nil {
+		return nil, err
+	}
+	return javRec, nil
+}
+
 // SaveJavInfo upserts jav metadata without linking it to a video location.
 func SaveJavInfo(ctx context.Context, info *jav.JavInfo) (*models.Jav, error) {
 	if info == nil {
@@ -3956,6 +4053,51 @@ func replaceJavIdolsTx(tx *gorm.DB, javID int64, idolIDs []int64) error {
 	}
 	if err := tx.Clauses(clause.OnConflict{DoNothing: true}).Create(&rows).Error; err != nil {
 		return fmt.Errorf("insert jav idol maps: %w", err)
+	}
+	return nil
+}
+
+func replaceJavIdolsWithNamesTx(tx *gorm.DB, javID int64, idolIDs []int64, idolNames []string) error {
+	idols, err := ensureJavIdolsTx(tx, idolNames)
+	if err != nil {
+		return err
+	}
+	resolvedIDs := append([]int64(nil), idolIDs...)
+	for _, idol := range idols {
+		resolvedIDs = append(resolvedIDs, idol.ID)
+	}
+	return replaceJavIdolsTx(tx, javID, resolvedIDs)
+}
+
+func replaceJavScrapedTagsTx(tx *gorm.DB, javID int64, names []string) error {
+	if javID <= 0 {
+		return errors.New("jav id cannot be zero")
+	}
+	providers := visibleScrapedJavTagProviders()
+	var oldTagIDs []int64
+	if err := tx.Model(&models.JavTagMap{}).
+		Where("jav_id = ? AND provider IN ?", javID, providers).
+		Distinct().
+		Pluck("jav_tag_id", &oldTagIDs).Error; err != nil {
+		return fmt.Errorf("find scraped jav tag maps: %w", err)
+	}
+	if err := tx.
+		Where("jav_id = ? AND provider IN ?", javID, providers).
+		Delete(&models.JavTagMap{}).Error; err != nil {
+		return fmt.Errorf("delete scraped jav tag maps: %w", err)
+	}
+
+	tags, err := ensureJavTagsTx(tx, names, jav.ProviderManualScrape)
+	if err != nil {
+		return err
+	}
+	if err := replaceJavTagsForProviderTx(tx, javID, tags, jav.ProviderManualScrape); err != nil {
+		return err
+	}
+	for _, tagID := range uniqueInt64s(oldTagIDs) {
+		if err := deleteJavTagIfUnusedTx(tx, tagID); err != nil {
+			return err
+		}
 	}
 	return nil
 }

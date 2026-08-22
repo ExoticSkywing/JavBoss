@@ -825,7 +825,6 @@ func TestSearchJavFiltersSoloOnlyByIdolCount(t *testing.T) {
 	for _, idol := range idols {
 		idolByName[idol.Name] = idol
 	}
-
 	javs := []models.Jav{
 		{Code: "SOLO-001", Title: "One idol", FetchedAt: now},
 		{Code: "GROUP-001", Title: "Two idols", FetchedAt: now},
@@ -919,6 +918,12 @@ func TestUpdateJavReplacesEditableMetadata(t *testing.T) {
 	for _, idol := range idols {
 		idolByName[idol.Name] = idol
 	}
+	if err := db.Create(&models.JavIdolAlias{
+		JavIdolID: idolByName["New Idol B"].ID,
+		Alias:     "New Idol B Alias",
+	}).Error; err != nil {
+		t.Fatalf("create idol alias: %v", err)
+	}
 	if err := db.Create(&[]models.JavTag{userTagA, userTagB, scrapedTag}).Error; err != nil {
 		t.Fatalf("create tags: %v", err)
 	}
@@ -969,17 +974,21 @@ func TestUpdateJavReplacesEditableMetadata(t *testing.T) {
 
 	studioID := studioByName["New Studio"].ID
 	seriesID := seriesByName["New Series"].ID
-	idolIDs := []int64{idolByName["New Idol A"].ID, idolByName["New Idol B"].ID}
+	idolIDs := []int64{idolByName["New Idol A"].ID}
+	idolNames := []string{"New Idol B Alias", "Typed Idol", "Typed Idol"}
 	tagIDs := []int64{tagByName["User B"].ID}
+	scrapedTagNames := []string{"Scraped Replacement", "Scraped Replacement"}
 	releaseUnix := time.Date(2024, 1, 2, 0, 0, 0, 0, time.UTC).Unix()
 	durationMin := 123
 	updated, err := UpdateJav(ctx, javRec.ID, JavUpdateInput{
-		StudioID:    &studioID,
-		SeriesID:    &seriesID,
-		IdolIDs:     &idolIDs,
-		UserTagIDs:  &tagIDs,
-		ReleaseUnix: &releaseUnix,
-		DurationMin: &durationMin,
+		StudioID:        &studioID,
+		SeriesID:        &seriesID,
+		IdolIDs:         &idolIDs,
+		IdolNames:       &idolNames,
+		UserTagIDs:      &tagIDs,
+		ScrapedTagNames: &scrapedTagNames,
+		ReleaseUnix:     &releaseUnix,
+		DurationMin:     &durationMin,
 	}, nil)
 	if err != nil {
 		t.Fatalf("UpdateJav: %v", err)
@@ -1001,8 +1010,15 @@ func TestUpdateJavReplacesEditableMetadata(t *testing.T) {
 	for _, idol := range updated.Idols {
 		updatedIdolNames[idol.Name] = true
 	}
-	if len(updatedIdolNames) != 2 || !updatedIdolNames["New Idol A"] || !updatedIdolNames["New Idol B"] {
+	if len(updatedIdolNames) != 3 || !updatedIdolNames["New Idol A"] || !updatedIdolNames["New Idol B"] || !updatedIdolNames["Typed Idol"] {
 		t.Fatalf("updated idols = %#v", updated.Idols)
+	}
+	var aliasNamedIdolCount int64
+	if err := db.Model(&models.JavIdol{}).Where("name = ?", "New Idol B Alias").Count(&aliasNamedIdolCount).Error; err != nil {
+		t.Fatalf("count alias-named idol: %v", err)
+	}
+	if aliasNamedIdolCount != 0 {
+		t.Fatalf("manual alias input created %d duplicate idol rows", aliasNamedIdolCount)
 	}
 
 	var oldIdolMapCount int64
@@ -1030,8 +1046,26 @@ func TestUpdateJavReplacesEditableMetadata(t *testing.T) {
 		Count(&scrapedMapCount).Error; err != nil {
 		t.Fatalf("count scraped tag map: %v", err)
 	}
-	if scrapedMapCount != 1 {
-		t.Fatalf("scraped tag map count = %d, want 1", scrapedMapCount)
+	if scrapedMapCount != 0 {
+		t.Fatalf("old scraped tag map count = %d, want 0", scrapedMapCount)
+	}
+	var replacementMap models.JavTagMap
+	if err := db.
+		Table("jav_tag_map jtm").
+		Select("jtm.*").
+		Joins("JOIN jav_tag jt ON jt.id = jtm.jav_tag_id").
+		Where("jtm.jav_id = ? AND jt.name = ? AND jtm.provider = ?", javRec.ID, "Scraped Replacement", int(jav.ProviderManualScrape)).
+		First(&replacementMap).Error; err != nil {
+		t.Fatalf("load replacement scraped tag map: %v", err)
+	}
+	updatedTagProviders := map[string]int{}
+	for _, tag := range updated.Tags {
+		updatedTagProviders[tag.Name] = tag.Provider
+	}
+	if len(updatedTagProviders) != 2 ||
+		updatedTagProviders["User B"] != int(jav.ProviderUser) ||
+		updatedTagProviders["Scraped Replacement"] != int(jav.ProviderManualScrape) {
+		t.Fatalf("updated tags = %#v", updated.Tags)
 	}
 }
 
@@ -1401,7 +1435,7 @@ func TestAppendJavIdolsIfMissingForProvider(t *testing.T) {
 	})
 }
 
-func TestSaveJavInfoAndLinkVideoLocationsLinksAllLocations(t *testing.T) {
+func TestSaveManualJavInfoAndLinkVideoLocationsLinksAllLocations(t *testing.T) {
 	gdb := openTestDB(t)
 	ctx := context.Background()
 	now := time.Unix(1710000000, 0).UTC()
@@ -1428,16 +1462,27 @@ func TestSaveJavInfoAndLinkVideoLocationsLinksAllLocations(t *testing.T) {
 		t.Fatalf("upsert loc b: %v", err)
 	}
 
-	rec, err := SaveJavInfoAndLinkVideoLocations(ctx, &jav.JavInfo{
+	rec, err := SaveManualJavInfoAndLinkVideoLocations(ctx, &jav.JavInfo{
 		Code:     "MAN-001",
 		Title:    "Manual Title",
-		Provider: jav.ProviderJavDB,
+		Tags:     []string{"Manual Tag"},
+		Provider: jav.ProviderManualScrape,
 	}, video.ID)
 	if err != nil {
-		t.Fatalf("SaveJavInfoAndLinkVideoLocations: %v", err)
+		t.Fatalf("SaveManualJavInfoAndLinkVideoLocations: %v", err)
 	}
 	if rec == nil || rec.ID == 0 {
 		t.Fatalf("missing jav record: %#v", rec)
+	}
+	var manualTagMapCount int64
+	if err := gdb.Model(&models.JavTagMap{}).
+		Joins("JOIN jav_tag ON jav_tag.id = jav_tag_map.jav_tag_id").
+		Where("jav_tag_map.jav_id = ? AND jav_tag.name = ? AND jav_tag_map.provider = ?", rec.ID, "Manual Tag", int(jav.ProviderManualScrape)).
+		Count(&manualTagMapCount).Error; err != nil {
+		t.Fatalf("count manual scrape tag map: %v", err)
+	}
+	if manualTagMapCount != 1 {
+		t.Fatalf("manual scrape tag map count = %d, want 1", manualTagMapCount)
 	}
 
 	var locations []models.VideoLocation
@@ -1459,6 +1504,67 @@ func TestSaveJavInfoAndLinkVideoLocationsLinksAllLocations(t *testing.T) {
 	}
 	if videoForLocation == nil || videoForLocation.Jav == nil || videoForLocation.Jav.Code != "MAN-001" {
 		t.Fatalf("expected hydrated jav on video location, got %#v", videoForLocation)
+	}
+	if videoForLocation.JavScrapeOverride != models.JavScrapeOverrideManualPrefix+"MAN-001" {
+		t.Fatalf("jav scrape override = %q", videoForLocation.JavScrapeOverride)
+	}
+}
+
+func TestLinkVideoLocationsToExistingJavRollsBackWhenOverrideUpdateFails(t *testing.T) {
+	gdb := openTestDB(t)
+	ctx := context.Background()
+	now := time.Unix(1710000000, 0).UTC()
+
+	dir := models.Directory{Path: "/tmp/atomic-existing-link"}
+	if err := gdb.Create(&dir).Error; err != nil {
+		t.Fatalf("create directory: %v", err)
+	}
+	javRecords := []models.Jav{{Code: "OLD-001", Title: "Old"}, {Code: "NEW-001", Title: "New"}}
+	if err := gdb.Create(&javRecords).Error; err != nil {
+		t.Fatalf("create JAV records: %v", err)
+	}
+	oldJav, newJav := javRecords[0], javRecords[1]
+	video := models.Video{
+		Fingerprint:       "atomic-existing-link",
+		JavScrapeOverride: models.JavScrapeOverrideManualPrefix + oldJav.Code,
+	}
+	if err := gdb.Create(&video).Error; err != nil {
+		t.Fatalf("create video: %v", err)
+	}
+	loc, err := UpsertVideoLocation(ctx, video.ID, dir.ID, "movie.mp4", now)
+	if err != nil {
+		t.Fatalf("create video location: %v", err)
+	}
+	if err := gdb.Model(&models.VideoLocation{}).Where("id = ?", loc.ID).Update("jav_id", oldJav.ID).Error; err != nil {
+		t.Fatalf("link old JAV: %v", err)
+	}
+	if err := gdb.Exec(`
+		CREATE TRIGGER fail_existing_link_override
+		BEFORE UPDATE OF jav_scrape_override ON video
+		BEGIN
+			SELECT RAISE(ABORT, 'forced override failure');
+		END
+	`).Error; err != nil {
+		t.Fatalf("create failure trigger: %v", err)
+	}
+
+	if _, err := LinkVideoLocationsToExistingJav(ctx, newJav.Code, video.ID); err == nil {
+		t.Fatal("expected override update failure")
+	}
+
+	var storedVideo models.Video
+	if err := gdb.First(&storedVideo, video.ID).Error; err != nil {
+		t.Fatalf("reload video: %v", err)
+	}
+	if storedVideo.JavScrapeOverride != video.JavScrapeOverride {
+		t.Fatalf("override changed after rollback: got %q want %q", storedVideo.JavScrapeOverride, video.JavScrapeOverride)
+	}
+	var storedLocation models.VideoLocation
+	if err := gdb.First(&storedLocation, loc.ID).Error; err != nil {
+		t.Fatalf("reload video location: %v", err)
+	}
+	if storedLocation.JavID == nil || *storedLocation.JavID != oldJav.ID {
+		t.Fatalf("JAV link changed after rollback: got %#v want %d", storedLocation.JavID, oldJav.ID)
 	}
 }
 
@@ -1911,6 +2017,7 @@ func TestJavTagsFilterOutEnglishProviders(t *testing.T) {
 		{Name: "Avmoo Only"},
 		{Name: "Avsox Only"},
 		{Name: "JavMenu Only"},
+		{Name: "Manual Only"},
 		{Name: "English Only"},
 		{Name: "TPDB Only"},
 		{Name: "User Only", IsUser: true},
@@ -1929,6 +2036,7 @@ func TestJavTagsFilterOutEnglishProviders(t *testing.T) {
 		{JavID: javRec.ID, JavTagID: byName["Avmoo Only"].ID, Provider: int(jav.ProviderAvmoo), CreatedAt: now},
 		{JavID: javRec.ID, JavTagID: byName["Avsox Only"].ID, Provider: int(jav.ProviderAvsox), CreatedAt: now},
 		{JavID: javRec.ID, JavTagID: byName["JavMenu Only"].ID, Provider: int(jav.ProviderJavMenu), CreatedAt: now},
+		{JavID: javRec.ID, JavTagID: byName["Manual Only"].ID, Provider: int(jav.ProviderManualScrape), CreatedAt: now},
 		{JavID: javRec.ID, JavTagID: byName["English Only"].ID, Provider: int(jav.ProviderJavDatabase), CreatedAt: now},
 		{JavID: javRec.ID, JavTagID: byName["TPDB Only"].ID, Provider: int(jav.ProviderThePornDB), CreatedAt: now},
 		{JavID: javRec.ID, JavTagID: byName["User Only"].ID, Provider: int(jav.ProviderUser), CreatedAt: now},
@@ -1942,7 +2050,7 @@ func TestJavTagsFilterOutEnglishProviders(t *testing.T) {
 		t.Fatalf("ListJavTags zh: %v", err)
 	}
 	assertJavTagProviderNames(t, zhTags, map[int][]string{
-		int(jav.ProviderJavBus): {"Avmoo Only", "Avsox Only", "JavDB Only", "JavMenu Only", "Shared"},
+		int(jav.ProviderJavBus): {"Avmoo Only", "Avsox Only", "JavDB Only", "JavMenu Only", "Manual Only", "Shared"},
 		int(jav.ProviderUser):   {"User Only"},
 	})
 	assertJavTagCounts(t, zhTags, map[string]int64{
@@ -1951,13 +2059,14 @@ func TestJavTagsFilterOutEnglishProviders(t *testing.T) {
 		"Avmoo Only":   1,
 		"Avsox Only":   1,
 		"JavMenu Only": 1,
+		"Manual Only":  1,
 		"User Only":    1,
 	})
 	items, total, err := SearchJav(ctx, nil, []int64{byName["JavDB Only"].ID}, "", "code", 20, 0, nil, nil)
 	if err != nil {
 		t.Fatalf("SearchJav zh tag: %v", err)
 	}
-	if total != 1 || len(items) != 1 || len(items[0].Tags) != 6 {
+	if total != 1 || len(items) != 1 || len(items[0].Tags) != 7 {
 		t.Fatalf("unexpected zh search result: total=%d items=%#v", total, items)
 	}
 
