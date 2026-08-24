@@ -773,6 +773,18 @@ export async function createJavTag(name) {
   return res.json()
 }
 
+export async function createJavScrapedTag(name) {
+  const res = await apiFetch('/jav/tags/scraped', {
+    method: 'POST',
+    headers: jsonHeaders,
+    body: JSON.stringify({ name }),
+  })
+  if (!res.ok) {
+    throw await apiError(res)
+  }
+  return res.json()
+}
+
 export async function organizeJavTags() {
   const res = await apiFetch('/jav/tags/organize', { method: 'POST' })
   if (!res.ok) {
@@ -918,6 +930,18 @@ export async function fetchJavIdols({
     params.set(`idol_${key}_max`, String(value.max))
   }
   const res = await apiFetch(`/jav/idols?${params.toString()}`)
+  if (!res.ok) {
+    throw await apiError(res)
+  }
+  return res.json()
+}
+
+export async function createJavIdol(name) {
+  const res = await apiFetch('/jav/idols', {
+    method: 'POST',
+    headers: jsonHeaders,
+    body: JSON.stringify({ name }),
+  })
   if (!res.ok) {
     throw await apiError(res)
   }
