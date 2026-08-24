@@ -33,6 +33,12 @@ const (
 
 var javCodeSeparatorPattern = regexp.MustCompile(`[\s_\-]+`)
 
+var (
+	javDBAppFC2DigitsPattern      = regexp.MustCompile(`(?i)FC2(?:[\s_\-]*PPV)?[\s_\-]*(\d{5,})`)
+	javDBAppSurenPrefixPattern    = regexp.MustCompile(`(?i)^\d{3,}([A-Z][A-Z0-9]*[\s_\-]+\d+)$`)
+	javDBAppUncensoredCodePattern = regexp.MustCompile(`(?i)^(?:FC2|HEYZO)[\s_\-]*\d+$`)
+)
+
 var errJavDBAppMovieNotFound = errors.New("JavDB App movie not found")
 
 // JavDBAppMagnet is a single JavDB candidate. JavDB returns Size in MiB.
@@ -53,6 +59,40 @@ type JavDBAppMovie struct {
 	Title        string `json:"title"`
 	ReleaseDate  string `json:"release_date"`
 	MagnetsCount int    `json:"magnets_count"`
+}
+
+type javDBAppMovieDetail struct {
+	ID              string                 `json:"id"`
+	Number          string                 `json:"number"`
+	Title           string                 `json:"title"`
+	OriginTitle     string                 `json:"origin_title"`
+	Summary         string                 `json:"summary"`
+	ThumbURL        string                 `json:"thumb_url"`
+	CoverURL        string                 `json:"cover_url"`
+	Duration        int                    `json:"duration"`
+	ReleaseDate     string                 `json:"release_date"`
+	MakerName       string                 `json:"maker_name"`
+	DirectorName    string                 `json:"director_name"`
+	PublisherName   string                 `json:"publisher_name"`
+	SeriesName      string                 `json:"series_name"`
+	Tags            []javDBAppNamedValue   `json:"tags"`
+	Actors          []javDBAppActor        `json:"actors"`
+	PreviewImages   []javDBAppPreviewImage `json:"preview_images"`
+	PreviewVideoURL string                 `json:"preview_video_url"`
+}
+
+type javDBAppNamedValue struct {
+	Name string `json:"name"`
+}
+
+type javDBAppActor struct {
+	Name   string `json:"name"`
+	Gender any    `json:"gender"`
+}
+
+type javDBAppPreviewImage struct {
+	LargeURL string `json:"large_url"`
+	ThumbURL string `json:"thumb_url"`
 }
 
 // JavDBAppResolveItem is the result for one input line. Errors are item-scoped so a
@@ -113,6 +153,12 @@ func NewJavDBAppClient(options JavDBAppOptions) *JavDBAppClient {
 
 var defaultJavDBAppClient = NewJavDBAppClient(JavDBAppOptions{Interval: defaultJavDBAppInterval()})
 
+type javDBApp struct {
+	client *JavDBAppClient
+}
+
+var javDBAppProvider lookupProvider = javDBApp{client: defaultJavDBAppClient}
+
 func defaultJavDBAppInterval() time.Duration {
 	if raw := strings.TrimSpace(os.Getenv("JAVBOSS_JAVDB_INTERVAL_MS")); raw != "" {
 		if value, err := time.ParseDuration(raw + "ms"); err == nil && value >= 0 {
@@ -126,6 +172,135 @@ func defaultJavDBAppInterval() time.Duration {
 
 // DefaultJavDBAppClient returns the process-wide, rate-limited client used by the API.
 func DefaultJavDBAppClient() *JavDBAppClient { return defaultJavDBAppClient }
+
+func (provider javDBApp) LookupJavByCode(code string) (*JavInfo, error) {
+	code = strings.TrimSpace(code)
+	if code == "" {
+		return nil, ResourceNotFonud
+	}
+	ctx, cancel := context.WithTimeout(context.Background(), 90*time.Second)
+	defer cancel()
+	client := provider.client
+	if client == nil {
+		client = DefaultJavDBAppClient()
+	}
+	detail, err := client.lookupMovieDetail(ctx, code)
+	if err != nil {
+		if errors.Is(err, errJavDBAppMovieNotFound) {
+			return nil, ResourceNotFonud
+		}
+		return nil, err
+	}
+	info := javInfoFromJavDBAppDetail(detail)
+	if info != nil && normalizeJAVCode(code) == normalizeJAVCode(detail.Number) && !strings.Contains(strings.ToUpper(code), "FC2-PPV") {
+		info.Code = strings.ToUpper(strings.NewReplacer("_", "-", " ", "-").Replace(code))
+	}
+	return info, nil
+}
+
+func (javDBApp) LookupActressByCode(string) (*ActressInfo, error) {
+	return nil, errors.New("javdb app: lookup actress not supported")
+}
+
+func (javDBApp) LookupActressByName(string) (*ActressInfo, error) {
+	return nil, errors.New("javdb app: lookup actress not supported")
+}
+
+func (javDBApp) LookupActressURLByCodeAndName(string, string) (string, error) {
+	return "", errors.New("javdb app: lookup actress URL not supported")
+}
+
+func (javDBApp) LookupSeriesURLByCode(string) (string, error) {
+	return "", errors.New("javdb app: lookup series URL not supported")
+}
+
+func (javDBApp) LookupStudioURLByCode(string) (string, error) {
+	return "", errors.New("javdb app: lookup studio URL not supported")
+}
+
+func javInfoFromJavDBAppDetail(detail *javDBAppMovieDetail) *JavInfo {
+	if detail == nil {
+		return nil
+	}
+	tags := make([]string, 0, len(detail.Tags))
+	for _, tag := range detail.Tags {
+		tags = append(tags, strings.TrimSpace(tag.Name))
+	}
+	actors := make([]string, 0, len(detail.Actors))
+	for _, actor := range detail.Actors {
+		if javDBAppActorIsFemale(actor.Gender) {
+			actors = append(actors, strings.TrimSpace(actor.Name))
+		}
+	}
+	sampleImages := make([]SampleImage, 0, len(detail.PreviewImages))
+	seenImages := make(map[string]struct{}, len(detail.PreviewImages))
+	for _, image := range detail.PreviewImages {
+		appendSampleImage(
+			&sampleImages,
+			seenImages,
+			normalizeJavDBAppImageURL(image.ThumbURL),
+			normalizeJavDBAppImageURL(image.LargeURL),
+		)
+	}
+	title := strings.TrimSpace(detail.Title)
+	if title == "" {
+		title = strings.TrimSpace(detail.OriginTitle)
+	}
+	info := &JavInfo{
+		Title:        title,
+		Code:         strings.TrimSpace(detail.Number),
+		Studio:       strings.TrimSpace(detail.MakerName),
+		Series:       strings.TrimSpace(detail.SeriesName),
+		ReleaseUnix:  parseDateUnix(detail.ReleaseDate),
+		DurationMin:  detail.Duration,
+		Tags:         dedupeNonEmpty(tags),
+		Actors:       dedupeNonEmpty(actors),
+		CoverURL:     normalizeJavDBAppImageURL(detail.CoverURL),
+		SampleImages: sampleImages,
+		Provider:     ProviderJavDBApp,
+	}
+	if javDBAppUncensoredCodePattern.MatchString(info.Code) {
+		uncensored := true
+		info.IsUncensored = &uncensored
+	}
+	return info
+}
+
+func javDBAppActorIsFemale(gender any) bool {
+	switch value := gender.(type) {
+	case nil:
+		return true
+	case bool:
+		return !value
+	case float64:
+		return value == 0
+	case int:
+		return value == 0
+	case string:
+		value = strings.ToLower(strings.TrimSpace(value))
+		return value == "" || value == "female" || value == "女" || value == "女优" || value == "女優" || value == "0"
+	default:
+		return true
+	}
+}
+
+func normalizeJavDBAppImageURL(raw string) string {
+	value := strings.TrimSpace(raw)
+	if strings.HasPrefix(value, "//") {
+		value = "https:" + value
+	}
+	value = strings.Replace(value, "/small_covers/", "/thumbs/", 1)
+	for _, oldPrefix := range []string{
+		"https://tp.cmastd.com/rhe951l4q/",
+		"https://tp.spfcas.com/rhe951l4q/",
+	} {
+		if strings.HasPrefix(value, oldPrefix) {
+			value = "https://c0.jdbstatic.com/" + strings.TrimPrefix(value, oldPrefix)
+			break
+		}
+	}
+	return normalizeHTTPSURL(value)
+}
 
 // ResolveBatch resolves each input number in order. A malformed or missing
 // number is reported in its own item; successful items remain usable.
@@ -173,63 +348,118 @@ func (c *JavDBAppClient) resolveOne(ctx context.Context, input string) (*JavDBAp
 }
 
 func (c *JavDBAppClient) lookupMovie(ctx context.Context, input string) (*JavDBAppMovie, error) {
-	search, err := c.getJSON(ctx, "/api/v2/search", map[string]string{"q": input, "page": "1"})
-	if err != nil {
-		return nil, fmt.Errorf("search failed: %w", err)
-	}
-	var searchPayload struct {
-		Data struct {
-			Movies []JavDBAppMovie `json:"movies"`
-		} `json:"data"`
-	}
-	if err := json.Unmarshal(search, &searchPayload); err != nil {
-		return nil, fmt.Errorf("decode search response: %w", err)
-	}
-	want := normalizeJAVCode(input)
-	var movie *JavDBAppMovie
-	for index := range searchPayload.Data.Movies {
-		candidate := searchPayload.Data.Movies[index]
-		candidate.ID = strings.TrimSpace(candidate.ID)
-		candidate.Number = strings.TrimSpace(candidate.Number)
-		if candidate.ID != "" && normalizeJAVCode(candidate.Number) == want {
-			movie = &candidate
-			break
+	candidates := javDBAppSearchCandidates(input)
+	wanted := make(map[string]struct{}, len(candidates))
+	for _, candidate := range candidates {
+		if key := normalizeJAVCode(candidate); key != "" {
+			wanted[key] = struct{}{}
 		}
 	}
-	if movie == nil {
-		return nil, fmt.Errorf("%w: %s", errJavDBAppMovieNotFound, input)
+
+	var lastErr error
+	hadSuccessfulSearch := false
+	for _, searchCode := range candidates {
+		search, err := c.getJSON(ctx, "/api/v2/search", map[string]string{"q": searchCode, "page": "1"})
+		if err != nil {
+			lastErr = fmt.Errorf("search %s failed: %w", searchCode, err)
+			continue
+		}
+		hadSuccessfulSearch = true
+		var searchPayload struct {
+			Data struct {
+				Movies []JavDBAppMovie `json:"movies"`
+			} `json:"data"`
+		}
+		if err := json.Unmarshal(search, &searchPayload); err != nil {
+			lastErr = fmt.Errorf("decode search response for %s: %w", searchCode, err)
+			continue
+		}
+		for index := range searchPayload.Data.Movies {
+			candidate := searchPayload.Data.Movies[index]
+			candidate.ID = strings.TrimSpace(candidate.ID)
+			candidate.Number = strings.TrimSpace(candidate.Number)
+			_, exact := wanted[normalizeJAVCode(candidate.Number)]
+			if candidate.ID != "" && exact {
+				return &candidate, nil
+			}
+		}
 	}
-	return movie, nil
+	if !hadSuccessfulSearch && lastErr != nil {
+		return nil, lastErr
+	}
+	return nil, fmt.Errorf("%w: %s", errJavDBAppMovieNotFound, input)
 }
 
 func (c *JavDBAppClient) lookupPreviewVideo(ctx context.Context, code string) (string, error) {
-	movie, err := c.lookupMovie(ctx, code)
+	detail, err := c.lookupMovieDetail(ctx, code)
 	if err != nil {
 		return "", err
 	}
-	payload, err := c.getJSON(ctx, "/api/v4/movies/"+url.PathEscape(movie.ID), nil)
-	if err != nil {
-		return "", fmt.Errorf("movie detail failed for %s: %w", code, err)
-	}
-	var response struct {
-		Data struct {
-			Movie struct {
-				Number          string `json:"number"`
-				PreviewVideoURL string `json:"preview_video_url"`
-			} `json:"movie"`
-		} `json:"data"`
-	}
-	if err := json.Unmarshal(payload, &response); err != nil {
-		return "", fmt.Errorf("decode movie detail response: %w", err)
-	}
-	if number := strings.TrimSpace(response.Data.Movie.Number); number != "" && normalizeJAVCode(number) != normalizeJAVCode(code) {
-		return "", fmt.Errorf("JavDB detail code mismatch: got %s for %s", number, code)
-	}
-	previewURL := strings.TrimSpace(response.Data.Movie.PreviewVideoURL)
+	previewURL := strings.TrimSpace(detail.PreviewVideoURL)
 	if strings.HasPrefix(previewURL, "//") {
 		previewURL = "https:" + previewURL
 	}
 	return previewURL, nil
+}
+
+func (c *JavDBAppClient) lookupMovieDetail(ctx context.Context, code string) (*javDBAppMovieDetail, error) {
+	movie, err := c.lookupMovie(ctx, code)
+	if err != nil {
+		return nil, err
+	}
+	payload, err := c.getJSON(ctx, "/api/v4/movies/"+url.PathEscape(movie.ID), nil)
+	if err != nil {
+		return nil, fmt.Errorf("movie detail failed for %s: %w", code, err)
+	}
+	var response struct {
+		Data struct {
+			Movie javDBAppMovieDetail `json:"movie"`
+		} `json:"data"`
+	}
+	if err := json.Unmarshal(payload, &response); err != nil {
+		return nil, fmt.Errorf("decode movie detail response: %w", err)
+	}
+	detail := &response.Data.Movie
+	if detail.Number = strings.TrimSpace(detail.Number); detail.Number == "" {
+		detail.Number = movie.Number
+	}
+	wanted := make(map[string]struct{})
+	for _, candidate := range javDBAppSearchCandidates(code) {
+		wanted[normalizeJAVCode(candidate)] = struct{}{}
+	}
+	if _, exact := wanted[normalizeJAVCode(detail.Number)]; !exact {
+		return nil, fmt.Errorf("JavDB detail code mismatch: got %s for %s", detail.Number, code)
+	}
+	return detail, nil
+}
+
+func javDBAppSearchCandidates(input string) []string {
+	input = strings.TrimSpace(input)
+	if input == "" {
+		return nil
+	}
+	candidates := []string{input}
+	if match := javDBAppFC2DigitsPattern.FindStringSubmatch(input); len(match) == 2 {
+		candidates = append(candidates, "FC2-"+match[1], match[1])
+	}
+	if match := javDBAppSurenPrefixPattern.FindStringSubmatch(strings.ToUpper(input)); len(match) == 2 {
+		candidates = append(candidates, match[1])
+	}
+	result := make([]string, 0, len(candidates))
+	seen := make(map[string]struct{}, len(candidates))
+	for _, candidate := range candidates {
+		candidate = strings.TrimSpace(candidate)
+		if candidate == "" {
+			continue
+		}
+		key := strings.ToUpper(candidate)
+		if _, exists := seen[key]; exists {
+			continue
+		}
+		seen[key] = struct{}{}
+		result = append(result, candidate)
+	}
+	return result
 }
 
 func (c *JavDBAppClient) getMagnets(ctx context.Context, movieID string) ([]JavDBAppMagnet, error) {
@@ -337,5 +567,6 @@ func (c *JavDBAppClient) waitRateLimit(ctx context.Context) error {
 }
 
 func normalizeJAVCode(value string) string {
-	return strings.ToUpper(javCodeSeparatorPattern.ReplaceAllString(strings.TrimSpace(value), ""))
+	key := strings.ToUpper(javCodeSeparatorPattern.ReplaceAllString(strings.TrimSpace(value), ""))
+	return strings.Replace(key, "FC2PPV", "FC2", 1)
 }

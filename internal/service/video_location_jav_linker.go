@@ -25,8 +25,41 @@ type javLinkBatch struct {
 	tasks   chan int64
 	seen    map[int64]struct{}
 	mu      sync.Mutex
+	summary JavLinkSummary
 	closed  bool
 	workers sync.WaitGroup
+}
+
+// JavLinkSummary describes how the JAV association stage handled every video
+// queued by one directory scan.
+type JavLinkSummary struct {
+	Processed       int
+	AlreadyLinked   int
+	ExistingLinked  int
+	Scraped         int
+	JavDBAppScraped int
+	Skipped         int
+	NoCode          int
+	NotFound        int
+	Errors          int
+}
+
+type javLinkOutcome int
+
+const (
+	javLinkOutcomeUnknown javLinkOutcome = iota
+	javLinkOutcomeAlreadyLinked
+	javLinkOutcomeExistingLinked
+	javLinkOutcomeScraped
+	javLinkOutcomeSkipped
+	javLinkOutcomeNoCode
+	javLinkOutcomeNotFound
+	javLinkOutcomeError
+)
+
+type javLinkResult struct {
+	Outcome  javLinkOutcome
+	Provider jav.Provider
 }
 
 func newJavLinkBatch(ctx context.Context) *javLinkBatch {
@@ -82,13 +115,52 @@ func (b *javLinkBatch) Wait() {
 	b.workers.Wait()
 }
 
+func (b *javLinkBatch) Summary() JavLinkSummary {
+	if b == nil {
+		return JavLinkSummary{}
+	}
+	b.mu.Lock()
+	defer b.mu.Unlock()
+	return b.summary
+}
+
+func (b *javLinkBatch) record(result javLinkResult) {
+	if b == nil || result.Outcome == javLinkOutcomeUnknown {
+		return
+	}
+	b.mu.Lock()
+	defer b.mu.Unlock()
+	b.summary.Processed++
+	switch result.Outcome {
+	case javLinkOutcomeAlreadyLinked:
+		b.summary.AlreadyLinked++
+	case javLinkOutcomeExistingLinked:
+		b.summary.ExistingLinked++
+	case javLinkOutcomeScraped:
+		b.summary.Scraped++
+		if result.Provider == jav.ProviderJavDBApp {
+			b.summary.JavDBAppScraped++
+		}
+	case javLinkOutcomeSkipped:
+		b.summary.Skipped++
+	case javLinkOutcomeNoCode:
+		b.summary.NoCode++
+	case javLinkOutcomeNotFound:
+		b.summary.NotFound++
+	case javLinkOutcomeError:
+		b.summary.Errors++
+	}
+}
+
 func (b *javLinkBatch) worker() {
 	defer b.workers.Done()
 	for locationID := range b.tasks {
 		if err := b.ctx.Err(); err != nil {
 			return
 		}
-		if err := processVideoLocationJavLink(b.ctx, locationID); err != nil {
+		result, err := processVideoLocationJavLinkResult(b.ctx, locationID)
+		b.record(result)
+		if err != nil {
 			if errors.Is(err, context.Canceled) {
 				return
 			}
@@ -102,32 +174,40 @@ func finishJavLinkBatch(batch *javLinkBatch) {
 }
 
 func processVideoLocationJavLink(ctx context.Context, locationID int64) error {
+	_, err := processVideoLocationJavLinkResult(ctx, locationID)
+	return err
+}
+
+func processVideoLocationJavLinkResult(ctx context.Context, locationID int64) (javLinkResult, error) {
 	v, err := db.GetVideoForJavScan(ctx, locationID)
-	if err != nil || v == nil {
-		return err
+	if err != nil {
+		return javLinkResult{Outcome: javLinkOutcomeError}, err
+	}
+	if v == nil {
+		return javLinkResult{}, nil
 	}
 
 	override := normalizeJavScrapeOverride(v.JavScrapeOverride)
 	if override == models.JavScrapeOverrideSkip {
-		return nil
+		return javLinkResult{Outcome: javLinkOutcomeSkipped}, nil
 	}
 
 	filename := filepath.Base(filepath.FromSlash(v.Filename))
 	forcedCode := forcedJavScrapeCode(override)
 	if forcedCode == "" {
 		if v.JavID != nil {
-			return nil
+			return javLinkResult{Outcome: javLinkOutcomeAlreadyLinked}, nil
 		}
 		if v.DurationSec > 0 && v.DurationSec < 900 {
-			return nil
+			return javLinkResult{Outcome: javLinkOutcomeSkipped}, nil
 		}
 	} else if v.JavID != nil {
 		if strings.EqualFold(strings.TrimSpace(v.JavCode), forcedCode) {
-			return nil
+			return javLinkResult{Outcome: javLinkOutcomeAlreadyLinked}, nil
 		}
 		if err := db.ClearVideoLocationJavIDForVideo(ctx, v.LocationID, v.VideoID, v.UpdatedAt); err != nil {
 			logging.Error("clear video location jav before forced scrape failed location=%d code=%s err=%v", v.LocationID, forcedCode, err)
-			return err
+			return javLinkResult{Outcome: javLinkOutcomeError}, err
 		}
 		v.JavID = nil
 		v.JavCode = ""
@@ -135,17 +215,22 @@ func processVideoLocationJavLink(ctx context.Context, locationID int64) error {
 
 	possibleCodes := javScrapeCodesForVideo(filename, forcedCode)
 	if len(possibleCodes) == 0 {
-		return nil
+		return javLinkResult{Outcome: javLinkOutcomeNoCode}, nil
 	}
 
-	if linked := linkExistingJav(ctx, v, possibleCodes); linked {
-		return nil
+	if linked, hadError := linkExistingJav(ctx, v, possibleCodes); linked {
+		return javLinkResult{Outcome: javLinkOutcomeExistingLinked}, nil
+	} else if hadError {
+		return javLinkResult{Outcome: javLinkOutcomeError}, nil
 	}
 
+	hadLookupError := false
 	for _, code := range possibleCodes {
 		for _, provider := range javLinkProvidersForCode(code) {
-			if linked, err := lookupAndLinkVideoLocationJav(ctx, v, filename, []string{code}, provider); err != nil || linked {
-				return err
+			linked, lookupError := lookupAndLinkVideoLocationJav(ctx, v, filename, []string{code}, provider)
+			hadLookupError = hadLookupError || lookupError
+			if linked {
+				return javLinkResult{Outcome: javLinkOutcomeScraped, Provider: provider}, nil
 			}
 		}
 	}
@@ -154,17 +239,29 @@ func processVideoLocationJavLink(ctx context.Context, locationID int64) error {
 	if forcedCode != "" {
 		uncensoredPossibleCodes = possibleCodes
 	}
-	if linked, err := lookupAndLinkVideoLocationJav(ctx, v, filename, uncensoredPossibleCodes, jav.ProviderAvsox); err != nil || linked {
-		return err
+	linked, lookupError := lookupAndLinkVideoLocationJav(ctx, v, filename, uncensoredPossibleCodes, jav.ProviderAvsox)
+	hadLookupError = hadLookupError || lookupError
+	if linked {
+		return javLinkResult{Outcome: javLinkOutcomeScraped, Provider: jav.ProviderAvsox}, nil
 	}
-	return nil
+	linked, lookupError = lookupAndLinkVideoLocationJav(ctx, v, filename, possibleCodes, jav.ProviderJavDBApp)
+	hadLookupError = hadLookupError || lookupError
+	if linked {
+		return javLinkResult{Outcome: javLinkOutcomeScraped, Provider: jav.ProviderJavDBApp}, nil
+	}
+	if hadLookupError {
+		return javLinkResult{Outcome: javLinkOutcomeError}, nil
+	}
+	return javLinkResult{Outcome: javLinkOutcomeNotFound}, nil
 }
 
-func linkExistingJav(ctx context.Context, v *db.JavScanVideo, possibleCodes []string) bool {
+func linkExistingJav(ctx context.Context, v *db.JavScanVideo, possibleCodes []string) (bool, bool) {
+	hadError := false
 	for _, code := range possibleCodes {
 		existJav, err := db.GetJavByCode(ctx, code)
 		if err != nil {
 			logging.Error("jav lookup existing failed location=%d code=%s err=%v", v.LocationID, code, err)
+			hadError = true
 			continue
 		}
 		if existJav == nil {
@@ -172,12 +269,13 @@ func linkExistingJav(ctx context.Context, v *db.JavScanVideo, possibleCodes []st
 		}
 		if err := db.SetVideoLocationJavIDForVideo(ctx, v.LocationID, v.VideoID, existJav.ID, v.UpdatedAt); err != nil {
 			logging.Error("set video location jav failed location=%d code=%s err=%v", v.LocationID, code, err)
+			return false, true
 		} else {
 			enqueueCover(existJav.Code)
 		}
-		return true
+		return true, hadError
 	}
-	return false
+	return false, hadError
 }
 
 func javScrapeCodesForVideo(filename, forcedCode string) []string {
@@ -228,7 +326,8 @@ func forcedJavScrapeCode(override string) string {
 	return override
 }
 
-func lookupAndLinkVideoLocationJav(ctx context.Context, v *db.JavScanVideo, filename string, possibleCodes []string, provider jav.Provider) (bool, error) {
+func lookupAndLinkVideoLocationJav(ctx context.Context, v *db.JavScanVideo, filename string, possibleCodes []string, provider jav.Provider) (bool, bool) {
+	hadError := false
 	for _, code := range possibleCodes {
 		info, err := jav.LookupJavByCode(code, provider)
 		if err != nil {
@@ -236,6 +335,7 @@ func lookupAndLinkVideoLocationJav(ctx context.Context, v *db.JavScanVideo, file
 				continue
 			}
 			logging.Error("jav lookup failed provider=%s location=%s code=%s err=%v", provider.String(), filename, code, err)
+			hadError = true
 			continue
 		}
 		if info == nil {
@@ -244,13 +344,14 @@ func lookupAndLinkVideoLocationJav(ctx context.Context, v *db.JavScanVideo, file
 
 		if _, err := db.SaveJavInfoAndLinkLocationForVideo(ctx, info, v.LocationID, v.VideoID, v.UpdatedAt); err != nil {
 			logging.Error("link video location->jav failed provider=%s location=%s code=%s err=%v", provider.String(), filename, info.Code, err)
+			return false, true
 		} else {
 			logging.Info("link video location->jav success provider=%s location=%s code=%s", provider.String(), filename, info.Code)
 			enqueueCover(info.Code)
 		}
-		return true, nil
+		return true, hadError
 	}
-	return false, nil
+	return false, hadError
 }
 
 func enqueueCover(code string) {

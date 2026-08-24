@@ -10,12 +10,21 @@ import (
 
 // DirectoryScanSummary persists the result of the latest successful directory scan.
 type DirectoryScanSummary struct {
-	FilesSeen        int   `json:"files_seen,omitempty"`
-	Inserted         int   `json:"inserted,omitempty"`
-	Updated          int   `json:"updated,omitempty"`
-	Removed          int   `json:"removed,omitempty"`
-	DurationMS       int64 `json:"duration_ms,omitempty"`
-	FinishedAtUnixMS int64 `json:"finished_at_unix_ms,omitempty"`
+	FilesSeen         int   `json:"files_seen,omitempty"`
+	Inserted          int   `json:"inserted,omitempty"`
+	Updated           int   `json:"updated,omitempty"`
+	Removed           int   `json:"removed,omitempty"`
+	JavProcessed      int   `json:"jav_processed,omitempty"`
+	JavAlreadyLinked  int   `json:"jav_already_linked,omitempty"`
+	JavExistingLinked int   `json:"jav_existing_linked,omitempty"`
+	JavScraped        int   `json:"jav_scraped,omitempty"`
+	JavDBAppScraped   int   `json:"javdb_app_scraped,omitempty"`
+	JavSkipped        int   `json:"jav_skipped,omitempty"`
+	JavNoCode         int   `json:"jav_no_code,omitempty"`
+	JavNotFound       int   `json:"jav_not_found,omitempty"`
+	JavErrors         int   `json:"jav_errors,omitempty"`
+	DurationMS        int64 `json:"duration_ms,omitempty"`
+	FinishedAtUnixMS  int64 `json:"finished_at_unix_ms,omitempty"`
 }
 
 func (summary DirectoryScanSummary) Value() (driver.Value, error) {

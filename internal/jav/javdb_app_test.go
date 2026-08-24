@@ -2,8 +2,10 @@ package jav
 
 import (
 	"context"
+	"errors"
 	"net/http"
 	"net/http/httptest"
+	"reflect"
 	"testing"
 )
 
@@ -41,6 +43,80 @@ func TestResolveBatchRequiresExactCodeAndGetsMagnets(t *testing.T) {
 	}
 	if got := item.Magnets[0].Hash; got != "ABC" {
 		t.Fatalf("magnet hash = %q", got)
+	}
+}
+
+func TestJavDBAppProviderMapsFullMovieDetail(t *testing.T) {
+	server := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		w.Header().Set("Content-Type", "application/json")
+		switch {
+		case r.URL.Path == "/api/v2/search" && r.URL.Query().Get("q") == "FC2-PPV-1579280":
+			_, _ = w.Write([]byte(`{"data":{"movies":[]}}`))
+		case r.URL.Path == "/api/v2/search" && r.URL.Query().Get("q") == "FC2-1579280":
+			_, _ = w.Write([]byte(`{"data":{"movies":[{"id":"movie-fc2","number":"FC2-1579280"}]}}`))
+		case r.URL.Path == "/api/v4/movies/movie-fc2":
+			_, _ = w.Write([]byte(`{"data":{"movie":{"id":"movie-fc2","number":"FC2-1579280","title":"Localized title","origin_title":"Original title","cover_url":"https://tp.spfcas.com/rhe951l4q/small_covers/cover.jpg","duration":121,"release_date":"2020-05-04","maker_name":"Maker","series_name":"Series","tags":[{"name":"Tag"},{"name":"Tag"}],"actors":[{"name":"Actress","gender":0},{"name":"Actor","gender":1}],"preview_images":[{"thumb_url":"//img.example/thumb.jpg","large_url":"https://img.example/large.jpg"}],"preview_video_url":"//media.example/preview.mp4"}}}`))
+		default:
+			http.NotFound(w, r)
+		}
+	}))
+	defer server.Close()
+
+	provider := javDBApp{client: NewJavDBAppClient(JavDBAppOptions{Hosts: []string{server.URL}})}
+	info, err := provider.LookupJavByCode("FC2-PPV-1579280")
+	if err != nil {
+		t.Fatalf("lookup metadata: %v", err)
+	}
+	if info.Code != "FC2-1579280" || info.Title != "Localized title" || info.Studio != "Maker" || info.Series != "Series" {
+		t.Fatalf("metadata = %#v", info)
+	}
+	if info.ReleaseUnix != parseDateUnix("2020-05-04") || info.DurationMin != 121 {
+		t.Fatalf("release/runtime = %d/%d", info.ReleaseUnix, info.DurationMin)
+	}
+	if len(info.Tags) != 1 || info.Tags[0] != "Tag" || len(info.Actors) != 1 || info.Actors[0] != "Actress" {
+		t.Fatalf("tags/actors = %#v/%#v", info.Tags, info.Actors)
+	}
+	if info.CoverURL != "https://c0.jdbstatic.com/thumbs/cover.jpg" {
+		t.Fatalf("cover URL = %q", info.CoverURL)
+	}
+	if len(info.SampleImages) != 1 || info.SampleImages[0].ThumbnailURL != "https://img.example/thumb.jpg" || info.SampleImages[0].DetailURL != "https://img.example/large.jpg" {
+		t.Fatalf("sample images = %#v", info.SampleImages)
+	}
+	if info.Provider != ProviderJavDBApp || info.IsUncensored == nil || !*info.IsUncensored {
+		t.Fatalf("provider/uncensored = %s/%v", info.Provider, info.IsUncensored)
+	}
+}
+
+func TestJavDBAppProviderReturnsResourceNotFoundForExactMiss(t *testing.T) {
+	server := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, _ *http.Request) {
+		w.Header().Set("Content-Type", "application/json")
+		_, _ = w.Write([]byte(`{"data":{"movies":[{"id":"near","number":"ABC-0010"}]}}`))
+	}))
+	defer server.Close()
+
+	provider := javDBApp{client: NewJavDBAppClient(JavDBAppOptions{Hosts: []string{server.URL}})}
+	_, err := provider.LookupJavByCode("ABC-001")
+	if !errors.Is(err, ResourceNotFonud) {
+		t.Fatalf("lookup error = %v, want resource not found", err)
+	}
+}
+
+func TestJavDBAppSearchCandidatesNormalizeSpecialCodes(t *testing.T) {
+	tests := []struct {
+		input string
+		want  []string
+	}{
+		{input: "FC2-PPV-1579280", want: []string{"FC2-PPV-1579280", "FC2-1579280", "1579280"}},
+		{input: "259LUXU-1033", want: []string{"259LUXU-1033", "LUXU-1033"}},
+		{input: "HEYZO-0678", want: []string{"HEYZO-0678"}},
+	}
+	for _, tt := range tests {
+		if got := javDBAppSearchCandidates(tt.input); !reflect.DeepEqual(got, tt.want) {
+			t.Fatalf("javDBAppSearchCandidates(%q) = %#v, want %#v", tt.input, got, tt.want)
+		}
+	}
+	if normalizeJAVCode("FC2-PPV-1579280") != normalizeJAVCode("FC2-1579280") {
+		t.Fatal("FC2 PPV aliases should have the same comparison key")
 	}
 }
 

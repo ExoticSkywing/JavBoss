@@ -25,6 +25,7 @@ var lookupJavCacheKeyVersionByProvider = map[Provider]string{
 	ProviderAvsox:       "v3",
 	ProviderJavMenu:     "v2",
 	ProviderThePornDB:   "v2",
+	ProviderJavDBApp:    "v1",
 }
 
 var lookupActressNameCacheKeyVersionByProvider = map[Provider]string{

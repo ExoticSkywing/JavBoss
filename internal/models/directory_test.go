@@ -7,12 +7,21 @@ import (
 
 func TestDirectoryScanSummaryValueAndScan(t *testing.T) {
 	want := DirectoryScanSummary{
-		FilesSeen:        12,
-		Inserted:         3,
-		Updated:          4,
-		Removed:          2,
-		DurationMS:       1500,
-		FinishedAtUnixMS: 1720000000123,
+		FilesSeen:         12,
+		Inserted:          3,
+		Updated:           4,
+		Removed:           2,
+		JavProcessed:      12,
+		JavAlreadyLinked:  4,
+		JavExistingLinked: 2,
+		JavScraped:        3,
+		JavDBAppScraped:   1,
+		JavSkipped:        1,
+		JavNoCode:         1,
+		JavNotFound:       1,
+		JavErrors:         0,
+		DurationMS:        1500,
+		FinishedAtUnixMS:  1720000000123,
 	}
 	value, err := want.Value()
 	if err != nil {

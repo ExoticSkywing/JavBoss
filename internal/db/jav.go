@@ -894,6 +894,7 @@ func visibleScrapedJavTagProviders() []int {
 		int(jav.ProviderAvsox),
 		int(jav.ProviderJavMenu),
 		int(jav.ProviderManualScrape),
+		int(jav.ProviderJavDBApp),
 	}
 }
 

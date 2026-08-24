@@ -16,6 +16,9 @@ var (
 	mixedPrefixCensoredRe       = regexp.MustCompile(`(?i)(^|[^a-z0-9])([a-z][a-z0-9]{1,5})[-_ ](\d{2,5})([a-z]{0,2})([^a-z0-9]|$)`)
 	pureNumericUncensoredCodeRe = regexp.MustCompile(`(^|[^0-9])(\d{4,}[-_]\d{2,})([^0-9]|$)`)
 	explicitShortCodeRe         = regexp.MustCompile(`(?i)(^|[^a-z0-9])([a-z]{2,6})[-_ ](\d{2})([a-z]{0,2})([^a-z0-9]|$)`)
+	fc2CodeRe                   = regexp.MustCompile(`(?i)FC2(?:[^a-z0-9]+PPV)?[^0-9]*(\d{5,})`)
+	heyzoCodeRe                 = regexp.MustCompile(`(?i)HEYZO[^0-9]*(\d{3,})`)
+	luxuCodeRe                  = regexp.MustCompile(`(?i)(?:\d{3,})?LUXU[^0-9]*(\d{2,})`)
 )
 
 func ExtractCodeFromName(name string) []string {
@@ -23,13 +26,37 @@ func ExtractCodeFromName(name string) []string {
 	var out []string
 	seen := make(map[string]struct{})
 
+	if specialCodes := extractSpecialJAVCodes(base); len(specialCodes) > 0 {
+		appendUniqueCodes(&out, seen, specialCodes)
+		return out
+	}
 	appendUniqueCodes(&out, seen, extractCensoredCodesFromName(base))
 	appendUniqueCodes(&out, seen, extractUncensoredCodesFromName(base))
 	return out
 }
 
+func extractSpecialJAVCodes(base string) []string {
+	var codes []string
+	if match := fc2CodeRe.FindStringSubmatch(base); len(match) == 2 {
+		codes = append(codes, "FC2-"+match[1])
+	}
+	if match := heyzoCodeRe.FindStringSubmatch(base); len(match) == 2 {
+		codes = append(codes, "HEYZO-"+match[1])
+	}
+	if match := luxuCodeRe.FindStringSubmatch(base); len(match) == 2 {
+		codes = append(codes, "LUXU-"+match[1])
+	}
+	return codes
+}
+
 func ExtractUncensoredCodesFromName(name string) []string {
 	base := strings.TrimSuffix(filepath.Base(name), filepath.Ext(name))
+	if specialCodes := extractSpecialJAVCodes(base); len(specialCodes) > 0 {
+		var out []string
+		seen := make(map[string]struct{}, len(specialCodes))
+		appendUniqueCodes(&out, seen, specialCodes)
+		return out
+	}
 	return extractUncensoredCodesFromName(base)
 }
 

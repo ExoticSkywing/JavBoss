@@ -87,6 +87,49 @@ const formatScanDuration = (summary) => {
   return zh(`${hours} 小时 ${minutes} 分`, `${hours} hr ${minutes} min`)
 }
 
+const scanJavResultParts = (summary) => {
+  const alreadyLinked =
+    (Number(summary?.jav_already_linked) || 0) + (Number(summary?.jav_existing_linked) || 0)
+  return [
+    {
+      key: 'scraped',
+      label: zh('新刮削', 'Newly scraped'),
+      value: Number(summary?.jav_scraped) || 0,
+      className: 'text-emerald-700',
+    },
+    {
+      key: 'linked',
+      label: zh('已有关联', 'Already linked'),
+      value: alreadyLinked,
+      className: 'text-zinc-800',
+    },
+    {
+      key: 'not-found',
+      label: zh('未匹配', 'Not matched'),
+      value: Number(summary?.jav_not_found) || 0,
+      className: 'text-amber-700',
+    },
+    {
+      key: 'no-code',
+      label: zh('无番号', 'No code'),
+      value: Number(summary?.jav_no_code) || 0,
+      className: 'text-amber-700',
+    },
+    {
+      key: 'skipped',
+      label: zh('已跳过', 'Skipped'),
+      value: Number(summary?.jav_skipped) || 0,
+      className: 'text-zinc-600',
+    },
+    {
+      key: 'errors',
+      label: zh('错误', 'Errors'),
+      value: Number(summary?.jav_errors) || 0,
+      className: 'text-red-700',
+    },
+  ]
+}
+
 const directoryWorkStatus = (directory) =>
   directory?.work_status || (directory?.is_scanning ? 'scanning' : 'idle')
 
@@ -466,6 +509,9 @@ export default function DirectoryManager({
             const status = directoryWorkStatus(d)
             const statusDisplay = directoryWorkStatusDisplay(status)
             const lastScanFinishedAt = formatScanFinishedAt(d.last_scan_summary)
+            const javProcessed = Number(d.last_scan_summary?.jav_processed) || 0
+            const javResultParts = scanJavResultParts(d.last_scan_summary)
+            const javDBAppScraped = Number(d.last_scan_summary?.javdb_app_scraped) || 0
             const working =
               savingId === d.id ||
               deletingId === d.id ||
@@ -554,18 +600,65 @@ export default function DirectoryManager({
                   {!isEditing && (
                     <>
                       {lastScanFinishedAt ? (
-                        <div className="text-xs text-zinc-500">
-                          <span>{zh('上次扫描：结束时间 ', 'Last scan: Finished at ')}</span>
-                          <span className="font-semibold tabular-nums text-zinc-900">
-                            {lastScanFinishedAt}
-                          </span>
-                          <span aria-hidden="true" className="mx-2 text-zinc-300">
-                            ·
-                          </span>
-                          <span>{zh('耗时 ', 'Duration ')}</span>
-                          <span className="font-semibold tabular-nums text-zinc-900">
-                            {formatScanDuration(d.last_scan_summary)}
-                          </span>
+                        <div className="space-y-1 text-xs text-zinc-500">
+                          <div>
+                            <span>{zh('上次扫描：结束时间 ', 'Last scan: Finished at ')}</span>
+                            <span className="font-semibold tabular-nums text-zinc-900">
+                              {lastScanFinishedAt}
+                            </span>
+                            <span aria-hidden="true" className="mx-2 text-zinc-300">
+                              ·
+                            </span>
+                            <span>{zh('耗时 ', 'Duration ')}</span>
+                            <span className="font-semibold tabular-nums text-zinc-900">
+                              {formatScanDuration(d.last_scan_summary)}
+                            </span>
+                          </div>
+                          <div className="flex flex-wrap items-center gap-x-2 gap-y-1">
+                            <span>{zh('文件结果：', 'File result:')}</span>
+                            <span>
+                              {zh('发现', 'Found')}{' '}
+                              <strong className="tabular-nums text-zinc-800">
+                                {Number(d.last_scan_summary?.files_seen) || 0}
+                              </strong>
+                            </span>
+                            <span>
+                              {zh('新增', 'Added')}{' '}
+                              <strong className="tabular-nums text-zinc-800">
+                                {Number(d.last_scan_summary?.inserted) || 0}
+                              </strong>
+                            </span>
+                            <span>
+                              {zh('更新', 'Updated')}{' '}
+                              <strong className="tabular-nums text-zinc-800">
+                                {Number(d.last_scan_summary?.updated) || 0}
+                              </strong>
+                            </span>
+                            <span>
+                              {zh('移除', 'Removed')}{' '}
+                              <strong className="tabular-nums text-zinc-800">
+                                {Number(d.last_scan_summary?.removed) || 0}
+                              </strong>
+                            </span>
+                          </div>
+                          {javProcessed > 0 ? (
+                            <div className="flex flex-wrap items-center gap-x-2 gap-y-1">
+                              <span>{zh('刮削结果：', 'Scrape result:')}</span>
+                              {javResultParts.map((part) => (
+                                <span key={part.key}>
+                                  {part.label}{' '}
+                                  <strong className={`tabular-nums ${part.className}`}>
+                                    {part.value}
+                                  </strong>
+                                </span>
+                              ))}
+                              {javDBAppScraped > 0 ? (
+                                <span className="rounded bg-indigo-50 px-1.5 py-0.5 text-indigo-700">
+                                  JavDB App +{javDBAppScraped}
+                                </span>
+                              ) : null}
+                            </div>
+                          ) : null}
                         </div>
                       ) : (
                         <div className="text-xs text-zinc-500">

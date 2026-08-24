@@ -82,7 +82,23 @@ func TestExtractCodeFromName(t *testing.T) {
 		},
 		{
 			input:    "Heyzo-0945-HD.mp4",
-			expected: []string{"HEYZO-945", "HEYZO-0945"},
+			expected: []string{"HEYZO-0945"},
+		},
+		{
+			input:    "heyzo_hd_0678_full.mp4",
+			expected: []string{"HEYZO-0678"},
+		},
+		{
+			input:    "(Heyzo)(0603).mp4",
+			expected: []string{"HEYZO-0603"},
+		},
+		{
+			input:    "FC2-PPV-1579280.mp4",
+			expected: []string{"FC2-1579280"},
+		},
+		{
+			input:    "259LUXU-1033.mp4",
+			expected: []string{"LUXU-1033"},
 		},
 		{
 			input:    "Heyzo - 0945 - Reiko Kobayakawa (小早川怜子).mp4",
@@ -90,11 +106,11 @@ func TestExtractCodeFromName(t *testing.T) {
 		},
 		{
 			input:    "HEYZO 0945 美痴女～爆乳弁護士に責められる～ - 小早川怜子 [UNCENSORED].mp4",
-			expected: []string{"HEYZO-945", "HEYZO0945", "HEYZO-0945"},
+			expected: []string{"HEYZO-0945"},
 		},
 		{
 			input:    "Heyzo-0945-HD.mp4",
-			expected: []string{"HEYZO-945", "HEYZO-0945"},
+			expected: []string{"HEYZO-0945"},
 		},
 		{
 			input:    "Tokyo Hot n0646.avi",

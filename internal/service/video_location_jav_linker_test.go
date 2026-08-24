@@ -58,3 +58,31 @@ func TestForcedJavScrapeCodeSupportsManualOverride(t *testing.T) {
 		t.Fatalf("forcedJavScrapeCode() = %q, want ABC-001", got)
 	}
 }
+
+func TestJavLinkBatchSummarizesScrapeOutcomes(t *testing.T) {
+	batch := &javLinkBatch{}
+	batch.record(javLinkResult{Outcome: javLinkOutcomeAlreadyLinked})
+	batch.record(javLinkResult{Outcome: javLinkOutcomeExistingLinked})
+	batch.record(javLinkResult{Outcome: javLinkOutcomeScraped, Provider: jav.ProviderJavBus})
+	batch.record(javLinkResult{Outcome: javLinkOutcomeScraped, Provider: jav.ProviderJavDBApp})
+	batch.record(javLinkResult{Outcome: javLinkOutcomeSkipped})
+	batch.record(javLinkResult{Outcome: javLinkOutcomeNoCode})
+	batch.record(javLinkResult{Outcome: javLinkOutcomeNotFound})
+	batch.record(javLinkResult{Outcome: javLinkOutcomeError})
+
+	got := batch.Summary()
+	want := JavLinkSummary{
+		Processed:       8,
+		AlreadyLinked:   1,
+		ExistingLinked:  1,
+		Scraped:         2,
+		JavDBAppScraped: 1,
+		Skipped:         1,
+		NoCode:          1,
+		NotFound:        1,
+		Errors:          1,
+	}
+	if !reflect.DeepEqual(got, want) {
+		t.Fatalf("JavLinkSummary = %#v, want %#v", got, want)
+	}
+}

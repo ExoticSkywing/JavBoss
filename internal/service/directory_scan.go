@@ -41,6 +41,7 @@ type Summary struct {
 	Removed     int
 	Duration    time.Duration
 	Directories int
+	Jav         JavLinkSummary
 }
 
 // makePathKey 生成目录内相对路径的唯一索引键。
@@ -137,22 +138,32 @@ func runDirectoryScanWithSession(scanCtx context.Context, directory models.Direc
 	// 才记录完成时间并允许外层释放扫描会话。
 	finishJavLinkBatch(javLinks)
 	javLinksFinished = true
+	summary.Jav = javLinks.Summary()
 	summary.Duration = time.Since(start)
 	if scanned {
 		lastScanSummary := models.DirectoryScanSummary{
-			FilesSeen:        summary.FilesSeen,
-			Inserted:         summary.Inserted,
-			Updated:          summary.Updated,
-			Removed:          summary.Removed,
-			DurationMS:       summary.Duration.Milliseconds(),
-			FinishedAtUnixMS: time.Now().UnixMilli(),
+			FilesSeen:         summary.FilesSeen,
+			Inserted:          summary.Inserted,
+			Updated:           summary.Updated,
+			Removed:           summary.Removed,
+			JavProcessed:      summary.Jav.Processed,
+			JavAlreadyLinked:  summary.Jav.AlreadyLinked,
+			JavExistingLinked: summary.Jav.ExistingLinked,
+			JavScraped:        summary.Jav.Scraped,
+			JavDBAppScraped:   summary.Jav.JavDBAppScraped,
+			JavSkipped:        summary.Jav.Skipped,
+			JavNoCode:         summary.Jav.NoCode,
+			JavNotFound:       summary.Jav.NotFound,
+			JavErrors:         summary.Jav.Errors,
+			DurationMS:        summary.Duration.Milliseconds(),
+			FinishedAtUnixMS:  time.Now().UnixMilli(),
 		}
 		if err := db.UpdateDirectoryLastScanSummary(scanCtx, directory.ID, lastScanSummary); err != nil {
 			return nil, err
 		}
 	}
 	logging.Info(
-		"sync directory summary: id=%d path=%s scanned=%t files_seen=%d inserted=%d updated=%d removed=%d duration=%s",
+		"sync directory summary: id=%d path=%s scanned=%t files_seen=%d inserted=%d updated=%d removed=%d jav_processed=%d jav_scraped=%d javdb_app_scraped=%d jav_not_found=%d jav_errors=%d duration=%s",
 		directory.ID,
 		directory.Path,
 		scanned,
@@ -160,6 +171,11 @@ func runDirectoryScanWithSession(scanCtx context.Context, directory models.Direc
 		summary.Inserted,
 		summary.Updated,
 		summary.Removed,
+		summary.Jav.Processed,
+		summary.Jav.Scraped,
+		summary.Jav.JavDBAppScraped,
+		summary.Jav.NotFound,
+		summary.Jav.Errors,
 		summary.Duration,
 	)
 	return summary, nil
