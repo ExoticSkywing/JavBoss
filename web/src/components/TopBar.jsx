@@ -1,5 +1,6 @@
 import { useEffect, useMemo, useRef, useState } from 'react'
 import BookmarksOutlinedIcon from '@mui/icons-material/BookmarksOutlined'
+import CloudDownloadOutlinedIcon from '@mui/icons-material/CloudDownloadOutlined'
 import CloseRoundedIcon from '@mui/icons-material/CloseRounded'
 import EditRoundedIcon from '@mui/icons-material/EditRounded'
 import FavoriteBorderRoundedIcon from '@mui/icons-material/FavoriteBorderRounded'
@@ -327,6 +328,7 @@ export default function TopBar({
   onOpenFavoriteGroups,
   onOpenFilterEditor,
   onOpenFavoriteManager,
+  onOpenJavInput,
   onSearchInputChange,
   onSubmitSearch,
   onOpenSelectionOps,
@@ -580,6 +582,19 @@ export default function TopBar({
                   />
                 ) : null}
               </div>
+            ) : null}
+
+            {isJavMode ? (
+              <button
+                type="button"
+                className="filter-action-button"
+                onClick={onOpenJavInput}
+                title={zh('资源输入', 'Resource input')}
+                aria-label={zh('资源输入', 'Resource input')}
+              >
+                <CloudDownloadOutlinedIcon fontSize="small" />
+                <span>{zh('资源输入', 'Resource input')}</span>
+              </button>
             ) : null}
           </div>
         </div>

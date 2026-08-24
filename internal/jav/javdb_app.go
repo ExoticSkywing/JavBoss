@@ -1,7 +1,4 @@
-// Package javdbinput contains the small, input-side JavDB client used by the
-// resource discovery screen. It deliberately does not depend on JavBoss's
-// presentation metadata or database packages.
-package javdbinput
+package jav
 
 import (
 	"context"
@@ -36,8 +33,8 @@ const (
 
 var nonCode = regexp.MustCompile(`[\s_\-]+`)
 
-// Magnet is a single JavDB candidate. JavDB returns Size in MiB.
-type Magnet struct {
+// JavDBAppMagnet is a single JavDB candidate. JavDB returns Size in MiB.
+type JavDBAppMagnet struct {
 	Hash      string `json:"hash"`
 	Name      string `json:"name"`
 	Size      int64  `json:"size"`
@@ -47,8 +44,8 @@ type Magnet struct {
 	CreatedAt string `json:"created_at"`
 }
 
-// Movie contains only fields needed by the input review screen.
-type Movie struct {
+// JavDBAppMovie contains only fields needed by the input review screen.
+type JavDBAppMovie struct {
 	ID           string `json:"id"`
 	Number       string `json:"number"`
 	Title        string `json:"title"`
@@ -56,30 +53,30 @@ type Movie struct {
 	MagnetsCount int    `json:"magnets_count"`
 }
 
-// ResolveItem is the result for one input line. Errors are item-scoped so a
+// JavDBAppResolveItem is the result for one input line. Errors are item-scoped so a
 // failed or unknown code does not discard successful results from the batch.
-type ResolveItem struct {
-	InputCode string   `json:"input_code"`
-	Matched   bool     `json:"matched"`
-	Movie     *Movie   `json:"movie,omitempty"`
-	Magnets   []Magnet `json:"magnets,omitempty"`
-	Error     string   `json:"error,omitempty"`
+type JavDBAppResolveItem struct {
+	InputCode string           `json:"input_code"`
+	Matched   bool             `json:"matched"`
+	Movie     *JavDBAppMovie   `json:"movie,omitempty"`
+	Magnets   []JavDBAppMagnet `json:"magnets,omitempty"`
+	Error     string           `json:"error,omitempty"`
 }
 
-// ResolveResponse is the stable API shape consumed by the JavBoss frontend.
-type ResolveResponse struct {
-	Items []ResolveItem `json:"items"`
+// JavDBAppResolveResponse is the stable API shape consumed by the JavBoss frontend.
+type JavDBAppResolveResponse struct {
+	Items []JavDBAppResolveItem `json:"items"`
 }
 
-// Options controls a client. Hosts are tried in order; Interval spaces all
+// JavDBAppOptions controls a client. Hosts are tried in order; Interval spaces all
 // requests made by this client to avoid hammering the mobile API.
-type Options struct {
+type JavDBAppOptions struct {
 	HTTPClient *http.Client
 	Hosts      []string
 	Interval   time.Duration
 }
 
-type Client struct {
+type JavDBAppClient struct {
 	httpClient *http.Client
 	hosts      []string
 	interval   time.Duration
@@ -88,9 +85,9 @@ type Client struct {
 	next   time.Time
 }
 
-// NewClient constructs an input-side JavDB client. When no host is supplied,
+// NewJavDBAppClient constructs an input-side JavDB client. When no host is supplied,
 // the production mirror and its known fallbacks are used.
-func NewClient(options Options) *Client {
+func NewJavDBAppClient(options JavDBAppOptions) *JavDBAppClient {
 	httpClient := options.HTTPClient
 	if httpClient == nil {
 		httpClient = &http.Client{Timeout: 35 * time.Second}
@@ -108,30 +105,29 @@ func NewClient(options Options) *Client {
 	if interval < 0 {
 		interval = 0
 	}
-	return &Client{httpClient: httpClient, hosts: hosts, interval: interval}
+	return &JavDBAppClient{httpClient: httpClient, hosts: hosts, interval: interval}
 }
 
-var defaultClient = NewClient(Options{Interval: defaultInterval()})
+var defaultJavDBAppClient = NewJavDBAppClient(JavDBAppOptions{Interval: defaultJavDBAppInterval()})
 
-func defaultInterval() time.Duration {
+func defaultJavDBAppInterval() time.Duration {
 	if raw := strings.TrimSpace(os.Getenv("JAVBOSS_JAVDB_INTERVAL_MS")); raw != "" {
 		if value, err := time.ParseDuration(raw + "ms"); err == nil && value >= 0 {
 			return value
 		}
 	}
-	// The upstream adapter spaces requests by a random 3–8 seconds. A fixed
-	// lower bound keeps this service predictable while retaining that safety
-	// envelope for batch input.
+	// The upstream adapter spaces requests by a random 3–8 seconds. This is the
+	// lower bound; waitRateLimit adds up to five seconds of jitter.
 	return 3 * time.Second
 }
 
-// DefaultClient returns the process-wide, rate-limited client used by the API.
-func DefaultClient() *Client { return defaultClient }
+// DefaultJavDBAppClient returns the process-wide, rate-limited client used by the API.
+func DefaultJavDBAppClient() *JavDBAppClient { return defaultJavDBAppClient }
 
 // ResolveBatch resolves each input number in order. A malformed or missing
 // number is reported in its own item; successful items remain usable.
-func (c *Client) ResolveBatch(ctx context.Context, numbers []string) ResolveResponse {
-	items := make([]ResolveItem, 0, len(numbers))
+func (c *JavDBAppClient) ResolveBatch(ctx context.Context, numbers []string) JavDBAppResolveResponse {
+	items := make([]JavDBAppResolveItem, 0, len(numbers))
 	seen := make(map[string]struct{}, len(numbers))
 	for _, raw := range numbers {
 		input := strings.TrimSpace(raw)
@@ -143,7 +139,7 @@ func (c *Client) ResolveBatch(ctx context.Context, numbers []string) ResolveResp
 			continue
 		}
 		seen[key] = struct{}{}
-		item := ResolveItem{InputCode: input}
+		item := JavDBAppResolveItem{InputCode: input}
 		movie, magnets, err := c.resolveOne(ctx, input)
 		if err != nil {
 			item.Error = err.Error()
@@ -157,24 +153,24 @@ func (c *Client) ResolveBatch(ctx context.Context, numbers []string) ResolveResp
 			break
 		}
 	}
-	return ResolveResponse{Items: items}
+	return JavDBAppResolveResponse{Items: items}
 }
 
-func (c *Client) resolveOne(ctx context.Context, input string) (*Movie, []Magnet, error) {
+func (c *JavDBAppClient) resolveOne(ctx context.Context, input string) (*JavDBAppMovie, []JavDBAppMagnet, error) {
 	search, err := c.getJSON(ctx, "/api/v2/search", map[string]string{"q": input, "page": "1"})
 	if err != nil {
 		return nil, nil, fmt.Errorf("search failed: %w", err)
 	}
 	var searchPayload struct {
 		Data struct {
-			Movies []Movie `json:"movies"`
+			Movies []JavDBAppMovie `json:"movies"`
 		} `json:"data"`
 	}
 	if err := json.Unmarshal(search, &searchPayload); err != nil {
 		return nil, nil, fmt.Errorf("decode search response: %w", err)
 	}
 	want := normalizeCode(input)
-	var movie *Movie
+	var movie *JavDBAppMovie
 	for index := range searchPayload.Data.Movies {
 		candidate := searchPayload.Data.Movies[index]
 		candidate.ID = strings.TrimSpace(candidate.ID)
@@ -195,14 +191,14 @@ func (c *Client) resolveOne(ctx context.Context, input string) (*Movie, []Magnet
 	return movie, magnets, nil
 }
 
-func (c *Client) getMagnets(ctx context.Context, movieID string) ([]Magnet, error) {
+func (c *JavDBAppClient) getMagnets(ctx context.Context, movieID string) ([]JavDBAppMagnet, error) {
 	payload, err := c.getJSON(ctx, "/api/v1/movies/"+url.PathEscape(movieID)+"/magnets", nil)
 	if err != nil {
 		return nil, err
 	}
 	var response struct {
 		Data struct {
-			Magnets []Magnet `json:"magnets"`
+			Magnets []JavDBAppMagnet `json:"magnets"`
 		} `json:"data"`
 	}
 	if err := json.Unmarshal(payload, &response); err != nil {
@@ -214,7 +210,7 @@ func (c *Client) getMagnets(ctx context.Context, movieID string) ([]Magnet, erro
 	return response.Data.Magnets, nil
 }
 
-func (c *Client) getJSON(ctx context.Context, path string, params map[string]string) ([]byte, error) {
+func (c *JavDBAppClient) getJSON(ctx context.Context, path string, params map[string]string) ([]byte, error) {
 	var lastErr error
 	for _, host := range c.hosts {
 		if err := c.waitRateLimit(ctx); err != nil {
@@ -275,7 +271,7 @@ func (c *Client) getJSON(ctx context.Context, path string, params map[string]str
 	return nil, lastErr
 }
 
-func (c *Client) waitRateLimit(ctx context.Context) error {
+func (c *JavDBAppClient) waitRateLimit(ctx context.Context) error {
 	if c.interval <= 0 {
 		return nil
 	}
@@ -284,7 +280,7 @@ func (c *Client) waitRateLimit(ctx context.Context) error {
 	if wait < 0 {
 		wait = 0
 	}
-	c.next = time.Now().Add(wait + c.interval + time.Duration(rand.IntN(250))*time.Millisecond)
+	c.next = time.Now().Add(wait + c.interval + time.Duration(rand.IntN(5001))*time.Millisecond)
 	c.rateMu.Unlock()
 	if wait <= 0 {
 		return nil

@@ -18,7 +18,7 @@
 - `upstream`：`cdlongbow/mdcx-diy`（官方源）。
 
 JavBoss 不依赖完整 MDCx 镜像运行。MDCx 上游的 JavDB 适配逻辑更新时，先在 `mdcx-diy` 中
-`fetch upstream` 并通过测试，再将必要的协议变化移植到 `internal/javdbinput`。不直接自动合并
+`fetch upstream` 并通过测试，再将必要的协议变化移植到 `internal/jav/javdb_app.go`。不直接自动合并
 到生产服务，避免上游接口变化影响原生 JavBoss。
 
 磁链协议同时对照 [FlanChanXwO/javdb-cli](https://github.com/FlanChanXwO/javdb-cli) 的

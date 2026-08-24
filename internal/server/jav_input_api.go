@@ -7,7 +7,7 @@ import (
 
 	"github.com/gin-gonic/gin"
 
-	"javboss/internal/javdbinput"
+	"javboss/internal/jav"
 )
 
 const maxJavInputNumbers = 50
@@ -38,7 +38,7 @@ func resolveJavInput(c *gin.Context) {
 	if ctx == nil {
 		ctx = context.Background()
 	}
-	response := javdbinput.DefaultClient().ResolveBatch(ctx, numbers)
+	response := jav.DefaultJavDBAppClient().ResolveBatch(ctx, numbers)
 	c.Header("Cache-Control", "no-store")
 	c.JSON(http.StatusOK, response)
 }

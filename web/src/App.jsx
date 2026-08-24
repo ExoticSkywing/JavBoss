@@ -3860,7 +3860,6 @@ export default function App() {
         onBrowserForward={handleBrowserForward}
         onEnabledDirectoryIdsChange={setEnabledDirectoryIds}
         onOpenGlobalSettings={() => setGlobalSettingsOpen(true)}
-        onOpenJavInput={() => setJavInputOpen(true)}
         onOpenJavSettings={openJavSettings}
         onOpenJavTagModal={handleOpenJavTagModal}
         onJavPrefixClick={handleSelectJavPrefix}
@@ -3955,6 +3954,7 @@ export default function App() {
               : null
             : handleOpenTagFilterEditor
         }
+        onOpenJavInput={() => setJavInputOpen(true)}
         onOpenSelectionOps={() => setSelectionOpsOpen(true)}
         onClearSelection={clearSelection}
         onRandomClick={

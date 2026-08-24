@@ -2,7 +2,6 @@ import { useEffect, useMemo, useRef, useState } from 'react'
 import ArrowBackRoundedIcon from '@mui/icons-material/ArrowBackRounded'
 import ArrowForwardRoundedIcon from '@mui/icons-material/ArrowForwardRounded'
 import CollectionsBookmarkOutlinedIcon from '@mui/icons-material/CollectionsBookmarkOutlined'
-import CloudDownloadOutlinedIcon from '@mui/icons-material/CloudDownloadOutlined'
 import DisplaySettingsOutlinedIcon from '@mui/icons-material/DisplaySettingsOutlined'
 import FolderOpenOutlinedIcon from '@mui/icons-material/FolderOpenOutlined'
 import LocalOfferOutlinedIcon from '@mui/icons-material/LocalOfferOutlined'
@@ -69,7 +68,6 @@ export default function SideTabs({
   onBrowserForward,
   onEnabledDirectoryIdsChange,
   onOpenGlobalSettings,
-  onOpenJavInput,
   onOpenJavSettings,
   onOpenJavTagModal,
   onJavPrefixClick,
@@ -201,11 +199,6 @@ export default function SideTabs({
             icon={NumbersRoundedIcon}
             label={zh('番号', 'JAV codes')}
             onClick={() => setPrefixModalOpen(true)}
-          />
-          <RailButton
-            icon={CloudDownloadOutlinedIcon}
-            label={zh('资源输入', 'Resource input')}
-            onClick={onOpenJavInput}
           />
           <RailButton
             icon={DisplaySettingsOutlinedIcon}

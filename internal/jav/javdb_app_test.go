@@ -1,4 +1,4 @@
-package javdbinput
+package jav
 
 import (
 	"context"
@@ -30,7 +30,7 @@ func TestResolveBatchRequiresExactCodeAndGetsMagnets(t *testing.T) {
 	}))
 	defer server.Close()
 
-	client := NewClient(Options{Hosts: []string{server.URL}})
+	client := NewJavDBAppClient(JavDBAppOptions{Hosts: []string{server.URL}})
 	response := client.ResolveBatch(context.Background(), []string{"dpmx_004", "DPMX-004"})
 	if len(response.Items) != 1 || !response.Items[0].Matched {
 		t.Fatalf("response = %#v", response)
@@ -59,7 +59,7 @@ func TestResolveBatchKeepsItemScopedErrors(t *testing.T) {
 		}
 	}))
 	defer server.Close()
-	client := NewClient(Options{Hosts: []string{server.URL}})
+	client := NewJavDBAppClient(JavDBAppOptions{Hosts: []string{server.URL}})
 	response := client.ResolveBatch(context.Background(), []string{"BAD-001", "OK-001"})
 	if len(response.Items) != 2 {
 		t.Fatalf("response = %#v", response)
