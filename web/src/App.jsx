@@ -46,6 +46,7 @@ import {
 } from '@/api'
 import GlobalSettingsModal from '@/components/GlobalSettingsModal'
 import JavFavoriteManageModal from '@/components/JavFavoriteManageModal'
+import JavInputModal from '@/components/JavInputModal'
 import JavFavoriteModal from '@/components/JavFavoriteModal'
 import JavQueryEditorModal from '@/components/JavQueryEditorModal'
 import JavSettingsModal from '@/components/JavSettingsModal'
@@ -277,6 +278,7 @@ export default function App() {
   const [videoSettingsOpen, setVideoSettingsOpen] = useState(false)
   const [javSettingsOpen, setJavSettingsOpen] = useState(false)
   const [globalSettingsOpen, setGlobalSettingsOpen] = useState(false)
+  const [javInputOpen, setJavInputOpen] = useState(false)
   const [javTagModalOpen, setJavTagModalOpen] = useState(false)
   const [javTagCategories, setJavTagCategories] = useState([])
   const [javQueryEditorOpen, setJavQueryEditorOpen] = useState(false)
@@ -3858,6 +3860,7 @@ export default function App() {
         onBrowserForward={handleBrowserForward}
         onEnabledDirectoryIdsChange={setEnabledDirectoryIds}
         onOpenGlobalSettings={() => setGlobalSettingsOpen(true)}
+        onOpenJavInput={() => setJavInputOpen(true)}
         onOpenJavSettings={openJavSettings}
         onOpenJavTagModal={handleOpenJavTagModal}
         onJavPrefixClick={handleSelectJavPrefix}
@@ -4149,6 +4152,8 @@ export default function App() {
           />
         )}
       </main>
+
+      <JavInputModal open={javInputOpen} onClose={() => setJavInputOpen(false)} />
 
       <JavQueryEditorModal
         open={javQueryEditorOpen}

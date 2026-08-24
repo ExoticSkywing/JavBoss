@@ -1274,6 +1274,19 @@ export async function fetchJavJavDBURL({ code = '' } = {}) {
   return data?.url || ''
 }
 
+export async function resolveJavInput(numbers = []) {
+  const clean = Array.from(
+    new Set((numbers || []).map((value) => String(value || '').trim()).filter(Boolean))
+  )
+  const res = await apiFetch('/jav/input/resolve', {
+    method: 'POST',
+    headers: jsonHeaders,
+    body: JSON.stringify({ numbers: clean }),
+  })
+  if (!res.ok) throw await apiError(res)
+  return res.json()
+}
+
 export async function resolveJavIdols(ids = []) {
   const clean = Array.from(
     new Set(
