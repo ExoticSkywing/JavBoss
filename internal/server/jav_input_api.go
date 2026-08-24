@@ -1,7 +1,6 @@
 package server
 
 import (
-	"context"
 	"net/http"
 	"strings"
 
@@ -16,9 +15,9 @@ type javInputResolveRequest struct {
 	Numbers []string `json:"numbers"`
 }
 
-// resolveJavInput is deliberately read-only. It discovers and ranks nothing
-// remotely: it only returns JavDB candidates for the user to inspect and
-// manually confirm. Download submission is a later, separate stage.
+// resolveJavInput is deliberately read-only. It returns JavDB candidates for
+// the user to inspect and manually confirm. Download submission is a later,
+// separate stage.
 func resolveJavInput(c *gin.Context) {
 	var request javInputResolveRequest
 	if err := c.ShouldBindJSON(&request); err != nil {
@@ -34,11 +33,7 @@ func resolveJavInput(c *gin.Context) {
 		respondLocalizedError(c, http.StatusBadRequest, "单次最多查询 50 个番号", "A single lookup is limited to 50 JAV codes")
 		return
 	}
-	ctx := c.Request.Context()
-	if ctx == nil {
-		ctx = context.Background()
-	}
-	response := jav.DefaultJavDBAppClient().ResolveBatch(ctx, numbers)
+	response := jav.DefaultJavDBAppClient().ResolveBatch(c.Request.Context(), numbers)
 	c.Header("Cache-Control", "no-store")
 	c.JSON(http.StatusOK, response)
 }

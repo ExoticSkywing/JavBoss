@@ -96,7 +96,7 @@ func DefaultTrailerResolver() *TrailerResolver { return defaultTrailerResolver }
 // Resolve returns the first usable trailer. Refresh skips the in-memory cache.
 func (r *TrailerResolver) Resolve(ctx context.Context, code string, refresh bool) (*Trailer, error) {
 	code = strings.TrimSpace(code)
-	key := normalizeCode(code)
+	key := normalizeJAVCode(code)
 	if key == "" {
 		return nil, ErrTrailerNotFound
 	}
@@ -180,7 +180,7 @@ func (r *TrailerResolver) lookupDMMTrailer(ctx context.Context, code string) (*T
 	if err := json.Unmarshal(body, &payload); err != nil {
 		return nil, fmt.Errorf("decode DMM trailer response: %w", err)
 	}
-	if normalizeCode(payload.UniversalID) != normalizeCode(code) {
+	if normalizeJAVCode(payload.UniversalID) != normalizeJAVCode(code) {
 		return nil, ErrTrailerNotFound
 	}
 	trailerURL := normalizeDMMTrailerURL(payload.SampleMovieURL)

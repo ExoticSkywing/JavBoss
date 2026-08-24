@@ -129,8 +129,9 @@ export default function JavInputModal({ open, onClose }) {
     setLoading(true)
     setError('')
     setSelected(new Set())
+    setResponse(null)
     try {
-      setResponse(await resolveJavInput(numbers))
+      setResponse(await resolveJavInput(numbers, { onProgress: setResponse }))
     } catch (requestError) {
       setError(getErrorMessage(requestError))
       setResponse(null)

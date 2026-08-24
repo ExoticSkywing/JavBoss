@@ -1314,17 +1314,27 @@ export async function fetchJavJavDBURL({ code = '' } = {}) {
   return data?.url || ''
 }
 
-export async function resolveJavInput(numbers = []) {
-  const clean = Array.from(
-    new Set((numbers || []).map((value) => String(value || '').trim()).filter(Boolean))
-  )
+async function resolveSingleJavInput(number) {
   const res = await apiFetch('/jav/input/resolve', {
     method: 'POST',
     headers: jsonHeaders,
-    body: JSON.stringify({ numbers: clean }),
+    body: JSON.stringify({ numbers: [number] }),
   })
   if (!res.ok) throw await apiError(res)
-  return res.json()
+  const payload = await parseJSONResponse(res)
+  return Array.isArray(payload?.items) ? payload.items : []
+}
+
+export async function resolveJavInput(numbers = [], { onProgress } = {}) {
+  const clean = Array.from(
+    new Set((numbers || []).map((value) => String(value || '').trim()).filter(Boolean))
+  )
+  const items = []
+  for (const number of clean) {
+    items.push(...(await resolveSingleJavInput(number)))
+    onProgress?.({ items: [...items] })
+  }
+  return { items }
 }
 
 export async function resolveJavIdols(ids = []) {

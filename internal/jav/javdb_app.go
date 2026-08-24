@@ -19,19 +19,19 @@ import (
 )
 
 const (
-	defaultAPIHost = "https://apidd.czssdgz.com"
+	defaultJavDBAppAPIHost = "https://apidd.czssdgz.com"
 	// These values are the public mobile API request shape used by the
 	// upstream MDCx JavDB adapter. Keeping them in this small package means
 	// the rest of JavBoss does not need the full MDCx runtime.
-	signaturePrefix = "71cf27bb3c0bcdf207b64abecddc970098c7421ee7203b9cdae54478478a199e7d5a6e1a57691123c1a931c057842fb73ba3b3c83bcd69c17ccf174081e3d8aa"
-	signatureSuffix = "lpw6vgqzsp"
-	appVersion      = "official"
-	appVersionNum   = "1.9.35"
-	deviceUUID      = "1d26b2df-f042-5138-90b3-28980fe1d98a"
-	maxResponseSize = 8 << 20
+	javDBAppSignaturePrefix = "71cf27bb3c0bcdf207b64abecddc970098c7421ee7203b9cdae54478478a199e7d5a6e1a57691123c1a931c057842fb73ba3b3c83bcd69c17ccf174081e3d8aa"
+	javDBAppSignatureSuffix = "lpw6vgqzsp"
+	javDBAppVersion         = "official"
+	javDBAppVersionNumber   = "1.9.35"
+	javDBAppDeviceUUID      = "1d26b2df-f042-5138-90b3-28980fe1d98a"
+	maxJavDBAppResponseSize = 8 << 20
 )
 
-var nonCode = regexp.MustCompile(`[\s_\-]+`)
+var javCodeSeparatorPattern = regexp.MustCompile(`[\s_\-]+`)
 
 var errJavDBAppMovieNotFound = errors.New("JavDB App movie not found")
 
@@ -87,8 +87,9 @@ type JavDBAppClient struct {
 	next   time.Time
 }
 
-// NewJavDBAppClient constructs an input-side JavDB client. When no host is supplied,
-// the production mirror and its known fallbacks are used.
+// NewJavDBAppClient constructs the JavDB client shared by resource input and
+// trailer fallback. When no host is supplied, the production mirror and its
+// known fallbacks are used.
 func NewJavDBAppClient(options JavDBAppOptions) *JavDBAppClient {
 	httpClient := options.HTTPClient
 	if httpClient == nil {
@@ -101,7 +102,7 @@ func NewJavDBAppClient(options JavDBAppOptions) *JavDBAppClient {
 		}
 	}
 	if len(hosts) == 0 {
-		hosts = []string{defaultAPIHost, "https://apidd.spthgb.com", "https://jdforrepam.com"}
+		hosts = []string{defaultJavDBAppAPIHost, "https://apidd.spthgb.com", "https://jdforrepam.com"}
 	}
 	interval := options.Interval
 	if interval < 0 {
@@ -136,7 +137,7 @@ func (c *JavDBAppClient) ResolveBatch(ctx context.Context, numbers []string) Jav
 		if input == "" {
 			continue
 		}
-		key := normalizeCode(input)
+		key := normalizeJAVCode(input)
 		if _, exists := seen[key]; exists {
 			continue
 		}
@@ -184,13 +185,13 @@ func (c *JavDBAppClient) lookupMovie(ctx context.Context, input string) (*JavDBA
 	if err := json.Unmarshal(search, &searchPayload); err != nil {
 		return nil, fmt.Errorf("decode search response: %w", err)
 	}
-	want := normalizeCode(input)
+	want := normalizeJAVCode(input)
 	var movie *JavDBAppMovie
 	for index := range searchPayload.Data.Movies {
 		candidate := searchPayload.Data.Movies[index]
 		candidate.ID = strings.TrimSpace(candidate.ID)
 		candidate.Number = strings.TrimSpace(candidate.Number)
-		if candidate.ID != "" && normalizeCode(candidate.Number) == want {
+		if candidate.ID != "" && normalizeJAVCode(candidate.Number) == want {
 			movie = &candidate
 			break
 		}
@@ -221,7 +222,7 @@ func (c *JavDBAppClient) lookupPreviewVideo(ctx context.Context, code string) (s
 	if err := json.Unmarshal(payload, &response); err != nil {
 		return "", fmt.Errorf("decode movie detail response: %w", err)
 	}
-	if number := strings.TrimSpace(response.Data.Movie.Number); number != "" && normalizeCode(number) != normalizeCode(code) {
+	if number := strings.TrimSpace(response.Data.Movie.Number); number != "" && normalizeJAVCode(number) != normalizeJAVCode(code) {
 		return "", fmt.Errorf("JavDB detail code mismatch: got %s for %s", number, code)
 	}
 	previewURL := strings.TrimSpace(response.Data.Movie.PreviewVideoURL)
@@ -264,12 +265,12 @@ func (c *JavDBAppClient) getJSON(ctx context.Context, path string, params map[st
 		query := endpoint.Query()
 		query.Set("platform", "android")
 		query.Set("app_channel", "official")
-		query.Set("app_version", appVersion)
-		query.Set("app_version_number", appVersionNum)
+		query.Set("app_version", javDBAppVersion)
+		query.Set("app_version_number", javDBAppVersionNumber)
 		query.Set("system_version", "13")
 		query.Set("device_model", "Pixel 6")
 		query.Set("device_name", "Pixel")
-		query.Set("device_uuid", deviceUUID)
+		query.Set("device_uuid", javDBAppDeviceUUID)
 		for key, value := range params {
 			query.Set(key, value)
 		}
@@ -280,8 +281,8 @@ func (c *JavDBAppClient) getJSON(ctx context.Context, path string, params map[st
 			continue
 		}
 		ts := time.Now().Unix()
-		hash := md5.Sum([]byte(fmt.Sprintf("%d%s", ts, signaturePrefix)))
-		req.Header.Set("jdsignature", fmt.Sprintf("%d.%s.%s", ts, signatureSuffix, hex.EncodeToString(hash[:])))
+		hash := md5.Sum([]byte(fmt.Sprintf("%d%s", ts, javDBAppSignaturePrefix)))
+		req.Header.Set("jdsignature", fmt.Sprintf("%d.%s.%s", ts, javDBAppSignatureSuffix, hex.EncodeToString(hash[:])))
 		req.Header.Set("accept-language", "zh")
 		req.Header.Set("User-Agent", "Dart/3.5 (dart:io)")
 		response, err := c.httpClient.Do(req)
@@ -289,13 +290,13 @@ func (c *JavDBAppClient) getJSON(ctx context.Context, path string, params map[st
 			lastErr = err
 			continue
 		}
-		body, readErr := io.ReadAll(io.LimitReader(response.Body, maxResponseSize+1))
+		body, readErr := io.ReadAll(io.LimitReader(response.Body, maxJavDBAppResponseSize+1))
 		response.Body.Close()
 		if readErr != nil {
 			lastErr = readErr
 			continue
 		}
-		if len(body) > maxResponseSize {
+		if len(body) > maxJavDBAppResponseSize {
 			lastErr = errors.New("response too large")
 			continue
 		}
@@ -335,6 +336,6 @@ func (c *JavDBAppClient) waitRateLimit(ctx context.Context) error {
 	}
 }
 
-func normalizeCode(value string) string {
-	return strings.ToUpper(nonCode.ReplaceAllString(strings.TrimSpace(value), ""))
+func normalizeJAVCode(value string) string {
+	return strings.ToUpper(javCodeSeparatorPattern.ReplaceAllString(strings.TrimSpace(value), ""))
 }
