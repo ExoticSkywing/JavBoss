@@ -25,6 +25,8 @@ JavBoss 不依赖完整 MDCx 镜像运行。MDCx 上游的 JavDB 适配逻辑更
 App API 实现；其中已确认 `size` 为 MiB，并提供同一磁链接口、筛选与质量排序语义。后续更新时
 以真实接口测试为准，只移植必要的协议变化，不增加新的运行时依赖。
 
+预告片的两级来源与上游同步边界见 `docs-jav-trailer.md`。
+
 ## 接口
 
 受保护的 `POST /jav/input/resolve` 接收：

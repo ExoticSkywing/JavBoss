@@ -12,11 +12,13 @@ import { IconButton, Popper, Rating, Tooltip } from '@mui/material'
 
 import {
   deleteVideoScreenshot,
+  fetchJavTrailer,
   fetchVideoScreenshotsByIds,
   getResolvedJavSampleImages,
   resolveJavSampleImages,
 } from '@/api'
 import AppModal from '@/components/AppModal'
+import JavTrailerModal from '@/components/JavTrailerModal'
 import { IdolCard, getIdolCardLayoutProps } from '@/components/JavIdolGrid'
 import { SeriesCard } from '@/components/JavSeriesView'
 import { StudioCard } from '@/components/JavStudioView'
@@ -514,6 +516,10 @@ export default function JavDetailModal({
   const [sampleImages, setSampleImages] = useState(() => normalizeSampleImages(itemSampleImages))
   const [sampleImagesLoading, setSampleImagesLoading] = useState(false)
   const [sampleImagesError, setSampleImagesError] = useState('')
+  const [trailer, setTrailer] = useState(null)
+  const [trailerLoading, setTrailerLoading] = useState(false)
+  const [trailerError, setTrailerError] = useState('')
+  const [trailerOpen, setTrailerOpen] = useState(false)
   const hoverCloseTimerRef = useRef(null)
   const activeHoverKeyRef = useRef('')
   const hoverPreviewLockedRef = useRef(false)
@@ -570,6 +576,35 @@ export default function JavDetailModal({
     }
   }, [directoryIdentity, itemId, itemSampleImages])
 
+  useEffect(() => {
+    let cancelled = false
+    setTrailer(null)
+    setTrailerError('')
+    setTrailerOpen(false)
+    if (!itemId) {
+      setTrailerLoading(false)
+      return undefined
+    }
+
+    setTrailerLoading(true)
+    void fetchJavTrailer(itemId, {
+      directoryIds: directoryIdentity ? directoryIdentity.split(',') : [],
+    })
+      .then((payload) => {
+        if (!cancelled) setTrailer(payload)
+      })
+      .catch((error) => {
+        if (!cancelled) setTrailerError(getErrorMessage(error))
+      })
+      .finally(() => {
+        if (!cancelled) setTrailerLoading(false)
+      })
+
+    return () => {
+      cancelled = true
+    }
+  }, [directoryIdentity, itemId])
+
   const clearHoverCloseTimer = () => {
     if (!hoverCloseTimerRef.current) return
     window.clearTimeout(hoverCloseTimerRef.current)
@@ -621,6 +656,7 @@ export default function JavDetailModal({
     if (!open) scheduleHoverClose()
   }
 
+  const trailerURL = String(trailer?.url || '').trim()
   const detailRows = [
     {
       label: zh('识别码', 'Code'),
@@ -844,6 +880,33 @@ export default function JavDetailModal({
                   error={favoriteRatingError}
                   onChange={onFavoriteRatingChange}
                 />
+                {trailerLoading ? (
+                  <button
+                    type="button"
+                    className="inline-flex cursor-wait items-center gap-1.5 rounded-md border border-indigo-100 bg-indigo-50 px-3 py-1.5 text-xs font-medium text-indigo-400"
+                    disabled
+                  >
+                    <PlayArrowIcon sx={{ fontSize: 16 }} />
+                    {zh('查找预告…', 'Finding trailer…')}
+                  </button>
+                ) : trailerURL ? (
+                  <button
+                    type="button"
+                    className="inline-flex items-center gap-1.5 rounded-md border border-indigo-200 bg-indigo-50 px-3 py-1.5 text-xs font-medium text-indigo-700 transition hover:border-indigo-300 hover:bg-indigo-100"
+                    onClick={() => setTrailerOpen(true)}
+                    title={zh(
+                      `播放预告 · 来源：${trailer?.source || 'unknown'}`,
+                      `Play trailer · Source: ${trailer?.source || 'unknown'}`
+                    )}
+                  >
+                    <PlayArrowIcon sx={{ fontSize: 16 }} />
+                    {zh('播放预告', 'Play trailer')}
+                  </button>
+                ) : trailerError ? (
+                  <span className="text-xs text-amber-600" title={trailerError}>
+                    {zh('预告暂不可用', 'Trailer unavailable')}
+                  </span>
+                ) : null}
               </div>
             </section>
           </div>
@@ -985,6 +1048,9 @@ export default function JavDetailModal({
           ) : null}
         </div>
       </Popper>
+      {trailerOpen && trailerURL ? (
+        <JavTrailerModal title={title} url={trailerURL} onClose={() => setTrailerOpen(false)} />
+      ) : null}
     </AppModal>
   )
 }

@@ -33,6 +33,8 @@ const (
 
 var nonCode = regexp.MustCompile(`[\s_\-]+`)
 
+var errJavDBAppMovieNotFound = errors.New("JavDB App movie not found")
+
 // JavDBAppMagnet is a single JavDB candidate. JavDB returns Size in MiB.
 type JavDBAppMagnet struct {
 	Hash      string `json:"hash"`
@@ -157,9 +159,22 @@ func (c *JavDBAppClient) ResolveBatch(ctx context.Context, numbers []string) Jav
 }
 
 func (c *JavDBAppClient) resolveOne(ctx context.Context, input string) (*JavDBAppMovie, []JavDBAppMagnet, error) {
+	movie, err := c.lookupMovie(ctx, input)
+	if err != nil {
+		return nil, nil, err
+	}
+
+	magnets, err := c.getMagnets(ctx, movie.ID)
+	if err != nil {
+		return movie, nil, fmt.Errorf("magnets failed for %s: %w", input, err)
+	}
+	return movie, magnets, nil
+}
+
+func (c *JavDBAppClient) lookupMovie(ctx context.Context, input string) (*JavDBAppMovie, error) {
 	search, err := c.getJSON(ctx, "/api/v2/search", map[string]string{"q": input, "page": "1"})
 	if err != nil {
-		return nil, nil, fmt.Errorf("search failed: %w", err)
+		return nil, fmt.Errorf("search failed: %w", err)
 	}
 	var searchPayload struct {
 		Data struct {
@@ -167,7 +182,7 @@ func (c *JavDBAppClient) resolveOne(ctx context.Context, input string) (*JavDBAp
 		} `json:"data"`
 	}
 	if err := json.Unmarshal(search, &searchPayload); err != nil {
-		return nil, nil, fmt.Errorf("decode search response: %w", err)
+		return nil, fmt.Errorf("decode search response: %w", err)
 	}
 	want := normalizeCode(input)
 	var movie *JavDBAppMovie
@@ -181,14 +196,39 @@ func (c *JavDBAppClient) resolveOne(ctx context.Context, input string) (*JavDBAp
 		}
 	}
 	if movie == nil {
-		return nil, nil, fmt.Errorf("no exact JavDB match for %s", input)
+		return nil, fmt.Errorf("%w: %s", errJavDBAppMovieNotFound, input)
 	}
+	return movie, nil
+}
 
-	magnets, err := c.getMagnets(ctx, movie.ID)
+func (c *JavDBAppClient) lookupPreviewVideo(ctx context.Context, code string) (string, error) {
+	movie, err := c.lookupMovie(ctx, code)
 	if err != nil {
-		return movie, nil, fmt.Errorf("magnets failed for %s: %w", input, err)
+		return "", err
 	}
-	return movie, magnets, nil
+	payload, err := c.getJSON(ctx, "/api/v4/movies/"+url.PathEscape(movie.ID), nil)
+	if err != nil {
+		return "", fmt.Errorf("movie detail failed for %s: %w", code, err)
+	}
+	var response struct {
+		Data struct {
+			Movie struct {
+				Number          string `json:"number"`
+				PreviewVideoURL string `json:"preview_video_url"`
+			} `json:"movie"`
+		} `json:"data"`
+	}
+	if err := json.Unmarshal(payload, &response); err != nil {
+		return "", fmt.Errorf("decode movie detail response: %w", err)
+	}
+	if number := strings.TrimSpace(response.Data.Movie.Number); number != "" && normalizeCode(number) != normalizeCode(code) {
+		return "", fmt.Errorf("JavDB detail code mismatch: got %s for %s", number, code)
+	}
+	previewURL := strings.TrimSpace(response.Data.Movie.PreviewVideoURL)
+	if strings.HasPrefix(previewURL, "//") {
+		previewURL = "https:" + previewURL
+	}
+	return previewURL, nil
 }
 
 func (c *JavDBAppClient) getMagnets(ctx context.Context, movieID string) ([]JavDBAppMagnet, error) {

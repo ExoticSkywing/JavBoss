@@ -71,3 +71,27 @@ func TestResolveBatchKeepsItemScopedErrors(t *testing.T) {
 		t.Fatalf("successful item = %#v", response.Items[1])
 	}
 }
+
+func TestLookupPreviewVideoUsesAppMovieDetail(t *testing.T) {
+	server := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		w.Header().Set("Content-Type", "application/json")
+		switch r.URL.Path {
+		case "/api/v2/search":
+			_, _ = w.Write([]byte(`{"data":{"movies":[{"id":"movie-1","number":"DPMX-004"}]}}`))
+		case "/api/v4/movies/movie-1":
+			_, _ = w.Write([]byte(`{"data":{"movie":{"number":"DPMX-004","preview_video_url":"//media.example/DPMX-004.mp4"}}}`))
+		default:
+			http.NotFound(w, r)
+		}
+	}))
+	defer server.Close()
+
+	client := NewJavDBAppClient(JavDBAppOptions{Hosts: []string{server.URL}})
+	previewURL, err := client.lookupPreviewVideo(context.Background(), "DPMX-004")
+	if err != nil {
+		t.Fatalf("lookup preview video: %v", err)
+	}
+	if previewURL != "https://media.example/DPMX-004.mp4" {
+		t.Fatalf("preview URL = %q", previewURL)
+	}
+}

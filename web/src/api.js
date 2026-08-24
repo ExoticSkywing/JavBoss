@@ -5,6 +5,8 @@ const jsonHeaders = { 'Content-Type': 'application/json' }
 const javIdolResolveInFlight = new Map()
 const javSampleImagesResolveInFlight = new Map()
 const javSampleImagesResolved = new Map()
+const javTrailerInFlight = new Map()
+const javTrailerResolved = new Map()
 export const authExpiredEvent = 'javboss:auth-expired'
 
 async function apiError(res) {
@@ -661,6 +663,44 @@ export function resolveJavSampleImages(id, { directoryIds = [] } = {}) {
       javSampleImagesResolveInFlight.delete(requestKey)
     })
   javSampleImagesResolveInFlight.set(requestKey, request)
+  return request
+}
+
+export function fetchJavTrailer(id, { directoryIds = [], refresh = false } = {}) {
+  const javId = Number(id)
+  if (!Number.isFinite(javId) || javId <= 0) return Promise.resolve(null)
+  const normalizedDirectoryIds = directoryIds
+    .map((directoryId) => Number(directoryId))
+    .filter((directoryId) => Number.isFinite(directoryId) && directoryId > 0)
+  const requestKey = `${javId}:${normalizedDirectoryIds.join(',')}`
+  if (!refresh && javTrailerResolved.has(requestKey)) {
+    return Promise.resolve(javTrailerResolved.get(requestKey))
+  }
+  if (!refresh && javTrailerInFlight.has(requestKey)) {
+    return javTrailerInFlight.get(requestKey)
+  }
+  const params = new URLSearchParams()
+  if (normalizedDirectoryIds.length) params.set('directory_ids', normalizedDirectoryIds.join(','))
+  if (refresh) params.set('refresh', '1')
+  const query = params.toString()
+  const request = apiFetch(
+    `/jav/items/${encodeURIComponent(javId)}/trailer${query ? `?${query}` : ''}`,
+    { cache: 'no-store' }
+  )
+    .then(async (res) => {
+      if (res.status === 404) {
+        javTrailerResolved.set(requestKey, null)
+        return null
+      }
+      if (!res.ok) throw await apiError(res)
+      const payload = await parseJSONResponse(res)
+      javTrailerResolved.set(requestKey, payload)
+      return payload
+    })
+    .finally(() => {
+      javTrailerInFlight.delete(requestKey)
+    })
+  javTrailerInFlight.set(requestKey, request)
   return request
 }
 
