@@ -106,7 +106,11 @@ func CreateJavInputBatch(ctx context.Context, rawInput string) (*models.JavInput
 
 func prepareJavInputBatch(rawInput string) ([]models.JavInputItem, models.JavInputBatch) {
 	now := time.Now().UTC()
-	batch := models.JavInputBatch{RawInput: rawInput, CreatedAt: now}
+	batch := models.JavInputBatch{
+		RawInput:  rawInput,
+		CreatedAt: now,
+		Preview:   javInputPreview(rawInput),
+	}
 	lines := strings.Split(strings.ReplaceAll(rawInput, "\r\n", "\n"), "\n")
 	items := make([]models.JavInputItem, 0, len(lines))
 	firstLineByCode := make(map[string]int)
@@ -150,6 +154,21 @@ func prepareJavInputBatch(rawInput string) ([]models.JavInputItem, models.JavInp
 		items = append(items, item)
 	}
 	return items, batch
+}
+
+func javInputPreview(rawInput string) string {
+	for _, line := range strings.Split(strings.ReplaceAll(rawInput, "\r\n", "\n"), "\n") {
+		line = strings.TrimSpace(strings.TrimSuffix(line, "\r"))
+		if line == "" {
+			continue
+		}
+		runes := []rune(line)
+		if len(runes) > 80 {
+			runes = runes[:80]
+		}
+		return string(runes)
+	}
+	return ""
 }
 
 func containsASCIILetter(value string) bool {
@@ -226,7 +245,7 @@ func listJavInputHistoryMatches(tx *gorm.DB, normalizedCodes []string) (map[stri
 	return result, nil
 }
 
-// ListJavInputBatches returns immutable input history in reverse chronological order.
+// ListJavInputBatches returns input history in reverse chronological order.
 func ListJavInputBatches(ctx context.Context, page, pageSize int) ([]models.JavInputBatch, int64, error) {
 	if common.DB == nil {
 		return nil, 0, errors.New("database is not initialized")
@@ -271,4 +290,123 @@ func GetJavInputBatch(ctx context.Context, id int64) (*models.JavInputBatch, err
 		return nil, err
 	}
 	return &batch, nil
+}
+
+// DeleteJavInputBatch removes one complete input snapshot and releases any
+// accepted-code reservations owned by it. Historical duplicates stay as
+// snapshots, but no longer point at a batch that has been removed.
+func DeleteJavInputBatch(ctx context.Context, id int64) error {
+	if common.DB == nil {
+		return errors.New("database is not initialized")
+	}
+	if id <= 0 {
+		return gorm.ErrRecordNotFound
+	}
+
+	javInputCreateMu.Lock()
+	defer javInputCreateMu.Unlock()
+
+	return common.DB.WithContext(ctx).Transaction(func(tx *gorm.DB) error {
+		var count int64
+		if err := tx.Model(&models.JavInputBatch{}).Where("id = ?", id).Count(&count).Error; err != nil {
+			return fmt.Errorf("find JAV input batch for deletion: %w", err)
+		}
+		if count == 0 {
+			return gorm.ErrRecordNotFound
+		}
+		if err := tx.Model(&models.JavInputItem{}).
+			Where("existing_batch_id = ?", id).
+			Update("existing_batch_id", nil).Error; err != nil {
+			return fmt.Errorf("clear deleted JAV input batch references: %w", err)
+		}
+		if err := tx.Delete(&models.JavInputBatch{}, id).Error; err != nil {
+			return fmt.Errorf("delete JAV input batch: %w", err)
+		}
+		return nil
+	})
+}
+
+// DeleteAllJavInputBatches clears the raw-input workspace without touching the
+// final JAV library or any real files.
+func DeleteAllJavInputBatches(ctx context.Context) error {
+	if common.DB == nil {
+		return errors.New("database is not initialized")
+	}
+
+	javInputCreateMu.Lock()
+	defer javInputCreateMu.Unlock()
+
+	return common.DB.WithContext(ctx).Transaction(func(tx *gorm.DB) error {
+		if err := tx.Where("1 = 1").Delete(&models.JavInputItem{}).Error; err != nil {
+			return fmt.Errorf("delete all JAV input items: %w", err)
+		}
+		if err := tx.Where("1 = 1").Delete(&models.JavInputBatch{}).Error; err != nil {
+			return fmt.Errorf("delete all JAV input batches: %w", err)
+		}
+		return nil
+	})
+}
+
+// ListJavInputPreprocessed returns the final output of both de-duplication
+// stages. Accepted codes are hidden as soon as a matching final library work
+// gains an active real-file location.
+func ListJavInputPreprocessed(ctx context.Context, page, pageSize int, search string) ([]models.JavInputPreprocessedItem, int64, error) {
+	if common.DB == nil {
+		return nil, 0, errors.New("database is not initialized")
+	}
+	if page < 1 {
+		page = 1
+	}
+	if pageSize < 1 {
+		pageSize = 20
+	}
+
+	query := common.DB.WithContext(ctx).
+		Model(&models.JavInputItem{}).
+		Where("status = ?", models.JavInputStatusAccepted)
+	search = strings.TrimSpace(search)
+	if search != "" {
+		pattern := "%" + search + "%"
+		query = query.Where("code LIKE ? COLLATE NOCASE OR raw_line LIKE ? COLLATE NOCASE", pattern, pattern)
+	}
+
+	var candidates []models.JavInputItem
+	if err := query.Order("id DESC").Find(&candidates).Error; err != nil {
+		return nil, 0, fmt.Errorf("list accepted JAV input items: %w", err)
+	}
+	normalizedCodes := make([]string, 0, len(candidates))
+	for _, item := range candidates {
+		normalizedCodes = append(normalizedCodes, item.NormalizedCode)
+	}
+	libraryMatches, err := listJavInputLibraryMatches(common.DB.WithContext(ctx), normalizedCodes)
+	if err != nil {
+		return nil, 0, err
+	}
+
+	filtered := make([]models.JavInputPreprocessedItem, 0, len(candidates))
+	for _, item := range candidates {
+		if _, exists := libraryMatches[item.NormalizedCode]; exists {
+			continue
+		}
+		filtered = append(filtered, models.JavInputPreprocessedItem{
+			ID:              item.ID,
+			JavInputBatchID: item.JavInputBatchID,
+			LineNumber:      item.LineNumber,
+			RawLine:         item.RawLine,
+			Code:            item.Code,
+			NormalizedCode:  item.NormalizedCode,
+			CreatedAt:       item.CreatedAt,
+		})
+	}
+
+	total := int64(len(filtered))
+	start := (page - 1) * pageSize
+	if start >= len(filtered) {
+		return []models.JavInputPreprocessedItem{}, total, nil
+	}
+	end := start + pageSize
+	if end > len(filtered) {
+		end = len(filtered)
+	}
+	return filtered[start:end], total, nil
 }

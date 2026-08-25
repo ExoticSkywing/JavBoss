@@ -91,6 +91,56 @@ func getJavInputBatch(c *gin.Context) {
 	c.JSON(http.StatusOK, batch)
 }
 
+func deleteJavInputBatch(c *gin.Context) {
+	id, err := strconv.ParseInt(strings.TrimSpace(c.Param("id")), 10, 64)
+	if err != nil || id <= 0 {
+		respondLocalizedError(c, http.StatusBadRequest, "番号输入批次 ID 无效", "Invalid JAV input batch ID")
+		return
+	}
+	if err := db.DeleteJavInputBatch(c.Request.Context(), id); err != nil {
+		if errors.Is(err, gorm.ErrRecordNotFound) {
+			respondLocalizedError(c, http.StatusNotFound, "番号输入批次不存在", "JAV input batch was not found")
+			return
+		}
+		respondLocalizedError(c, http.StatusInternalServerError, "删除番号输入批次失败", "Failed to delete JAV input batch")
+		return
+	}
+	c.Status(http.StatusNoContent)
+}
+
+func deleteAllJavInputBatches(c *gin.Context) {
+	if err := db.DeleteAllJavInputBatches(c.Request.Context()); err != nil {
+		respondLocalizedError(c, http.StatusInternalServerError, "清空番号输入历史失败", "Failed to clear JAV input history")
+		return
+	}
+	c.Status(http.StatusNoContent)
+}
+
+func listJavInputPreprocessed(c *gin.Context) {
+	page := positiveIntQuery(c.Query("page"), 1)
+	pageSize := positiveIntQuery(c.Query("page_size"), 20)
+	if pageSize > 100 {
+		pageSize = 100
+	}
+	items, total, err := db.ListJavInputPreprocessed(
+		c.Request.Context(),
+		page,
+		pageSize,
+		c.Query("query"),
+	)
+	if err != nil {
+		respondLocalizedError(c, http.StatusInternalServerError, "读取预处理作品失败", "Failed to load preprocessed works")
+		return
+	}
+	c.Header("Cache-Control", "no-store")
+	c.JSON(http.StatusOK, gin.H{
+		"items":     items,
+		"total":     total,
+		"page":      page,
+		"page_size": pageSize,
+	})
+}
+
 func positiveIntQuery(raw string, fallback int) int {
 	value, err := strconv.Atoi(strings.TrimSpace(raw))
 	if err != nil || value <= 0 {

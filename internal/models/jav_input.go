@@ -24,6 +24,7 @@ type JavInputBatch struct {
 	AcceptedCount         int            `json:"accepted_count" gorm:"not null;default:0"`
 	InvalidCount          int            `json:"invalid_count" gorm:"not null;default:0"`
 	CreatedAt             time.Time      `json:"created_at" gorm:"not null"`
+	Preview               string         `json:"preview" gorm:"type:text;not null;default:''"`
 	Items                 []JavInputItem `json:"items,omitempty" gorm:"foreignKey:JavInputBatchID;constraint:OnUpdate:CASCADE,OnDelete:CASCADE"`
 }
 
@@ -40,4 +41,16 @@ type JavInputItem struct {
 	ExistingBatchID *int64    `json:"existing_batch_id,omitempty" gorm:"index:idx_jav_input_item_existing_batch_id"`
 	ExistingJavID   *int64    `json:"existing_jav_id,omitempty" gorm:"index:idx_jav_input_item_existing_jav_id"`
 	CreatedAt       time.Time `json:"created_at" gorm:"not null"`
+}
+
+// JavInputPreprocessedItem is one globally accepted raw code that has not yet
+// appeared as a final library work backed by an active real file.
+type JavInputPreprocessedItem struct {
+	ID              int64     `json:"id"`
+	JavInputBatchID int64     `json:"batch_id"`
+	LineNumber      int       `json:"line_number"`
+	RawLine         string    `json:"raw_line"`
+	Code            string    `json:"code"`
+	NormalizedCode  string    `json:"normalized_code"`
+	CreatedAt       time.Time `json:"created_at"`
 }

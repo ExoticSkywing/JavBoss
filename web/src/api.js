@@ -1386,6 +1386,28 @@ export async function fetchJavInputBatch(id) {
   return parseJSONResponse(res)
 }
 
+export async function deleteJavInputBatch(id) {
+  const res = await apiFetch(`/jav/input/batches/${encodeURIComponent(id)}`, {
+    method: 'DELETE',
+  })
+  if (!res.ok) throw await apiError(res)
+}
+
+export async function deleteAllJavInputBatches() {
+  const res = await apiFetch('/jav/input/batches', { method: 'DELETE' })
+  if (!res.ok) throw await apiError(res)
+}
+
+export async function fetchJavInputPreprocessed({ page = 1, pageSize = 20, query = '' } = {}) {
+  const params = new URLSearchParams()
+  params.set('page', String(page))
+  params.set('page_size', String(pageSize))
+  if (String(query || '').trim()) params.set('query', String(query).trim())
+  const res = await apiFetch(`/jav/input/preprocessed?${params.toString()}`)
+  if (!res.ok) throw await apiError(res)
+  return parseJSONResponse(res)
+}
+
 export async function resolveJavIdols(ids = []) {
   const clean = Array.from(
     new Set(

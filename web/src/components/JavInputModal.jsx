@@ -1,6 +1,13 @@
 import { useCallback, useEffect, useMemo, useState } from 'react'
 import AppModal from '@/components/AppModal'
-import { createJavInputBatch, fetchJavInputBatch, fetchJavInputBatches } from '@/api'
+import {
+  createJavInputBatch,
+  deleteAllJavInputBatches,
+  deleteJavInputBatch,
+  fetchJavInputBatch,
+  fetchJavInputBatches,
+  fetchJavInputPreprocessed,
+} from '@/api'
 import { getErrorMessage } from '@/utils/errors'
 import { zh } from '@/utils/i18n'
 import {
@@ -32,10 +39,12 @@ function statusLabel(item) {
     case STATUS.duplicateLibrary:
       return zh('作品库中已有真实文件', 'A real file already exists in the library')
     case STATUS.duplicateHistory:
-      return zh(
-        `历史批次 #${item.existing_batch_id} 已经接收`,
-        `Already accepted by history batch #${item.existing_batch_id}`
-      )
+      return item.existing_batch_id
+        ? zh(
+            `历史批次 #${item.existing_batch_id} 已经接收`,
+            `Already accepted by history batch #${item.existing_batch_id}`
+          )
+        : zh('原接收批次已删除', 'The original accepting batch was deleted')
     case STATUS.invalid:
       return zh('未识别到番号', 'No JAV code recognized')
     default:
@@ -96,7 +105,7 @@ function ResultSection({ title, description, count, items, emptyText, tone, show
   )
 }
 
-function BatchResult({ batch }) {
+function BatchResult({ batch, deleting = false, onDelete }) {
   const { batchDuplicates, firstStage, accepted, globalDuplicates, invalid, globalDuplicateCount } =
     groupJavInputItems(batch)
 
@@ -112,9 +121,21 @@ function BatchResult({ batch }) {
               {formatBatchTime(batch.created_at)}
             </span>
           </div>
-          <span className="text-xs text-indigo-700">
-            {zh('不可变历史记录', 'Immutable history record')}
-          </span>
+          <div className="flex items-center gap-3">
+            <span className="text-xs text-indigo-700">
+              {zh('完整输入快照', 'Complete input snapshot')}
+            </span>
+            {onDelete ? (
+              <button
+                type="button"
+                disabled={deleting}
+                onClick={() => onDelete(batch)}
+                className="rounded-md border border-rose-200 bg-white px-2.5 py-1.5 text-xs font-semibold text-rose-600 transition hover:bg-rose-50 disabled:cursor-not-allowed disabled:opacity-50"
+              >
+                {deleting ? zh('删除中…', 'Deleting…') : zh('删除本批次', 'Delete batch')}
+              </button>
+            ) : null}
+          </div>
         </div>
         <div className="mt-4 grid gap-3 sm:grid-cols-3">
           <div className="rounded-lg bg-white px-4 py-3">
@@ -232,11 +253,27 @@ export default function JavInputModal({ open, onClose }) {
   const [historyError, setHistoryError] = useState('')
   const [selectedBatch, setSelectedBatch] = useState(null)
   const [selectedBatchLoading, setSelectedBatchLoading] = useState(false)
+  const [deletingBatchID, setDeletingBatchID] = useState(null)
+  const [clearingHistory, setClearingHistory] = useState(false)
+  const [preprocessed, setPreprocessed] = useState({
+    items: [],
+    total: 0,
+    page: 1,
+    page_size: 20,
+  })
+  const [preprocessedLoading, setPreprocessedLoading] = useState(false)
+  const [preprocessedError, setPreprocessedError] = useState('')
+  const [preprocessedQuery, setPreprocessedQuery] = useState('')
+  const [appliedPreprocessedQuery, setAppliedPreprocessedQuery] = useState('')
 
   const inputLineCount = useMemo(() => countJavInputLines(input), [input])
   const historyPages = Math.max(
     1,
     Math.ceil(Number(history.total || 0) / Number(history.page_size || 20))
+  )
+  const preprocessedPages = Math.max(
+    1,
+    Math.ceil(Number(preprocessed.total || 0) / Number(preprocessed.page_size || 20))
   )
 
   const loadBatch = useCallback(async (id) => {
@@ -270,10 +307,25 @@ export default function JavInputModal({ open, onClose }) {
     [loadBatch]
   )
 
+  const loadPreprocessed = useCallback(async (page = 1, query = '') => {
+    setPreprocessedLoading(true)
+    setPreprocessedError('')
+    try {
+      const response = await fetchJavInputPreprocessed({ page, pageSize: 20, query })
+      setPreprocessed(response)
+      setAppliedPreprocessedQuery(query)
+    } catch (requestError) {
+      setPreprocessedError(getErrorMessage(requestError))
+    } finally {
+      setPreprocessedLoading(false)
+    }
+  }, [])
+
   useEffect(() => {
     if (!open) return
     void loadHistory(1)
-  }, [loadHistory, open])
+    void loadPreprocessed(1)
+  }, [loadHistory, loadPreprocessed, open])
 
   const submit = async (event) => {
     event.preventDefault()
@@ -283,7 +335,7 @@ export default function JavInputModal({ open, onClose }) {
     try {
       const batch = await createJavInputBatch(input)
       setResult(batch)
-      await loadHistory(1)
+      await Promise.all([loadHistory(1), loadPreprocessed(1, appliedPreprocessedQuery)])
     } catch (requestError) {
       setError(getErrorMessage(requestError))
     } finally {
@@ -295,6 +347,71 @@ export default function JavInputModal({ open, onClose }) {
     setTab('history')
     const first = Array.isArray(history.items) ? history.items[0] : null
     if (!selectedBatch && first) await loadBatch(first.id)
+  }
+
+  const openPreprocessed = async () => {
+    setTab('preprocessed')
+    await loadPreprocessed(1, appliedPreprocessedQuery)
+  }
+
+  const removeBatch = async (batch) => {
+    if (!batch?.id || deletingBatchID || clearingHistory) return
+    const preview = String(batch.preview || '').trim()
+    const label = preview ? `#${batch.id} · ${preview}` : `#${batch.id}`
+    if (
+      !window.confirm(
+        zh(
+          `确定删除批次 ${label}？该批历史和预处理结果会一并移除，其中接收的番号可以重新输入。`,
+          `Delete batch ${label}? Its history and preprocessed results will be removed, and accepted codes can be entered again.`
+        )
+      )
+    )
+      return
+    setDeletingBatchID(batch.id)
+    setHistoryError('')
+    try {
+      await deleteJavInputBatch(batch.id)
+      if (result?.id === batch.id) setResult(null)
+      if (selectedBatch?.id === batch.id) setSelectedBatch(null)
+      await Promise.all([
+        loadHistory(1, { selectFirst: true }),
+        loadPreprocessed(1, appliedPreprocessedQuery),
+      ])
+    } catch (requestError) {
+      setHistoryError(getErrorMessage(requestError))
+    } finally {
+      setDeletingBatchID(null)
+    }
+  }
+
+  const clearHistory = async () => {
+    if (!history.total || clearingHistory || deletingBatchID) return
+    if (
+      !window.confirm(
+        zh(
+          `确定清空全部 ${history.total} 个输入批次？这里只删除番号输入历史和预处理作品，不会删除正式作品或真实文件。`,
+          `Clear all ${history.total} input batches? This only removes input history and preprocessed works, never final works or real files.`
+        )
+      )
+    )
+      return
+    setClearingHistory(true)
+    setHistoryError('')
+    try {
+      await deleteAllJavInputBatches()
+      setResult(null)
+      setSelectedBatch(null)
+      await Promise.all([loadHistory(1), loadPreprocessed(1, appliedPreprocessedQuery)])
+    } catch (requestError) {
+      setHistoryError(getErrorMessage(requestError))
+    } finally {
+      setClearingHistory(false)
+    }
+  }
+
+  const searchPreprocessed = async (event) => {
+    event.preventDefault()
+    await loadPreprocessed(1, preprocessedQuery.trim())
   }
 
   return (
@@ -345,6 +462,16 @@ export default function JavInputModal({ open, onClose }) {
               {zh(
                 `历史记录${history.total ? ` · ${history.total}` : ''}`,
                 `History${history.total ? ` · ${history.total}` : ''}`
+              )}
+            </button>
+            <button
+              type="button"
+              onClick={openPreprocessed}
+              className={`border-b-2 pb-3 font-medium ${tab === 'preprocessed' ? 'border-indigo-600 text-indigo-700' : 'border-transparent text-slate-500'}`}
+            >
+              {zh(
+                `预处理作品${preprocessed.total ? ` · ${preprocessed.total}` : ''}`,
+                `Preprocessed works${preprocessed.total ? ` · ${preprocessed.total}` : ''}`
               )}
             </button>
           </nav>
@@ -402,15 +529,31 @@ export default function JavInputModal({ open, onClose }) {
                   </div>
                 ) : null}
               </form>
-              {result ? <BatchResult batch={result} /> : null}
+              {result ? (
+                <BatchResult
+                  batch={result}
+                  deleting={deletingBatchID === result.id}
+                  onDelete={removeBatch}
+                />
+              ) : null}
             </div>
-          ) : (
+          ) : tab === 'history' ? (
             <div className="grid min-h-[34rem] gap-5 lg:grid-cols-[20rem_minmax(0,1fr)]">
               <aside className="overflow-hidden rounded-xl border border-slate-200 bg-white shadow-sm">
                 <div className="border-b border-slate-100 px-4 py-3">
-                  <h3 className="font-semibold text-slate-900">
-                    {zh('每次添加历史', 'Input history')}
-                  </h3>
+                  <div className="flex items-center justify-between gap-3">
+                    <h3 className="font-semibold text-slate-900">
+                      {zh('每次添加历史', 'Input history')}
+                    </h3>
+                    <button
+                      type="button"
+                      disabled={!history.total || clearingHistory || Boolean(deletingBatchID)}
+                      onClick={clearHistory}
+                      className="text-xs font-semibold text-rose-600 hover:text-rose-700 disabled:cursor-not-allowed disabled:text-slate-300"
+                    >
+                      {clearingHistory ? zh('清空中…', 'Clearing…') : zh('清空全部', 'Clear all')}
+                    </button>
+                  </div>
                   <p className="mt-1 text-xs text-slate-500">
                     {zh(
                       '每一次提交都保留，包括全重复或无法识别的批次。',
@@ -431,11 +574,19 @@ export default function JavInputModal({ open, onClose }) {
                         onClick={() => loadBatch(batch.id)}
                         className={`block w-full px-4 py-3 text-left transition hover:bg-slate-50 ${selectedBatch?.id === batch.id ? 'bg-indigo-50' : ''}`}
                       >
-                        <div className="flex items-center justify-between gap-2">
-                          <span className="text-sm font-semibold text-slate-800">#{batch.id}</span>
-                          <span className="text-xs text-slate-400">
-                            {formatBatchTime(batch.created_at)}
+                        <div className="flex min-w-0 items-center gap-2">
+                          <span className="shrink-0 text-sm font-semibold text-slate-800">
+                            #{batch.id}
                           </span>
+                          <span
+                            title={batch.preview || ''}
+                            className="min-w-0 truncate text-sm text-slate-700"
+                          >
+                            {batch.preview || zh('无内容摘要', 'No preview')}
+                          </span>
+                        </div>
+                        <div className="mt-1 text-xs text-slate-400">
+                          {formatBatchTime(batch.created_at)}
                         </div>
                         <div className="mt-1 text-xs text-slate-500">
                           {zh(
@@ -487,7 +638,11 @@ export default function JavInputModal({ open, onClose }) {
                     {zh('读取批次详情中…', 'Loading batch details…')}
                   </div>
                 ) : selectedBatch ? (
-                  <BatchResult batch={selectedBatch} />
+                  <BatchResult
+                    batch={selectedBatch}
+                    deleting={deletingBatchID === selectedBatch.id}
+                    onDelete={removeBatch}
+                  />
                 ) : (
                   <div className="rounded-xl border border-dashed border-slate-300 bg-white px-5 py-16 text-center text-sm text-slate-400">
                     {zh(
@@ -498,6 +653,111 @@ export default function JavInputModal({ open, onClose }) {
                 )}
               </main>
             </div>
+          ) : (
+            <section className="overflow-hidden rounded-xl border border-slate-200 bg-white shadow-sm">
+              <header className="border-b border-slate-100 px-5 py-4">
+                <div className="flex flex-wrap items-start justify-between gap-4">
+                  <div>
+                    <h3 className="font-semibold text-slate-900">
+                      {zh('预处理作品', 'Preprocessed works')}
+                    </h3>
+                    <p className="mt-1 max-w-3xl text-xs leading-5 text-slate-500">
+                      {zh(
+                        '这里集中展示经过批内去重和全局去重后保留下来的最终结果。若某个番号后来已有真实文件，它会自动从这里移出。',
+                        'This is the final output after both de-duplication stages. A code automatically leaves this list once a real file exists in the library.'
+                      )}
+                    </p>
+                  </div>
+                  <span className="rounded-full bg-emerald-50 px-3 py-1 text-sm font-semibold text-emerald-700">
+                    {zh(`${preprocessed.total} 部`, `${preprocessed.total} work(s)`)}
+                  </span>
+                </div>
+                <form onSubmit={searchPreprocessed} className="mt-4 flex max-w-xl gap-2">
+                  <input
+                    type="search"
+                    value={preprocessedQuery}
+                    onChange={(event) => setPreprocessedQuery(event.target.value)}
+                    placeholder={zh('搜索番号或原始备注', 'Search code or original notes')}
+                    className="min-w-0 flex-1 rounded-lg border border-slate-300 bg-slate-50 px-3 py-2 text-sm outline-none transition focus:border-indigo-500 focus:bg-white focus:ring-2 focus:ring-indigo-100"
+                  />
+                  <button
+                    type="submit"
+                    disabled={preprocessedLoading}
+                    className="rounded-lg bg-slate-800 px-4 py-2 text-sm font-semibold text-white transition hover:bg-slate-900 disabled:opacity-50"
+                  >
+                    {zh('检索', 'Search')}
+                  </button>
+                </form>
+              </header>
+
+              {preprocessedError ? (
+                <div className="m-4 rounded-lg border border-rose-200 bg-rose-50 px-3 py-2 text-sm text-rose-700">
+                  {preprocessedError}
+                </div>
+              ) : null}
+              {preprocessedLoading ? (
+                <div className="px-5 py-14 text-center text-sm text-slate-400">
+                  {zh('读取预处理作品中…', 'Loading preprocessed works…')}
+                </div>
+              ) : preprocessed.items?.length ? (
+                <div className="divide-y divide-slate-100">
+                  {preprocessed.items.map((item) => (
+                    <article
+                      key={item.id}
+                      className="grid gap-2 px-5 py-4 sm:grid-cols-[9rem_minmax(0,1fr)_auto] sm:items-center"
+                    >
+                      <span className="font-semibold text-emerald-700">{item.code}</span>
+                      <span className="min-w-0 whitespace-pre-wrap break-words font-mono text-sm text-slate-800">
+                        {item.raw_line}
+                      </span>
+                      <span className="text-xs text-slate-400">
+                        {zh(
+                          `批次 #${item.batch_id} · 第 ${item.line_number} 行`,
+                          `Batch #${item.batch_id} · line ${item.line_number}`
+                        )}
+                      </span>
+                    </article>
+                  ))}
+                </div>
+              ) : (
+                <div className="px-5 py-16 text-center text-sm text-slate-400">
+                  {appliedPreprocessedQuery
+                    ? zh('没有匹配的预处理作品', 'No matching preprocessed works')
+                    : zh(
+                        '两道去重后还没有待处理的最终结果',
+                        'No final result remains after both stages yet'
+                      )}
+                </div>
+              )}
+
+              {preprocessed.total > preprocessed.page_size ? (
+                <footer className="flex items-center justify-between border-t border-slate-100 px-5 py-3 text-xs">
+                  <button
+                    type="button"
+                    disabled={preprocessed.page <= 1 || preprocessedLoading}
+                    onClick={() =>
+                      loadPreprocessed(preprocessed.page - 1, appliedPreprocessedQuery)
+                    }
+                    className="text-indigo-600 disabled:text-slate-300"
+                  >
+                    {zh('上一页', 'Previous')}
+                  </button>
+                  <span className="text-slate-500">
+                    {preprocessed.page} / {preprocessedPages}
+                  </span>
+                  <button
+                    type="button"
+                    disabled={preprocessed.page >= preprocessedPages || preprocessedLoading}
+                    onClick={() =>
+                      loadPreprocessed(preprocessed.page + 1, appliedPreprocessedQuery)
+                    }
+                    className="text-indigo-600 disabled:text-slate-300"
+                  >
+                    {zh('下一页', 'Next')}
+                  </button>
+                </footer>
+              ) : null}
+            </section>
           )}
         </div>
       </div>

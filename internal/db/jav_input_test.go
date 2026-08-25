@@ -47,6 +47,9 @@ func TestCreateJavInputBatchPreservesOriginalLinesAndExplainsBothDedupStages(t *
 	if batch.RawInput != raw {
 		t.Fatalf("raw input changed:\n got: %q\nwant: %q", batch.RawInput, raw)
 	}
+	if batch.Preview != "NEW-001 中文备注 原样保留" {
+		t.Fatalf("preview = %q, want first non-empty input line", batch.Preview)
+	}
 	if batch.InputCount != 6 || batch.ParsedCount != 5 || batch.BatchUniqueCount != 4 {
 		t.Fatalf("unexpected input counts: %#v", batch)
 	}
@@ -97,12 +100,129 @@ func TestCreateJavInputBatchPreservesOriginalLinesAndExplainsBothDedupStages(t *
 	if batches[0].RawInput != "" {
 		t.Fatalf("history summary unexpectedly loaded raw input: %q", batches[0].RawInput)
 	}
+	if batches[0].Preview != "NEW-001 又输入了一次" {
+		t.Fatalf("history preview = %q", batches[0].Preview)
+	}
 	detail, err := GetJavInputBatch(ctx, batch.ID)
 	if err != nil {
 		t.Fatalf("get batch: %v", err)
 	}
 	if len(detail.Items) != 6 || detail.Items[0].RawLine != batch.Items[0].RawLine {
 		t.Fatalf("history detail did not preserve ordered original lines: %#v", detail.Items)
+	}
+}
+
+func TestDeleteJavInputBatchesReleasesAcceptedCodes(t *testing.T) {
+	database, err := Open(filepath.Join(t.TempDir(), "jav-input-delete.db"))
+	if err != nil {
+		t.Fatalf("open database: %v", err)
+	}
+	previousDB := common.DB
+	common.DB = database
+	t.Cleanup(func() {
+		common.DB = previousDB
+		sqlDB, _ := database.DB()
+		_ = sqlDB.Close()
+	})
+	ctx := context.Background()
+
+	accepted, err := CreateJavInputBatch(ctx, "DEL-001 first")
+	if err != nil {
+		t.Fatalf("create accepted batch: %v", err)
+	}
+	duplicate, err := CreateJavInputBatch(ctx, "DEL-001 second")
+	if err != nil {
+		t.Fatalf("create duplicate batch: %v", err)
+	}
+	if duplicate.Items[0].ExistingBatchID == nil || *duplicate.Items[0].ExistingBatchID != accepted.ID {
+		t.Fatalf("duplicate does not point to original batch: %#v", duplicate.Items[0])
+	}
+
+	if err := DeleteJavInputBatch(ctx, accepted.ID); err != nil {
+		t.Fatalf("delete accepted batch: %v", err)
+	}
+	if _, err := GetJavInputBatch(ctx, accepted.ID); err != gorm.ErrRecordNotFound {
+		t.Fatalf("get deleted batch error = %v, want record not found", err)
+	}
+	duplicateDetail, err := GetJavInputBatch(ctx, duplicate.ID)
+	if err != nil {
+		t.Fatalf("get duplicate batch: %v", err)
+	}
+	if duplicateDetail.Items[0].ExistingBatchID != nil {
+		t.Fatalf("deleted batch reference was retained: %#v", duplicateDetail.Items[0])
+	}
+
+	reaccepted, err := CreateJavInputBatch(ctx, "DEL-001 third")
+	if err != nil {
+		t.Fatalf("reaccept released code: %v", err)
+	}
+	if reaccepted.AcceptedCount != 1 {
+		t.Fatalf("reaccepted count = %d, want 1", reaccepted.AcceptedCount)
+	}
+
+	if err := DeleteAllJavInputBatches(ctx); err != nil {
+		t.Fatalf("delete all batches: %v", err)
+	}
+	batches, total, err := ListJavInputBatches(ctx, 1, 20)
+	if err != nil {
+		t.Fatalf("list cleared batches: %v", err)
+	}
+	if total != 0 || len(batches) != 0 {
+		t.Fatalf("history was not cleared: total=%d batches=%#v", total, batches)
+	}
+	items, total, err := ListJavInputPreprocessed(ctx, 1, 20, "")
+	if err != nil {
+		t.Fatalf("list cleared preprocessed items: %v", err)
+	}
+	if total != 0 || len(items) != 0 {
+		t.Fatalf("preprocessed works were not cleared: total=%d items=%#v", total, items)
+	}
+}
+
+func TestListJavInputPreprocessedExcludesCodesWithActiveRealFiles(t *testing.T) {
+	database, err := Open(filepath.Join(t.TempDir(), "jav-input-preprocessed.db"))
+	if err != nil {
+		t.Fatalf("open database: %v", err)
+	}
+	previousDB := common.DB
+	common.DB = database
+	t.Cleanup(func() {
+		common.DB = previousDB
+		sqlDB, _ := database.DB()
+		_ = sqlDB.Close()
+	})
+	ctx := context.Background()
+
+	batch, err := CreateJavInputBatch(ctx, "PRE-001 first note\nPRE-002 searchable note")
+	if err != nil {
+		t.Fatalf("create preprocessed batch: %v", err)
+	}
+	items, total, err := ListJavInputPreprocessed(ctx, 1, 20, "")
+	if err != nil {
+		t.Fatalf("list preprocessed items: %v", err)
+	}
+	if total != 2 || len(items) != 2 || items[0].Code != "PRE-002" || items[1].Code != "PRE-001" {
+		t.Fatalf("unexpected preprocessed items: total=%d items=%#v", total, items)
+	}
+	if items[0].JavInputBatchID != batch.ID || items[0].RawLine != "PRE-002 searchable note" {
+		t.Fatalf("preprocessed item did not retain source: %#v", items[0])
+	}
+
+	seedFinalJavForInputTest(t, database, "pre_001")
+	items, total, err = ListJavInputPreprocessed(ctx, 1, 20, "")
+	if err != nil {
+		t.Fatalf("list after final file appeared: %v", err)
+	}
+	if total != 1 || len(items) != 1 || items[0].Code != "PRE-002" {
+		t.Fatalf("final library code was not excluded: total=%d items=%#v", total, items)
+	}
+
+	items, total, err = ListJavInputPreprocessed(ctx, 1, 20, "searchable")
+	if err != nil {
+		t.Fatalf("search preprocessed items: %v", err)
+	}
+	if total != 1 || len(items) != 1 || items[0].Code != "PRE-002" {
+		t.Fatalf("search did not match raw line: total=%d items=%#v", total, items)
 	}
 }
 
