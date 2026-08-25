@@ -3,6 +3,7 @@ package db
 import (
 	"context"
 	"path/filepath"
+	"strings"
 	"testing"
 
 	"javboss/internal/common"
@@ -223,6 +224,55 @@ func TestListJavInputPreprocessedExcludesCodesWithActiveRealFiles(t *testing.T) 
 	}
 	if total != 1 || len(items) != 1 || items[0].Code != "PRE-002" {
 		t.Fatalf("search did not match raw line: total=%d items=%#v", total, items)
+	}
+}
+
+func TestCreateJavInputBatchSupportsGroupNotesAndMultipleCodesOnOneLine(t *testing.T) {
+	database, err := Open(filepath.Join(t.TempDir(), "jav-input-multiple-codes.db"))
+	if err != nil {
+		t.Fatalf("open database: %v", err)
+	}
+	previousDB := common.DB
+	common.DB = database
+	t.Cleanup(func() {
+		common.DB = previousDB
+		sqlDB, _ := database.DB()
+		_ = sqlDB.Close()
+	})
+
+	raw := "极度美感\nVRTM-138 CORE-018 EBOD-502 BEB-095 JUFD-366 110316-005 REAL-475 SDMT-769 STARS-416 SVDVD-506 N1355 JUFD-366 DDOB-029 MIRD-150"
+	batch, err := CreateJavInputBatch(context.Background(), raw)
+	if err != nil {
+		t.Fatalf("create multi-code batch: %v", err)
+	}
+	if batch.Preview != "极度美感" {
+		t.Fatalf("preview = %q, want group title", batch.Preview)
+	}
+	if batch.InputCount != 2 || batch.ParsedCount != 14 || batch.BatchUniqueCount != 13 {
+		t.Fatalf("unexpected multi-code counts: %#v", batch)
+	}
+	if batch.BatchDuplicateCount != 1 || batch.AcceptedCount != 13 || batch.InvalidCount != 0 {
+		t.Fatalf("unexpected multi-code results: %#v", batch)
+	}
+	if len(batch.Items) != 15 {
+		t.Fatalf("item count = %d, want one note plus fourteen code occurrences", len(batch.Items))
+	}
+	if batch.Items[0].Status != models.JavInputStatusNote || batch.Items[0].RawLine != "极度美感" {
+		t.Fatalf("group title was not retained as a note: %#v", batch.Items[0])
+	}
+	wantCodes := []string{
+		"VRTM-138", "CORE-018", "EBOD-502", "BEB-095", "JUFD-366", "110316-005", "REAL-475",
+		"SDMT-769", "STARS-416", "SVDVD-506", "N1355", "JUFD-366", "DDOB-029", "MIRD-150",
+	}
+	for index, wantCode := range wantCodes {
+		item := batch.Items[index+1]
+		if item.Code != wantCode || item.LineNumber != 2 || item.RawLine != strings.Split(raw, "\n")[1] {
+			t.Fatalf("item %d = %#v, want code %q from line 2", index+1, item, wantCode)
+		}
+	}
+	duplicate := batch.Items[12]
+	if duplicate.Status != models.JavInputStatusDuplicateBatch || duplicate.DuplicateOfLine != 2 {
+		t.Fatalf("same-line JUFD duplicate = %#v", duplicate)
 	}
 }
 

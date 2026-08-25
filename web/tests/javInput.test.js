@@ -13,6 +13,7 @@ test('groupJavInputItems exposes both de-duplication stages separately', () => {
     { id: 3, status: JAV_INPUT_STATUS.duplicateLibrary },
     { id: 4, status: JAV_INPUT_STATUS.duplicateHistory },
     { id: 5, status: JAV_INPUT_STATUS.invalid },
+    { id: 6, status: JAV_INPUT_STATUS.note },
   ]
   const grouped = groupJavInputItems({
     items,
@@ -39,6 +40,10 @@ test('groupJavInputItems exposes both de-duplication stages separately', () => {
   assert.deepEqual(
     grouped.invalid.map((item) => item.id),
     [5]
+  )
+  assert.deepEqual(
+    grouped.notes.map((item) => item.id),
+    [6]
   )
   assert.equal(grouped.globalDuplicateCount, 2)
 })

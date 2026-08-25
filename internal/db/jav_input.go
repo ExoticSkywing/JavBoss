@@ -22,6 +22,7 @@ var ErrJavInputEmpty = errors.New("JAV input is empty")
 var javInputCreateMu sync.Mutex
 
 var leadingNumericJavInputCodePattern = regexp.MustCompile(`^\s*\d{4,}[-_]\d{2,}`)
+var dateLikeJavInputTokenPattern = regexp.MustCompile(`^\s*\d{4}[-_/]\d{1,2}[-_/]\d{1,2}(?:\D|$)`)
 
 type javInputLibraryMatch struct {
 	ID   int64
@@ -121,39 +122,86 @@ func prepareJavInputBatch(rawInput string) ([]models.JavInputItem, models.JavInp
 			continue
 		}
 		batch.InputCount++
-		item := models.JavInputItem{
-			LineNumber: index + 1,
-			RawLine:    rawLine,
-			CreatedAt:  now,
-		}
-		codes := util.ExtractCodeFromName(rawLine)
-		if len(codes) == 0 || (!containsASCIILetter(codes[0]) && !leadingNumericJavInputCodePattern.MatchString(rawLine)) {
-			item.Status = models.JavInputStatusInvalid
-			batch.InvalidCount++
-			items = append(items, item)
+		codes := extractJavInputCodes(rawLine)
+		if len(codes) == 0 {
+			status := models.JavInputStatusNote
+			if containsDigit(rawLine) {
+				status = models.JavInputStatusInvalid
+				batch.InvalidCount++
+			}
+			items = append(items, models.JavInputItem{
+				LineNumber: index + 1,
+				RawLine:    rawLine,
+				Status:     status,
+				CreatedAt:  now,
+			})
 			continue
 		}
 
-		item.Code = strings.ToUpper(strings.TrimSpace(codes[0]))
-		item.NormalizedCode = normalizeJavInputCode(item.Code)
-		if item.NormalizedCode == "" {
-			item.Status = models.JavInputStatusInvalid
-			batch.InvalidCount++
+		for _, code := range codes {
+			item := models.JavInputItem{
+				LineNumber: index + 1,
+				RawLine:    rawLine,
+				Code:       strings.ToUpper(strings.TrimSpace(code)),
+				CreatedAt:  now,
+			}
+			item.NormalizedCode = normalizeJavInputCode(item.Code)
+			if item.NormalizedCode == "" {
+				continue
+			}
+			batch.ParsedCount++
+			if firstLine, exists := firstLineByCode[item.NormalizedCode]; exists {
+				item.Status = models.JavInputStatusDuplicateBatch
+				item.DuplicateOfLine = firstLine
+				batch.BatchDuplicateCount++
+			} else {
+				firstLineByCode[item.NormalizedCode] = item.LineNumber
+				batch.BatchUniqueCount++
+			}
 			items = append(items, item)
-			continue
 		}
-		batch.ParsedCount++
-		if firstLine, exists := firstLineByCode[item.NormalizedCode]; exists {
-			item.Status = models.JavInputStatusDuplicateBatch
-			item.DuplicateOfLine = firstLine
-			batch.BatchDuplicateCount++
-		} else {
-			firstLineByCode[item.NormalizedCode] = item.LineNumber
-			batch.BatchUniqueCount++
-		}
-		items = append(items, item)
 	}
 	return items, batch
+}
+
+func extractJavInputCodes(rawLine string) []string {
+	parts := strings.FieldsFunc(rawLine, func(char rune) bool {
+		return unicode.IsSpace(char) || strings.ContainsRune(",，;；、|", char)
+	})
+	codes := make([]string, 0, len(parts))
+	for _, part := range parts {
+		if code := firstValidJavInputCode(part); code != "" {
+			codes = append(codes, code)
+		}
+	}
+	if len(codes) > 0 {
+		return codes
+	}
+	if code := firstValidJavInputCode(rawLine); code != "" {
+		return []string{code}
+	}
+	return nil
+}
+
+func firstValidJavInputCode(value string) string {
+	if dateLikeJavInputTokenPattern.MatchString(value) {
+		return ""
+	}
+	for _, code := range util.ExtractCodeFromName(value) {
+		if containsASCIILetter(code) || leadingNumericJavInputCodePattern.MatchString(value) {
+			return code
+		}
+	}
+	return ""
+}
+
+func containsDigit(value string) bool {
+	for _, char := range value {
+		if unicode.IsDigit(char) {
+			return true
+		}
+	}
+	return false
 }
 
 func javInputPreview(rawInput string) string {

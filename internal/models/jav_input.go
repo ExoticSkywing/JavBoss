@@ -8,9 +8,10 @@ const (
 	JavInputStatusDuplicateLibrary = "duplicate_library"
 	JavInputStatusDuplicateHistory = "duplicate_history"
 	JavInputStatusInvalid          = "invalid"
+	JavInputStatusNote             = "note"
 )
 
-// JavInputBatch is an immutable record of one single or bulk raw-code input.
+// JavInputBatch is a complete snapshot of one single or bulk raw-code input.
 // RawInput and each item's RawLine deliberately retain the user's original text.
 type JavInputBatch struct {
 	ID                    int64          `json:"id" gorm:"primaryKey"`

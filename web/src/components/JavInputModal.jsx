@@ -32,10 +32,12 @@ function formatBatchTime(value) {
 function statusLabel(item) {
   switch (item?.status) {
     case STATUS.duplicateBatch:
-      return zh(
-        `与本批第 ${item.duplicate_of_line} 行重复`,
-        `Duplicates line ${item.duplicate_of_line}`
-      )
+      return item.duplicate_of_line === item.line_number
+        ? zh('与本行前面出现的相同番号重复', 'Duplicates the same code earlier on this line')
+        : zh(
+            `与本批第 ${item.duplicate_of_line} 行重复`,
+            `Duplicates line ${item.duplicate_of_line}`
+          )
     case STATUS.duplicateLibrary:
       return zh('作品库中已有真实文件', 'A real file already exists in the library')
     case STATUS.duplicateHistory:
@@ -47,6 +49,8 @@ function statusLabel(item) {
         : zh('原接收批次已删除', 'The original accepting batch was deleted')
     case STATUS.invalid:
       return zh('未识别到番号', 'No JAV code recognized')
+    case STATUS.note:
+      return zh('批次备注，不参与去重', 'Batch note; excluded from de-duplication')
     default:
       return zh('保留', 'Kept')
   }
@@ -65,25 +69,32 @@ function ResultRows({ items, emptyText, tone = 'slate', showReason = true }) {
   }
   return (
     <div className="divide-y divide-slate-100">
-      {items.map((item) => (
-        <div
-          key={item.id || `${item.line_number}-${item.normalized_code}-${item.status}`}
-          className={`grid gap-2 border-l-4 px-4 py-3 sm:grid-cols-[4rem_8rem_minmax(0,1fr)] ${toneClasses[tone]}`}
-        >
-          <span className="text-xs tabular-nums text-slate-400">
-            {zh(`第 ${item.line_number} 行`, `Line ${item.line_number}`)}
-          </span>
-          <span className="text-xs font-semibold text-slate-700">{item.code || '—'}</span>
-          <div className="min-w-0">
-            <div className="whitespace-pre-wrap break-words font-mono text-sm text-slate-800">
-              {item.raw_line}
+      {items.map((item, index) => {
+        const previous = items[index - 1]
+        const sameSourceLine =
+          previous?.line_number === item.line_number && previous?.raw_line === item.raw_line
+        return (
+          <div
+            key={item.id || `${item.line_number}-${item.normalized_code}-${item.status}-${index}`}
+            className={`grid gap-2 border-l-4 px-4 py-3 sm:grid-cols-[4rem_8rem_minmax(0,1fr)] ${toneClasses[tone]}`}
+          >
+            <span className="text-xs tabular-nums text-slate-400">
+              {zh(`第 ${item.line_number} 行`, `Line ${item.line_number}`)}
+            </span>
+            <span className="text-xs font-semibold text-slate-700">{item.code || '—'}</span>
+            <div className="min-w-0">
+              <div
+                className={`whitespace-pre-wrap break-words font-mono text-sm ${sameSourceLine ? 'text-slate-400' : 'text-slate-800'}`}
+              >
+                {sameSourceLine ? zh('同一原始行', 'Same source line') : item.raw_line}
+              </div>
+              {showReason && item.status !== STATUS.accepted ? (
+                <div className="mt-1 text-xs text-slate-500">{statusLabel(item)}</div>
+              ) : null}
             </div>
-            {showReason && item.status !== STATUS.accepted ? (
-              <div className="mt-1 text-xs text-slate-500">{statusLabel(item)}</div>
-            ) : null}
           </div>
-        </div>
-      ))}
+        )
+      })}
     </div>
   )
 }
@@ -106,8 +117,15 @@ function ResultSection({ title, description, count, items, emptyText, tone, show
 }
 
 function BatchResult({ batch, deleting = false, onDelete }) {
-  const { batchDuplicates, firstStage, accepted, globalDuplicates, invalid, globalDuplicateCount } =
-    groupJavInputItems(batch)
+  const {
+    batchDuplicates,
+    firstStage,
+    accepted,
+    globalDuplicates,
+    invalid,
+    notes,
+    globalDuplicateCount,
+  } = groupJavInputItems(batch)
 
   return (
     <div className="space-y-5">
@@ -143,6 +161,12 @@ function BatchResult({ batch, deleting = false, onDelete }) {
               {zh('原始非空行', 'Non-empty input lines')}
             </div>
             <div className="mt-1 text-2xl font-semibold text-slate-900">{batch.input_count}</div>
+            <div className="mt-1 text-xs text-slate-500">
+              {zh(
+                `识别 ${batch.parsed_count} 个番号${notes.length ? ` · ${notes.length} 行备注` : ''}`,
+                `${batch.parsed_count} code(s) recognized${notes.length ? ` · ${notes.length} note line(s)` : ''}`
+              )}
+            </div>
             {batch.invalid_count ? (
               <div className="mt-1 text-xs text-rose-600">
                 {zh(`${batch.invalid_count} 行未识别`, `${batch.invalid_count} unrecognized`)}
@@ -180,6 +204,31 @@ function BatchResult({ batch, deleting = false, onDelete }) {
         </div>
       </div>
 
+      {notes.length ? (
+        <ResultSection
+          title={zh('批次备注', 'Batch notes')}
+          description={zh(
+            '纯文字标题或说明会完整保留，但不作为作品参与两道去重。',
+            'Plain-text titles and notes are retained but excluded from both stages.'
+          )}
+          count={notes.length}
+          items={notes}
+          emptyText=""
+          tone="slate"
+          showReason={false}
+        />
+      ) : null}
+      <ResultSection
+        title={zh('第一道剔除：本批重复', 'Stage 1 removed: duplicates in this batch')}
+        description={zh(
+          '这里明确指出它与本批哪一行重复。',
+          'Each item points to the earlier line it duplicates.'
+        )}
+        count={batchDuplicates.length}
+        items={batchDuplicates}
+        emptyText={zh('本批没有重复番号', 'No within-batch duplicates')}
+        tone="amber"
+      />
       <ResultSection
         title={zh('第一道结果：批内去重后', 'Stage 1 result: de-duplicated within this batch')}
         description={zh(
@@ -193,15 +242,15 @@ function BatchResult({ batch, deleting = false, onDelete }) {
         showReason={false}
       />
       <ResultSection
-        title={zh('第一道剔除：本批重复', 'Stage 1 removed: duplicates in this batch')}
+        title={zh('第二道剔除：全局重复', 'Stage 2 removed: global duplicates')}
         description={zh(
-          '这里明确指出它与本批哪一行重复。',
-          'Each item points to the earlier line it duplicates.'
+          `作品库 ${batch.library_duplicate_count} 个，历史裸番号 ${batch.history_duplicate_count} 个。`,
+          `${batch.library_duplicate_count} in the library and ${batch.history_duplicate_count} in raw-code history.`
         )}
-        count={batchDuplicates.length}
-        items={batchDuplicates}
-        emptyText={zh('本批没有重复番号', 'No within-batch duplicates')}
-        tone="amber"
+        count={globalDuplicates.length}
+        items={globalDuplicates}
+        emptyText={zh('没有发现全局重复', 'No global duplicates')}
+        tone="rose"
       />
       <ResultSection
         title={zh('第二道结果：全局去重后', 'Stage 2 result: globally unique raw codes')}
@@ -213,17 +262,6 @@ function BatchResult({ batch, deleting = false, onDelete }) {
         items={accepted}
         emptyText={zh('本批没有新增的全局唯一番号', 'No new globally unique code in this batch')}
         tone="emerald"
-      />
-      <ResultSection
-        title={zh('第二道剔除：全局重复', 'Stage 2 removed: global duplicates')}
-        description={zh(
-          `作品库 ${batch.library_duplicate_count} 个，历史裸番号 ${batch.history_duplicate_count} 个。`,
-          `${batch.library_duplicate_count} in the library and ${batch.history_duplicate_count} in raw-code history.`
-        )}
-        count={globalDuplicates.length}
-        items={globalDuplicates}
-        emptyText={zh('没有发现全局重复', 'No global duplicates')}
-        tone="rose"
       />
       {invalid.length ? (
         <ResultSection
@@ -490,8 +528,8 @@ export default function JavInputModal({ open, onClose }) {
                   </span>
                   <span className="mt-1 block text-xs text-slate-500">
                     {zh(
-                      '每行一个作品。番号后的中文备注、来源说明等会原封不动保存和展示。',
-                      'Use one work per line. Notes and source descriptions after the code are retained verbatim.'
+                      '支持每行一个番号，也支持在同一行用空格或逗号粘贴多个番号；纯文字标题会作为批次备注保留。',
+                      'Enter one code per line or paste multiple space/comma-separated codes on one line. Plain-text titles are retained as batch notes.'
                     )}
                   </span>
                   <textarea
@@ -499,7 +537,7 @@ export default function JavInputModal({ open, onClose }) {
                     onChange={(event) => setInput(event.target.value)}
                     rows={10}
                     placeholder={
-                      'DPMX-004 朋友推荐，优先找无码\nSSIS-589 收藏于 2026-08-25\nDPMX-004 重复示例'
+                      '极度美感\nVRTM-138 CORE-018 EBOD-502 JUFD-366 JUFD-366\n\nDPMX-004 朋友推荐，优先找无码'
                     }
                     className="mt-3 w-full resize-y rounded-xl border border-slate-300 bg-slate-50 px-4 py-3 font-mono text-sm leading-6 outline-none transition focus:border-indigo-500 focus:bg-white focus:ring-2 focus:ring-indigo-100"
                   />
@@ -590,8 +628,8 @@ export default function JavInputModal({ open, onClose }) {
                         </div>
                         <div className="mt-1 text-xs text-slate-500">
                           {zh(
-                            `输入 ${batch.input_count} · 新增 ${batch.accepted_count} · 重复 ${Number(batch.batch_duplicate_count || 0) + Number(batch.library_duplicate_count || 0) + Number(batch.history_duplicate_count || 0)}`,
-                            `Input ${batch.input_count} · New ${batch.accepted_count} · Duplicates ${Number(batch.batch_duplicate_count || 0) + Number(batch.library_duplicate_count || 0) + Number(batch.history_duplicate_count || 0)}`
+                            `输入 ${batch.input_count} 行 · 识别 ${batch.parsed_count} 个 · 新增 ${batch.accepted_count} · 重复 ${Number(batch.batch_duplicate_count || 0) + Number(batch.library_duplicate_count || 0) + Number(batch.history_duplicate_count || 0)}`,
+                            `Input ${batch.input_count} line(s) · Recognized ${batch.parsed_count} · New ${batch.accepted_count} · Duplicates ${Number(batch.batch_duplicate_count || 0) + Number(batch.library_duplicate_count || 0) + Number(batch.history_duplicate_count || 0)}`
                           )}
                         </div>
                       </button>
