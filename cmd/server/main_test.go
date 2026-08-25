@@ -3,9 +3,19 @@ package main
 import (
 	"os"
 	"path/filepath"
+	"slices"
 	"strings"
 	"testing"
+
+	"javboss/internal/jav"
 )
+
+func TestDefaultCoverProvidersIncludesJavDBAppFallback(t *testing.T) {
+	providers := defaultCoverProviders()
+	if !slices.Contains(providers, jav.ProviderJavDBApp) {
+		t.Fatalf("default cover providers = %#v, want JavDB App fallback", providers)
+	}
+}
 
 func TestReleaseListenAddr(t *testing.T) {
 	tests := []struct {

@@ -159,12 +159,7 @@ func main() {
 	screenshotManager := manager.NewScreenshotManager(dataDir, db.GetVideo)
 	streamManager := manager.NewStreamManager(filepath.Join(dataDir, "cache", "streams"))
 	ffmpegToolManager := manager.NewFFmpegToolManager(ctx, baseDir)
-	coverManager := manager.NewCoverManager(cfg.JavCoverDir, []jav.Provider{
-		jav.ProviderJavBus,
-		jav.ProviderJavDatabase,
-		jav.ProviderThePornDB,
-		jav.ProviderAvsox,
-	})
+	coverManager := manager.NewCoverManager(cfg.JavCoverDir, defaultCoverProviders())
 
 	common.AppConfig = cfg
 	common.ScreenshotManager = screenshotManager
@@ -260,6 +255,16 @@ func main() {
 	logger.Printf("server listening on %s", listenAddr)
 	if err := srv.ListenAndServe(); err != nil && err != http.ErrServerClosed {
 		logger.Fatalf("server error: %v", err)
+	}
+}
+
+func defaultCoverProviders() []jav.Provider {
+	return []jav.Provider{
+		jav.ProviderJavBus,
+		jav.ProviderJavDatabase,
+		jav.ProviderThePornDB,
+		jav.ProviderAvsox,
+		jav.ProviderJavDBApp,
 	}
 }
 

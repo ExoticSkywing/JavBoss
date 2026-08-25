@@ -19,9 +19,10 @@ func TestCompactCoverProvidersExcludesNonLookupProviders(t *testing.T) {
 		jav.ProviderUser,
 		jav.ProviderManualScrape,
 		jav.ProviderJavBus,
+		jav.ProviderJavDBApp,
 	})
-	if len(got) != 1 || got[0] != jav.ProviderJavBus {
-		t.Fatalf("compact cover providers = %#v, want only JavBus", got)
+	if len(got) != 2 || got[0] != jav.ProviderJavBus || got[1] != jav.ProviderJavDBApp {
+		t.Fatalf("compact cover providers = %#v, want JavBus and JavDB App", got)
 	}
 }
 
