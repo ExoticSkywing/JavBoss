@@ -29,9 +29,41 @@ function formatBatchTime(value) {
   }).format(date)
 }
 
-function statusLabel(item) {
+function sourceKey(item) {
+  return `${item?.line_number || 0}\u0000${item?.raw_line || ''}`
+}
+
+function buildSourceMetadata(items) {
+  const sources = new Map()
+  for (const item of Array.isArray(items) ? items : []) {
+    if (!item?.code || item.status === STATUS.invalid || item.status === STATUS.note) continue
+    const key = sourceKey(item)
+    let source = sources.get(key)
+    if (!source) {
+      source = { firstPositionByCode: new Map(), itemPositions: new Map(), total: 0 }
+      sources.set(key, source)
+    }
+    source.total += 1
+    source.itemPositions.set(item, source.total)
+    const codeKey = item.normalized_code || item.code
+    if (!source.firstPositionByCode.has(codeKey)) {
+      source.firstPositionByCode.set(codeKey, source.total)
+    }
+  }
+  return sources
+}
+
+function statusLabel(item, source) {
   switch (item?.status) {
     case STATUS.duplicateBatch:
+      if (item.duplicate_of_line === item.line_number && source) {
+        const position = source.itemPositions.get(item)
+        const firstPosition = source.firstPositionByCode.get(item.normalized_code || item.code)
+        return zh(
+          `本行第 ${position} 个，与第 ${firstPosition} 个重复`,
+          `Item ${position} on this line duplicates item ${firstPosition}`
+        )
+      }
       return item.duplicate_of_line === item.line_number
         ? zh('与本行前面出现的相同番号重复', 'Duplicates the same code earlier on this line')
         : zh(
@@ -56,7 +88,7 @@ function statusLabel(item) {
   }
 }
 
-function ResultRows({ items, emptyText, tone = 'slate', showReason = true }) {
+function ResultRows({ items, emptyText, sourceMetadata, tone = 'slate', showReason = true }) {
   const toneClasses = {
     emerald: 'border-emerald-100 bg-emerald-50/50',
     amber: 'border-amber-100 bg-amber-50/50',
@@ -67,15 +99,78 @@ function ResultRows({ items, emptyText, tone = 'slate', showReason = true }) {
   if (!items.length) {
     return <div className="px-4 py-5 text-sm text-slate-400">{emptyText}</div>
   }
+
+  const rows = []
+  const rowsBySource = new Map()
+  for (const item of items) {
+    const key = sourceKey(item)
+    let row = rowsBySource.get(key)
+    if (!row) {
+      row = { items: [], key }
+      rowsBySource.set(key, row)
+      rows.push(row)
+    }
+    row.items.push(item)
+  }
+
   return (
     <div className="divide-y divide-slate-100">
-      {items.map((item, index) => {
-        const previous = items[index - 1]
-        const sameSourceLine =
-          previous?.line_number === item.line_number && previous?.raw_line === item.raw_line
+      {rows.map((row) => {
+        const item = row.items[0]
+        const source = sourceMetadata?.get(row.key)
+        const groupedSource = Number(source?.total || 0) > 1
+        if (groupedSource) {
+          return (
+            <div
+              key={row.key}
+              className={`grid gap-3 border-l-4 px-4 py-4 sm:grid-cols-[5rem_minmax(0,1fr)] ${toneClasses[tone]}`}
+            >
+              <span className="text-xs tabular-nums text-slate-400">
+                {zh(`第 ${item.line_number} 行`, `Line ${item.line_number}`)}
+              </span>
+              <div className="min-w-0">
+                <div className="flex flex-wrap gap-2">
+                  {row.items.map((rowItem) => (
+                    <span
+                      key={
+                        rowItem.id ||
+                        `${rowItem.line_number}-${rowItem.normalized_code}-${rowItem.status}`
+                      }
+                      className="rounded-md border border-slate-200 bg-white px-2.5 py-1 font-mono text-sm font-semibold text-slate-700 shadow-sm"
+                    >
+                      {rowItem.code}
+                    </span>
+                  ))}
+                </div>
+                {showReason
+                  ? row.items
+                      .filter((rowItem) => rowItem.status !== STATUS.accepted)
+                      .map((rowItem) => (
+                        <div key={`reason-${rowItem.id}`} className="mt-2 text-xs text-slate-500">
+                          <span className="font-semibold text-slate-700">{rowItem.code}</span>
+                          <span className="mx-1.5">·</span>
+                          {statusLabel(rowItem, source)}
+                        </div>
+                      ))
+                  : null}
+                <details className="mt-3 text-xs text-slate-500">
+                  <summary className="cursor-pointer select-none hover:text-slate-700">
+                    {zh(
+                      `查看原始输入（本行共 ${source.total} 个番号）`,
+                      `Show original input (${source.total} codes on this line)`
+                    )}
+                  </summary>
+                  <div className="mt-2 whitespace-pre-wrap break-words rounded-lg bg-white/80 px-3 py-2 font-mono leading-5 text-slate-600">
+                    {item.raw_line}
+                  </div>
+                </details>
+              </div>
+            </div>
+          )
+        }
         return (
           <div
-            key={item.id || `${item.line_number}-${item.normalized_code}-${item.status}-${index}`}
+            key={item.id || `${item.line_number}-${item.normalized_code}-${item.status}`}
             className={`grid gap-2 border-l-4 px-4 py-3 sm:grid-cols-[4rem_8rem_minmax(0,1fr)] ${toneClasses[tone]}`}
           >
             <span className="text-xs tabular-nums text-slate-400">
@@ -83,13 +178,11 @@ function ResultRows({ items, emptyText, tone = 'slate', showReason = true }) {
             </span>
             <span className="text-xs font-semibold text-slate-700">{item.code || '—'}</span>
             <div className="min-w-0">
-              <div
-                className={`whitespace-pre-wrap break-words font-mono text-sm ${sameSourceLine ? 'text-slate-400' : 'text-slate-800'}`}
-              >
-                {sameSourceLine ? zh('同一原始行', 'Same source line') : item.raw_line}
+              <div className="whitespace-pre-wrap break-words font-mono text-sm text-slate-800">
+                {item.raw_line}
               </div>
               {showReason && item.status !== STATUS.accepted ? (
-                <div className="mt-1 text-xs text-slate-500">{statusLabel(item)}</div>
+                <div className="mt-1 text-xs text-slate-500">{statusLabel(item, source)}</div>
               ) : null}
             </div>
           </div>
@@ -99,7 +192,16 @@ function ResultRows({ items, emptyText, tone = 'slate', showReason = true }) {
   )
 }
 
-function ResultSection({ title, description, count, items, emptyText, tone, showReason }) {
+function ResultSection({
+  title,
+  description,
+  count,
+  items,
+  emptyText,
+  sourceMetadata,
+  tone,
+  showReason,
+}) {
   return (
     <section className="overflow-hidden rounded-xl border border-slate-200 bg-white shadow-sm">
       <header className="flex flex-wrap items-start justify-between gap-3 border-b border-slate-100 px-4 py-3">
@@ -111,7 +213,13 @@ function ResultSection({ title, description, count, items, emptyText, tone, show
           {count}
         </span>
       </header>
-      <ResultRows items={items} emptyText={emptyText} tone={tone} showReason={showReason} />
+      <ResultRows
+        items={items}
+        emptyText={emptyText}
+        sourceMetadata={sourceMetadata}
+        tone={tone}
+        showReason={showReason}
+      />
     </section>
   )
 }
@@ -126,6 +234,7 @@ function BatchResult({ batch, deleting = false, onDelete }) {
     notes,
     globalDuplicateCount,
   } = groupJavInputItems(batch)
+  const sourceMetadata = useMemo(() => buildSourceMetadata(batch?.items), [batch?.items])
 
   return (
     <div className="space-y-5">
@@ -214,6 +323,7 @@ function BatchResult({ batch, deleting = false, onDelete }) {
           count={notes.length}
           items={notes}
           emptyText=""
+          sourceMetadata={sourceMetadata}
           tone="slate"
           showReason={false}
         />
@@ -227,6 +337,7 @@ function BatchResult({ batch, deleting = false, onDelete }) {
         count={batchDuplicates.length}
         items={batchDuplicates}
         emptyText={zh('本批没有重复番号', 'No within-batch duplicates')}
+        sourceMetadata={sourceMetadata}
         tone="amber"
       />
       <ResultSection
@@ -238,6 +349,7 @@ function BatchResult({ batch, deleting = false, onDelete }) {
         count={firstStage.length}
         items={firstStage}
         emptyText={zh('没有可进入第二道的番号', 'No code can proceed to stage 2')}
+        sourceMetadata={sourceMetadata}
         tone="indigo"
         showReason={false}
       />
@@ -250,6 +362,7 @@ function BatchResult({ batch, deleting = false, onDelete }) {
         count={globalDuplicates.length}
         items={globalDuplicates}
         emptyText={zh('没有发现全局重复', 'No global duplicates')}
+        sourceMetadata={sourceMetadata}
         tone="rose"
       />
       <ResultSection
@@ -261,6 +374,7 @@ function BatchResult({ batch, deleting = false, onDelete }) {
         count={accepted.length}
         items={accepted}
         emptyText={zh('本批没有新增的全局唯一番号', 'No new globally unique code in this batch')}
+        sourceMetadata={sourceMetadata}
         tone="emerald"
       />
       {invalid.length ? (
@@ -273,6 +387,7 @@ function BatchResult({ batch, deleting = false, onDelete }) {
           count={invalid.length}
           items={invalid}
           emptyText=""
+          sourceMetadata={sourceMetadata}
           tone="slate"
         />
       ) : null}
