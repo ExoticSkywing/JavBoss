@@ -391,6 +391,15 @@ func DeleteAllJavInputBatches(ctx context.Context) error {
 		if err := tx.Where("1 = 1").Delete(&models.JavInputBatch{}).Error; err != nil {
 			return fmt.Errorf("delete all JAV input batches: %w", err)
 		}
+		// A full workspace reset starts batch numbering from #1 again. Reset both
+		// temporary input tables because no surviving row can reference their IDs.
+		if err := tx.Exec(
+			"DELETE FROM sqlite_sequence WHERE name IN (?, ?)",
+			"jav_input_batch",
+			"jav_input_item",
+		).Error; err != nil {
+			return fmt.Errorf("reset JAV input sequences: %w", err)
+		}
 		return nil
 	})
 }

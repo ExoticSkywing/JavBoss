@@ -178,6 +178,17 @@ func TestDeleteJavInputBatchesReleasesAcceptedCodes(t *testing.T) {
 	if total != 0 || len(items) != 0 {
 		t.Fatalf("preprocessed works were not cleared: total=%d items=%#v", total, items)
 	}
+
+	restarted, err := CreateJavInputBatch(ctx, "RESET-001 after clear")
+	if err != nil {
+		t.Fatalf("create batch after clearing history: %v", err)
+	}
+	if restarted.ID != 1 {
+		t.Fatalf("batch ID after clearing history = %d, want 1", restarted.ID)
+	}
+	if len(restarted.Items) != 1 || restarted.Items[0].ID != 1 {
+		t.Fatalf("item IDs after clearing history were not reset: %#v", restarted.Items)
+	}
 }
 
 func TestListJavInputPreprocessedExcludesCodesWithActiveRealFiles(t *testing.T) {
