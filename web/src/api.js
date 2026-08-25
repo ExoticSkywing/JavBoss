@@ -1408,6 +1408,12 @@ export async function fetchJavInputPreprocessed({ page = 1, pageSize = 20, query
   return parseJSONResponse(res)
 }
 
+export async function clearJavInputPreprocessed() {
+  const res = await apiFetch('/jav/input/preprocessed', { method: 'DELETE' })
+  if (!res.ok) throw await apiError(res)
+  return parseJSONResponse(res)
+}
+
 export async function resolveJavIdols(ids = []) {
   const clean = Array.from(
     new Set(

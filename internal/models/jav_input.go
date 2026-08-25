@@ -9,6 +9,7 @@ const (
 	JavInputStatusDuplicateHistory = "duplicate_history"
 	JavInputStatusInvalid          = "invalid"
 	JavInputStatusNote             = "note"
+	JavInputStatusCleared          = "cleared"
 )
 
 // JavInputBatch is a complete snapshot of one single or bulk raw-code input.

@@ -395,6 +395,27 @@ func DeleteAllJavInputBatches(ctx context.Context) error {
 	})
 }
 
+// ClearJavInputPreprocessed globally empties the preprocessing pool while
+// preserving batch history. Cleared codes no longer occupy the accepted-code
+// unique index and can therefore be submitted again.
+func ClearJavInputPreprocessed(ctx context.Context) (int64, error) {
+	if common.DB == nil {
+		return 0, errors.New("database is not initialized")
+	}
+
+	javInputCreateMu.Lock()
+	defer javInputCreateMu.Unlock()
+
+	result := common.DB.WithContext(ctx).
+		Model(&models.JavInputItem{}).
+		Where("status = ?", models.JavInputStatusAccepted).
+		Update("status", models.JavInputStatusCleared)
+	if result.Error != nil {
+		return 0, fmt.Errorf("clear preprocessed JAV input items: %w", result.Error)
+	}
+	return result.RowsAffected, nil
+}
+
 // ListJavInputPreprocessed returns the final output of both de-duplication
 // stages. Accepted codes are hidden as soon as a matching final library work
 // gains an active real-file location.
@@ -415,7 +436,7 @@ func ListJavInputPreprocessed(ctx context.Context, page, pageSize int, search st
 	search = strings.TrimSpace(search)
 	if search != "" {
 		pattern := "%" + search + "%"
-		query = query.Where("code LIKE ? COLLATE NOCASE OR raw_line LIKE ? COLLATE NOCASE", pattern, pattern)
+		query = query.Where("code LIKE ? COLLATE NOCASE", pattern)
 	}
 
 	var candidates []models.JavInputItem

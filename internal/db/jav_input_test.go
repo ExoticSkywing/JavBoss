@@ -218,12 +218,61 @@ func TestListJavInputPreprocessedExcludesCodesWithActiveRealFiles(t *testing.T) 
 		t.Fatalf("final library code was not excluded: total=%d items=%#v", total, items)
 	}
 
-	items, total, err = ListJavInputPreprocessed(ctx, 1, 20, "searchable")
+	items, total, err = ListJavInputPreprocessed(ctx, 1, 20, "PRE-002")
 	if err != nil {
 		t.Fatalf("search preprocessed items: %v", err)
 	}
 	if total != 1 || len(items) != 1 || items[0].Code != "PRE-002" {
 		t.Fatalf("search did not match raw line: total=%d items=%#v", total, items)
+	}
+}
+
+func TestClearJavInputPreprocessedPreservesHistoryAndReleasesCodes(t *testing.T) {
+	database, err := Open(filepath.Join(t.TempDir(), "jav-input-clear-preprocessed.db"))
+	if err != nil {
+		t.Fatalf("open database: %v", err)
+	}
+	previousDB := common.DB
+	common.DB = database
+	t.Cleanup(func() {
+		common.DB = previousDB
+		sqlDB, _ := database.DB()
+		_ = sqlDB.Close()
+	})
+	ctx := context.Background()
+
+	batch, err := CreateJavInputBatch(ctx, "CLEAR-001\nCLEAR-002")
+	if err != nil {
+		t.Fatalf("create preprocessed batch: %v", err)
+	}
+	cleared, err := ClearJavInputPreprocessed(ctx)
+	if err != nil {
+		t.Fatalf("clear preprocessed works: %v", err)
+	}
+	if cleared != 2 {
+		t.Fatalf("cleared count = %d, want 2", cleared)
+	}
+	items, total, err := ListJavInputPreprocessed(ctx, 1, 20, "")
+	if err != nil {
+		t.Fatalf("list cleared preprocessed works: %v", err)
+	}
+	if total != 0 || len(items) != 0 {
+		t.Fatalf("preprocessed pool was not cleared: total=%d items=%#v", total, items)
+	}
+	detail, err := GetJavInputBatch(ctx, batch.ID)
+	if err != nil {
+		t.Fatalf("load preserved batch history: %v", err)
+	}
+	if len(detail.Items) != 2 || detail.Items[0].Status != models.JavInputStatusCleared || detail.Items[1].Status != models.JavInputStatusCleared {
+		t.Fatalf("cleared history was not preserved: %#v", detail.Items)
+	}
+
+	reaccepted, err := CreateJavInputBatch(ctx, "CLEAR-001 再次输入")
+	if err != nil {
+		t.Fatalf("submit released code again: %v", err)
+	}
+	if reaccepted.AcceptedCount != 1 || reaccepted.HistoryDuplicateCount != 0 {
+		t.Fatalf("released code was not accepted again: %#v", reaccepted)
 	}
 }
 

@@ -5,6 +5,7 @@ export const JAV_INPUT_STATUS = {
   duplicateHistory: 'duplicate_history',
   invalid: 'invalid',
   note: 'note',
+  cleared: 'cleared',
 }
 
 export function countJavInputLines(value) {
@@ -24,7 +25,10 @@ export function groupJavInputItems(batch) {
         item.status !== JAV_INPUT_STATUS.invalid &&
         item.status !== JAV_INPUT_STATUS.note
     ),
-    accepted: items.filter((item) => item.status === JAV_INPUT_STATUS.accepted),
+    accepted: items.filter(
+      (item) =>
+        item.status === JAV_INPUT_STATUS.accepted || item.status === JAV_INPUT_STATUS.cleared
+    ),
     globalDuplicates: items.filter(
       (item) =>
         item.status === JAV_INPUT_STATUS.duplicateLibrary ||

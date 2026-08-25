@@ -90,6 +90,7 @@ func RegisterRoutes(router gin.IRoutes) {
 	router.GET("/jav/input/batches/:id", getJavInputBatch)
 	router.DELETE("/jav/input/batches/:id", deleteJavInputBatch)
 	router.GET("/jav/input/preprocessed", listJavInputPreprocessed)
+	router.DELETE("/jav/input/preprocessed", clearJavInputPreprocessed)
 	router.POST("/jav/input/resolve", resolveJavInput)
 	router.GET("/jav/items/:id/trailer", getJavTrailer)
 	router.POST("/jav/items/:id/sample-images", resolveJavSampleImages)

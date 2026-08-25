@@ -1,6 +1,7 @@
 import { useCallback, useEffect, useMemo, useState } from 'react'
 import AppModal from '@/components/AppModal'
 import {
+  clearJavInputPreprocessed,
   createJavInputBatch,
   deleteAllJavInputBatches,
   deleteJavInputBatch,
@@ -83,6 +84,8 @@ function statusLabel(item, source) {
       return zh('未识别到番号', 'No JAV code recognized')
     case STATUS.note:
       return zh('批次备注，不参与去重', 'Batch note; excluded from de-duplication')
+    case STATUS.cleared:
+      return zh('已从预处理作品全局清除', 'Globally cleared from preprocessed works')
     default:
       return zh('保留', 'Kept')
   }
@@ -411,10 +414,12 @@ export default function JavInputModal({ open, onClose }) {
   const [preprocessed, setPreprocessed] = useState({
     items: [],
     total: 0,
+    global_total: 0,
     page: 1,
     page_size: 20,
   })
   const [preprocessedLoading, setPreprocessedLoading] = useState(false)
+  const [clearingPreprocessed, setClearingPreprocessed] = useState(false)
   const [preprocessedError, setPreprocessedError] = useState('')
   const [preprocessedQuery, setPreprocessedQuery] = useState('')
   const [appliedPreprocessedQuery, setAppliedPreprocessedQuery] = useState('')
@@ -565,6 +570,35 @@ export default function JavInputModal({ open, onClose }) {
   const searchPreprocessed = async (event) => {
     event.preventDefault()
     await loadPreprocessed(1, preprocessedQuery.trim())
+  }
+
+  const clearPreprocessed = async () => {
+    const globalTotal = Number(preprocessed.global_total ?? preprocessed.total ?? 0)
+    if (!globalTotal || clearingPreprocessed) return
+    if (
+      !window.confirm(
+        zh(
+          `确定全局清空全部 ${globalTotal} 部预处理作品？该操作不受当前检索和分页影响；历史批次仍会保留，但这些番号会释放并允许重新输入。正式作品和真实文件不会受到影响。`,
+          `Globally clear all ${globalTotal} preprocessed works? This ignores the current search and page. Batch history remains, but these codes are released for re-entry. Final works and real files are unaffected.`
+        )
+      )
+    )
+      return
+    setClearingPreprocessed(true)
+    setPreprocessedError('')
+    try {
+      await clearJavInputPreprocessed()
+      await Promise.all([
+        loadPreprocessed(1, ''),
+        loadHistory(1),
+        selectedBatch?.id ? loadBatch(selectedBatch.id) : Promise.resolve(),
+      ])
+      setPreprocessedQuery('')
+    } catch (requestError) {
+      setPreprocessedError(getErrorMessage(requestError))
+    } finally {
+      setClearingPreprocessed(false)
+    }
   }
 
   return (
@@ -821,16 +855,31 @@ export default function JavInputModal({ open, onClose }) {
                       )}
                     </p>
                   </div>
-                  <span className="rounded-full bg-emerald-50 px-3 py-1 text-sm font-semibold text-emerald-700">
-                    {zh(`${preprocessed.total} 部`, `${preprocessed.total} work(s)`)}
-                  </span>
+                  <div className="flex items-center gap-3">
+                    <span className="rounded-full bg-emerald-50 px-3 py-1 text-sm font-semibold text-emerald-700">
+                      {zh(`${preprocessed.total} 部`, `${preprocessed.total} work(s)`)}
+                    </span>
+                    <button
+                      type="button"
+                      disabled={
+                        !Number(preprocessed.global_total ?? preprocessed.total ?? 0) ||
+                        clearingPreprocessed
+                      }
+                      onClick={clearPreprocessed}
+                      className="rounded-lg border border-rose-200 px-3 py-1.5 text-xs font-semibold text-rose-600 transition hover:bg-rose-50 disabled:cursor-not-allowed disabled:border-slate-200 disabled:text-slate-300"
+                    >
+                      {clearingPreprocessed
+                        ? zh('清空中…', 'Clearing…')
+                        : zh('全局清空', 'Clear globally')}
+                    </button>
+                  </div>
                 </div>
                 <form onSubmit={searchPreprocessed} className="mt-4 flex max-w-xl gap-2">
                   <input
                     type="search"
                     value={preprocessedQuery}
                     onChange={(event) => setPreprocessedQuery(event.target.value)}
-                    placeholder={zh('搜索番号或原始备注', 'Search code or original notes')}
+                    placeholder={zh('搜索番号', 'Search code')}
                     className="min-w-0 flex-1 rounded-lg border border-slate-300 bg-slate-50 px-3 py-2 text-sm outline-none transition focus:border-indigo-500 focus:bg-white focus:ring-2 focus:ring-indigo-100"
                   />
                   <button
@@ -853,22 +902,21 @@ export default function JavInputModal({ open, onClose }) {
                   {zh('读取预处理作品中…', 'Loading preprocessed works…')}
                 </div>
               ) : preprocessed.items?.length ? (
-                <div className="divide-y divide-slate-100">
+                <div className="grid gap-3 bg-slate-50/60 p-4 sm:grid-cols-2 xl:grid-cols-3">
                   {preprocessed.items.map((item) => (
                     <article
                       key={item.id}
-                      className="grid gap-2 px-5 py-4 sm:grid-cols-[9rem_minmax(0,1fr)_auto] sm:items-center"
+                      className="rounded-xl border border-slate-200 bg-white px-4 py-3 shadow-sm"
                     >
-                      <span className="font-semibold text-emerald-700">{item.code}</span>
-                      <span className="min-w-0 whitespace-pre-wrap break-words font-mono text-sm text-slate-800">
-                        {item.raw_line}
-                      </span>
-                      <span className="text-xs text-slate-400">
+                      <div className="font-mono text-base font-semibold text-emerald-700">
+                        {item.code}
+                      </div>
+                      <div className="mt-1.5 text-xs text-slate-400">
                         {zh(
-                          `批次 #${item.batch_id} · 第 ${item.line_number} 行`,
-                          `Batch #${item.batch_id} · line ${item.line_number}`
+                          `来源批次 #${item.batch_id} · 第 ${item.line_number} 行`,
+                          `Source batch #${item.batch_id} · line ${item.line_number}`
                         )}
-                      </span>
+                      </div>
                     </article>
                   ))}
                 </div>

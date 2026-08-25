@@ -122,23 +122,43 @@ func listJavInputPreprocessed(c *gin.Context) {
 	if pageSize > 100 {
 		pageSize = 100
 	}
+	search := c.Query("query")
 	items, total, err := db.ListJavInputPreprocessed(
 		c.Request.Context(),
 		page,
 		pageSize,
-		c.Query("query"),
+		search,
 	)
 	if err != nil {
 		respondLocalizedError(c, http.StatusInternalServerError, "读取预处理作品失败", "Failed to load preprocessed works")
 		return
 	}
+	globalTotal := total
+	if strings.TrimSpace(search) != "" {
+		_, globalTotal, err = db.ListJavInputPreprocessed(c.Request.Context(), 1, 1, "")
+		if err != nil {
+			respondLocalizedError(c, http.StatusInternalServerError, "读取预处理作品总数失败", "Failed to load total preprocessed works")
+			return
+		}
+	}
 	c.Header("Cache-Control", "no-store")
 	c.JSON(http.StatusOK, gin.H{
-		"items":     items,
-		"total":     total,
-		"page":      page,
-		"page_size": pageSize,
+		"items":        items,
+		"total":        total,
+		"global_total": globalTotal,
+		"page":         page,
+		"page_size":    pageSize,
 	})
+}
+
+func clearJavInputPreprocessed(c *gin.Context) {
+	count, err := db.ClearJavInputPreprocessed(c.Request.Context())
+	if err != nil {
+		respondLocalizedError(c, http.StatusInternalServerError, "清空预处理作品失败", "Failed to clear preprocessed works")
+		return
+	}
+	c.Header("Cache-Control", "no-store")
+	c.JSON(http.StatusOK, gin.H{"cleared_count": count})
 }
 
 func positiveIntQuery(raw string, fallback int) int {

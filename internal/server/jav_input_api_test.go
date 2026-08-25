@@ -37,6 +37,7 @@ func TestJavInputBatchAPIStoresHistoryAndReturnsDetails(t *testing.T) {
 	router.GET("/jav/input/batches/:id", getJavInputBatch)
 	router.DELETE("/jav/input/batches/:id", deleteJavInputBatch)
 	router.GET("/jav/input/preprocessed", listJavInputPreprocessed)
+	router.DELETE("/jav/input/preprocessed", clearJavInputPreprocessed)
 
 	body := `{"raw_input":"  API-001 中文备注  \napi_001 第二次"}`
 	request := httptest.NewRequest(http.MethodPost, "/jav/input/batches", strings.NewReader(body))
@@ -79,16 +80,23 @@ func TestJavInputBatchAPIStoresHistoryAndReturnsDetails(t *testing.T) {
 	}
 
 	response = httptest.NewRecorder()
-	router.ServeHTTP(response, httptest.NewRequest(http.MethodDelete, "/jav/input/batches/"+strconv.FormatInt(created.ID, 10), nil))
-	if response.Code != http.StatusNoContent {
-		t.Fatalf("delete status=%d body=%s", response.Code, response.Body.String())
+	router.ServeHTTP(response, httptest.NewRequest(http.MethodDelete, "/jav/input/preprocessed", nil))
+	if response.Code != http.StatusOK || !strings.Contains(response.Body.String(), `"cleared_count":1`) {
+		t.Fatalf("clear preprocessed status=%d body=%s", response.Code, response.Body.String())
 	}
 
 	response = httptest.NewRecorder()
 	router.ServeHTTP(response, httptest.NewRequest(http.MethodGet, "/jav/input/preprocessed?page=1&page_size=20", nil))
 	if response.Code != http.StatusOK || !strings.Contains(response.Body.String(), `"total":0`) {
-		t.Fatalf("preprocessed after delete status=%d body=%s", response.Code, response.Body.String())
+		t.Fatalf("preprocessed after clear status=%d body=%s", response.Code, response.Body.String())
 	}
+
+	response = httptest.NewRecorder()
+	router.ServeHTTP(response, httptest.NewRequest(http.MethodDelete, "/jav/input/batches/"+strconv.FormatInt(created.ID, 10), nil))
+	if response.Code != http.StatusNoContent {
+		t.Fatalf("delete status=%d body=%s", response.Code, response.Body.String())
+	}
+
 }
 
 func TestJavInputBatchAPIRejectsEmptyInput(t *testing.T) {
