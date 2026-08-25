@@ -1,4 +1,5 @@
 .gocache/
+.dev/
 data/
 *.db
 .DS_Store

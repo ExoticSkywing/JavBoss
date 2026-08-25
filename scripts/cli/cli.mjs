@@ -266,6 +266,14 @@ async function isBundledMpvReady(choice) {
   return true;
 }
 
+async function isInternalMpvReady(choice) {
+  if (!(await exists(internalMpvPath(choice)))) return false;
+  if (choice.goos === "linux") {
+    return isLinuxMpvBundleReady(internalMpvDir(), choice);
+  }
+  return true;
+}
+
 function runCommand(cmd, args, options = {}) {
   return new Promise((resolve, reject) => {
     const child = spawn(cmd, args, { stdio: "inherit", ...options });
@@ -321,9 +329,24 @@ async function resolveDevBinaryPath(envKey, bundledPath, commandName) {
 async function ensureNpmDeps(cwd) {
   if (process.env.SKIP_NPM_INSTALL === "1") return;
   const nodeModules = path.join(cwd, "node_modules");
-  if (fs.existsSync(nodeModules)) return;
-  const hasLock = fs.existsSync(path.join(cwd, "package-lock.json"));
+  const packageFiles = ["package.json", "package-lock.json"].filter((name) =>
+    fs.existsSync(path.join(cwd, name)),
+  );
+  const dependencyHash = createHash("sha256");
+  for (const name of packageFiles) {
+    dependencyHash.update(await fsp.readFile(path.join(cwd, name)));
+  }
+  const fingerprint = dependencyHash.digest("hex");
+  const stampPath = path.join(nodeModules, ".javboss-dependencies");
+  if (fs.existsSync(nodeModules)) {
+    const installedFingerprint = await fsp.readFile(stampPath, "utf8").catch(() => "");
+    if (installedFingerprint.trim() === fingerprint) return;
+  }
+
+  const hasLock = packageFiles.includes("package-lock.json");
+  console.log(`[deps] ${path.relative(ROOT_DIR, cwd)} 依赖缺失或 lockfile 已变化，执行 npm ${hasLock ? "ci" : "install"}`);
   await runCommand("npm", [hasLock ? "ci" : "install"], { cwd });
+  await fsp.writeFile(stampPath, `${fingerprint}\n`);
 }
 
 async function buildWeb() {
@@ -403,7 +426,6 @@ async function startBackendDevChild() {
   await syncBundledMpvToInternal(current);
 
   const args = ["./cmd/server"];
-  console.log(`[dev] 后端启动：go run ${args.join(" ")}`);
   const env = {
     ...process.env,
     GOCACHE: path.join(ROOT_DIR, ".gocache"),
@@ -428,7 +450,17 @@ async function startBackendDevChild() {
     }
     console.log("[dev] Docker 模式配置已启用");
   }
-  const child = spawn("go", ["run", ...args], { cwd: ROOT_DIR, env, stdio: "inherit" });
+  let command = "go";
+  let commandArgs = ["run", ...args];
+  if (!envBool("NO_RELOAD")) {
+    command = process.execPath;
+    commandArgs = [path.join(ROOT_DIR, "scripts", "cli", "backend-dev.mjs")];
+    env.JAVBOSS_DEV_ROOT = ROOT_DIR;
+    console.log("[dev] 后端启动：增量编译 + 自动重载");
+  } else {
+    console.log(`[dev] 后端启动：go run ${args.join(" ")}（自动重载已关闭）`);
+  }
+  const child = spawn(command, commandArgs, { cwd: ROOT_DIR, env, stdio: "inherit" });
   return child;
 }
 
@@ -465,8 +497,9 @@ async function writeLinuxMpvWrapper(baseDir) {
   return true;
 }
 
-async function syncBundledMpvToInternal(choice) {
+async function syncBundledMpvToInternal(choice, { force = false } = {}) {
   if (!(await isBundledMpvReady(choice))) return false;
+  if (!force && (await isInternalMpvReady(choice))) return true;
   await fsp.mkdir(INTERNAL_BIN_DIR, { recursive: true });
   await fsp.rm(internalMpvDir(), { recursive: true, force: true });
   await copyDir(binMpvDir(choice), internalMpvDir());
@@ -1272,10 +1305,10 @@ async function downloadMpv(choice) {
   if (await isBundledMpvReady(choice)) {
     if (choice.goos === "linux") {
       await writeLinuxMpvWrapper(binMpvDir(choice));
-      const current = currentPlatformChoice();
-      if (current?.label === choice.label) {
-        await writeLinuxMpvWrapper(internalMpvDir());
-      }
+    }
+    const current = currentPlatformChoice();
+    if (current?.label === choice.label) {
+      await syncBundledMpvToInternal(choice);
     }
     console.log(`[mpv] 已存在：${binMpvDir(choice)}`);
     return;
@@ -1375,7 +1408,7 @@ async function downloadMpv(choice) {
 
     const current = currentPlatformChoice();
     if (current && current.label === choice.label) {
-      await syncBundledMpvToInternal(choice);
+      await syncBundledMpvToInternal(choice, { force: true });
     }
   } finally {
     await fsp.rm(tmpBase, { recursive: true, force: true });
@@ -1388,6 +1421,198 @@ async function downloadDependencies(choice) {
     await downloadFfmpeg(choice);
   }
   await downloadMpv(choice);
+}
+
+function goCommandEnv() {
+  return {
+    ...process.env,
+    GOCACHE: path.join(ROOT_DIR, ".gocache"),
+  };
+}
+
+async function requireDevelopmentTools() {
+  const required = ["go", "node", "npm", process.platform === "win32" ? "gcc" : "cc"];
+  const missing = [];
+  for (const command of required) {
+    if (!(await commandExists(command))) missing.push(command);
+  }
+  if (missing.length) {
+    throw new Error(`缺少开发工具：${missing.join(", ")}。请先按 DEVELOPMENT.md 安装工具链。`);
+  }
+
+  const goVersion = await runCommandCapture("go", ["version"], { cwd: ROOT_DIR });
+  const goMatch = goVersion.stdout.match(/go(\d+)\.(\d+)(?:\.(\d+))?/);
+  const goParts = goMatch ? goMatch.slice(1, 4).map((part) => Number(part || 0)) : [];
+  const goSupported =
+    goParts[0] > 1 ||
+    (goParts[0] === 1 && (goParts[1] > 25 || (goParts[1] === 25 && goParts[2] >= 1)));
+  if (!goSupported) {
+    throw new Error(`需要 Go >= 1.25.1，当前为：${goVersion.stdout.trim()}`);
+  }
+
+  const nodeVersion = await runCommandCapture("node", ["--version"], { cwd: ROOT_DIR });
+  const nodeMatch = nodeVersion.stdout.trim().match(/^v(\d+)\.(\d+)\.(\d+)/);
+  const nodeParts = nodeMatch ? nodeMatch.slice(1).map(Number) : [];
+  const nodeSupported =
+    (nodeParts[0] === 20 && nodeParts[1] >= 19) ||
+    (nodeParts[0] === 22 && nodeParts[1] >= 12) ||
+    nodeParts[0] >= 23;
+  if (!nodeSupported) {
+    throw new Error(`需要 Node.js ^20.19.0 或 >=22.12.0，当前为：${nodeVersion.stdout.trim()}`);
+  }
+
+  const npmVersion = await runCommandCapture("npm", ["--version"], { cwd: ROOT_DIR });
+  console.log(`[setup] ${goVersion.stdout.trim()}`);
+  console.log(`[setup] Node ${nodeVersion.stdout.trim()} / npm ${npmVersion.stdout.trim()}`);
+}
+
+async function setupDevelopmentEnvironment() {
+  console.log("[setup] 检查开发工具链");
+  await requireDevelopmentTools();
+  console.log("[setup] 并行安装 Go 与前端依赖");
+  await Promise.all([
+    runCommand("go", ["mod", "download"], { cwd: ROOT_DIR, env: goCommandEnv() }),
+    ensureNpmDeps(WEB_DIR),
+  ]);
+
+  if (!envBool("SKIP_RUNTIME_DOWNLOAD")) {
+    const current = currentPlatformChoice();
+    if (!current) {
+      throw new Error("当前系统不在运行时依赖的支持列表内");
+    }
+    console.log(`[setup] 检查 ${current.label} 运行时依赖`);
+    await downloadDependencies(current);
+  }
+  console.log("[setup] 开发环境已就绪");
+}
+
+async function runBackendTests(args = []) {
+  const testArgs = args.length ? args : ["./cmd/...", "./internal/..."];
+  console.log(`[test] Go：go test ${testArgs.join(" ")}`);
+  await runCommand("go", ["test", ...testArgs], { cwd: ROOT_DIR, env: goCommandEnv() });
+}
+
+async function runFrontendTests(args = []) {
+  await ensureNpmDeps(WEB_DIR);
+  const npmArgs = ["test"];
+  if (args.length) npmArgs.push("--", ...args);
+  console.log("[test] 前端单元测试");
+  await runCommand("npm", npmArgs, { cwd: WEB_DIR });
+}
+
+async function handleTest(mode = "all", args = []) {
+  if (mode === "backend") {
+    await runBackendTests(args);
+    return;
+  }
+  if (mode === "frontend") {
+    await runFrontendTests(args);
+    return;
+  }
+  if (mode !== "all") {
+    throw new Error("test 仅支持 backend、frontend 或 all");
+  }
+  await runBackendTests();
+  await runFrontendTests();
+}
+
+async function collectGoFiles(dir) {
+  const files = [];
+  const entries = await fsp.readdir(dir, { withFileTypes: true });
+  for (const entry of entries) {
+    const entryPath = path.join(dir, entry.name);
+    if (entry.isDirectory()) {
+      files.push(...(await collectGoFiles(entryPath)));
+    } else if (entry.isFile() && entry.name.endsWith(".go")) {
+      files.push(entryPath);
+    }
+  }
+  return files;
+}
+
+async function checkGoFormatting() {
+  const goFiles = [
+    ...(await collectGoFiles(path.join(ROOT_DIR, "cmd"))),
+    ...(await collectGoFiles(path.join(ROOT_DIR, "internal"))),
+  ];
+  const { stdout } = await runCommandCapture("gofmt", ["-l", ...goFiles], {
+    cwd: ROOT_DIR,
+  });
+  if (stdout.trim()) {
+    throw new Error(`以下 Go 文件尚未 gofmt：\n${stdout.trim()}`);
+  }
+}
+
+async function checkDevelopmentCli() {
+  const cliDir = path.join(ROOT_DIR, "scripts", "cli");
+  await ensureNpmDeps(cliDir);
+  console.log("[check] 开发 CLI 语法与构建");
+  await runCommand("node", ["--check", path.join(cliDir, "cli.mjs")], { cwd: ROOT_DIR });
+  await runCommand("node", ["--check", path.join(cliDir, "backend-dev.mjs")], {
+    cwd: ROOT_DIR,
+  });
+  if (await commandExists("bash")) {
+    await runCommand("bash", ["-n", path.join(ROOT_DIR, "scripts", "cli.sh")], {
+      cwd: ROOT_DIR,
+    });
+  }
+  await runCommand("npm", ["run", "build"], { cwd: cliDir });
+}
+
+async function checkBackend() {
+  await checkDevelopmentCli();
+  console.log("[check] Go 格式");
+  await checkGoFormatting();
+  console.log("[check] go vet");
+  await runCommand("go", ["vet", "./cmd/...", "./internal/..."], {
+    cwd: ROOT_DIR,
+    env: goCommandEnv(),
+  });
+  await runBackendTests();
+}
+
+async function checkFrontend() {
+  await ensureNpmDeps(WEB_DIR);
+  await runFrontendTests();
+  console.log("[check] 前端 lint");
+  await runCommand("npm", ["run", "lint"], { cwd: WEB_DIR });
+  console.log("[check] 前端格式");
+  await runCommand("npm", ["run", "format:check"], { cwd: WEB_DIR });
+  console.log("[check] 前端生产构建");
+  await runCommand("npm", ["run", "build"], { cwd: WEB_DIR });
+}
+
+async function handleCheck(mode = "all") {
+  if (mode === "backend") {
+    await checkBackend();
+    return;
+  }
+  if (mode === "frontend") {
+    await checkFrontend();
+    return;
+  }
+  if (mode !== "all") {
+    throw new Error("check 仅支持 backend、frontend 或 all");
+  }
+  await checkBackend();
+  await checkFrontend();
+}
+
+function printUsage() {
+  console.log(`JavBoss 开发命令：
+  scripts/cli.sh setup
+  scripts/cli.sh dev backend|frontend|both
+  scripts/cli.sh test backend [go test 参数...]
+  scripts/cli.sh test frontend [node test 参数...]
+  scripts/cli.sh test all
+  scripts/cli.sh check backend|frontend|all
+  scripts/cli.sh download-dependencies <platform>
+  scripts/cli.sh release <platform> <version>
+
+常用环境变量：
+  NO_RELOAD=1              关闭后端自动重载
+  SKIP_NPM_INSTALL=1       跳过前端依赖检查
+  SKIP_RUNTIME_DOWNLOAD=1  setup 时跳过 ffprobe/mpv`);
 }
 
 async function handleDev(mode) {
@@ -1417,6 +1642,7 @@ async function handleDev(mode) {
       name: "devTarget",
       message: "选择开发模式",
       choices: [
+        { name: "both", value: "both" },
         { name: "frontend", value: "frontend" },
         { name: "backend", value: "backend" },
       ],
@@ -1491,9 +1717,26 @@ async function handleDownload(platformArg) {
 }
 
 async function main() {
-  const [action, arg1, arg2] = process.argv.slice(2);
+  const [action, ...args] = process.argv.slice(2);
+  const [arg1, arg2] = args;
+  if (action === "help" || action === "--help" || action === "-h") {
+    printUsage();
+    return;
+  }
+  if (action === "setup") {
+    await setupDevelopmentEnvironment();
+    return;
+  }
   if (action === "dev") {
     await handleDev(arg1);
+    return;
+  }
+  if (action === "test") {
+    await handleTest(arg1 || "all", args.slice(1));
+    return;
+  }
+  if (action === "check") {
+    await handleCheck(arg1 || "all");
     return;
   }
   if (action === "release") {
@@ -1515,7 +1758,10 @@ async function main() {
       name: "mainAction",
       message: "请选择操作",
       choices: [
+        { name: "setup", value: "setup" },
         { name: "dev", value: "dev" },
+        { name: "test", value: "test" },
+        { name: "check", value: "check" },
         { name: "release", value: "release" },
         { name: "release-browser-extension", value: "release-browser-extension" },
         { name: "download-dependencies", value: "download-dependencies" },
@@ -1523,8 +1769,20 @@ async function main() {
     },
   ]);
 
+  if (mainAction === "setup") {
+    await setupDevelopmentEnvironment();
+    return;
+  }
   if (mainAction === "dev") {
     await handleDev();
+    return;
+  }
+  if (mainAction === "test") {
+    await handleTest();
+    return;
+  }
+  if (mainAction === "check") {
+    await handleCheck();
     return;
   }
   if (mainAction === "release") {

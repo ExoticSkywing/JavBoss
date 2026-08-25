@@ -11,8 +11,11 @@
 
 ## Build, Test, and Development Commands
 - Backend: `go run ./cmd/server` to serve API on port 17654 (and `web/dist` when present).
-- Dev helper: `scripts/cli.sh dev backend|frontend` (flags: `SKIP_NPM_INSTALL=1`, etc.).
-- Tests: `GOCACHE=$(pwd)/.gocache go test ./...` (no Go tests yet—keep it green).
+- Setup: `scripts/cli.sh setup` verifies the toolchain and installs Go, frontend, and runtime dependencies.
+- Dev helper: `scripts/cli.sh dev backend|frontend|both`; backend mode incrementally compiles and reloads by default (`NO_RELOAD=1` disables it).
+- Focused tests: `scripts/cli.sh test backend ./internal/server` or `scripts/cli.sh test frontend`.
+- Full validation: `scripts/cli.sh check` runs Go format/vet/tests and frontend test/lint/format/build checks.
+- Direct Go tests: `GOCACHE=$(pwd)/.gocache go test ./cmd/... ./internal/...`.
 - Frontend (in `web/`): `npm install`; `npm run dev` for Vite, `npm run lint`, `npm run build` for prod bundle.
 - CLI build: `cd scripts/cli && npm install && npm run build` (outputs `scripts/cli/build/javboss-cli.cjs`).
 - Release: `scripts/cli.sh release linux-x86_64 v0.1.0` builds backend + `web/dist` and archives to `release/`.

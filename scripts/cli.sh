@@ -21,13 +21,13 @@ fi
 if [[ "$NEED_BUILD" == "1" ]]; then
   echo "bundled CLI missing or stale; building..." >&2
   pushd "$CLI_ROOT" >/dev/null
-  if [[ ! -d node_modules ]]; then
+  if [[ ! -d node_modules || package.json -nt node_modules || package-lock.json -nt node_modules ]]; then
     if ! command -v npm >/dev/null 2>&1; then
       echo "npm not found; please install Node.js/npm to build CLI" >&2
       popd >/dev/null
       exit 1
     fi
-    npm install
+    npm ci
   fi
   npm run build
   popd >/dev/null
