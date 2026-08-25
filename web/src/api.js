@@ -1361,6 +1361,31 @@ export async function resolveJavInput(numbers = [], { onProgress } = {}) {
   return { items }
 }
 
+export async function createJavInputBatch(rawInput) {
+  const res = await apiFetch('/jav/input/batches', {
+    method: 'POST',
+    headers: jsonHeaders,
+    body: JSON.stringify({ raw_input: String(rawInput || '') }),
+  })
+  if (!res.ok) throw await apiError(res)
+  return parseJSONResponse(res)
+}
+
+export async function fetchJavInputBatches({ page = 1, pageSize = 20 } = {}) {
+  const params = new URLSearchParams()
+  params.set('page', String(page))
+  params.set('page_size', String(pageSize))
+  const res = await apiFetch(`/jav/input/batches?${params.toString()}`)
+  if (!res.ok) throw await apiError(res)
+  return parseJSONResponse(res)
+}
+
+export async function fetchJavInputBatch(id) {
+  const res = await apiFetch(`/jav/input/batches/${encodeURIComponent(id)}`)
+  if (!res.ok) throw await apiError(res)
+  return parseJSONResponse(res)
+}
+
 export async function resolveJavIdols(ids = []) {
   const clean = Array.from(
     new Set(

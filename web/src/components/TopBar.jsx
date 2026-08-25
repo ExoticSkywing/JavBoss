@@ -1,6 +1,6 @@
 import { useEffect, useMemo, useRef, useState } from 'react'
 import BookmarksOutlinedIcon from '@mui/icons-material/BookmarksOutlined'
-import CloudDownloadOutlinedIcon from '@mui/icons-material/CloudDownloadOutlined'
+import PlaylistAddCheckRoundedIcon from '@mui/icons-material/PlaylistAddCheckRounded'
 import CloseRoundedIcon from '@mui/icons-material/CloseRounded'
 import EditRoundedIcon from '@mui/icons-material/EditRounded'
 import FavoriteBorderRoundedIcon from '@mui/icons-material/FavoriteBorderRounded'
@@ -589,11 +589,11 @@ export default function TopBar({
                 type="button"
                 className="filter-action-button"
                 onClick={onOpenJavInput}
-                title={zh('资源输入', 'Resource input')}
-                aria-label={zh('资源输入', 'Resource input')}
+                title={zh('番号输入', 'JAV code input')}
+                aria-label={zh('番号输入', 'JAV code input')}
               >
-                <CloudDownloadOutlinedIcon fontSize="small" />
-                <span>{zh('资源输入', 'Resource input')}</span>
+                <PlaylistAddCheckRoundedIcon fontSize="small" />
+                <span>{zh('番号输入', 'JAV code input')}</span>
               </button>
             ) : null}
           </div>

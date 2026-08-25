@@ -1,0 +1,274 @@
+package db
+
+import (
+	"context"
+	"errors"
+	"fmt"
+	"regexp"
+	"strings"
+	"sync"
+	"time"
+	"unicode"
+
+	"javboss/internal/common"
+	"javboss/internal/models"
+	"javboss/internal/util"
+
+	"gorm.io/gorm"
+)
+
+var ErrJavInputEmpty = errors.New("JAV input is empty")
+
+var javInputCreateMu sync.Mutex
+
+var leadingNumericJavInputCodePattern = regexp.MustCompile(`^\s*\d{4,}[-_]\d{2,}`)
+
+type javInputLibraryMatch struct {
+	ID   int64
+	Code string
+}
+
+type javInputHistoryMatch struct {
+	JavInputBatchID int64
+	NormalizedCode  string
+}
+
+// CreateJavInputBatch persists the original input and both de-duplication stages atomically.
+func CreateJavInputBatch(ctx context.Context, rawInput string) (*models.JavInputBatch, error) {
+	items, batch := prepareJavInputBatch(rawInput)
+	if batch.InputCount == 0 {
+		return nil, ErrJavInputEmpty
+	}
+	if common.DB == nil {
+		return nil, errors.New("database is not initialized")
+	}
+
+	// The partial unique index is the durable invariant; this process-level lock also
+	// makes concurrent submissions deterministic instead of surfacing a uniqueness error.
+	javInputCreateMu.Lock()
+	defer javInputCreateMu.Unlock()
+
+	err := common.DB.WithContext(ctx).Transaction(func(tx *gorm.DB) error {
+		uniqueCodes := make([]string, 0, batch.BatchUniqueCount)
+		for i := range items {
+			if items[i].Status == "" {
+				uniqueCodes = append(uniqueCodes, items[i].NormalizedCode)
+			}
+		}
+
+		libraryMatches, err := listJavInputLibraryMatches(tx, uniqueCodes)
+		if err != nil {
+			return err
+		}
+		historyMatches, err := listJavInputHistoryMatches(tx, uniqueCodes)
+		if err != nil {
+			return err
+		}
+
+		for i := range items {
+			item := &items[i]
+			if item.Status != "" {
+				continue
+			}
+			if match, ok := libraryMatches[item.NormalizedCode]; ok {
+				item.Status = models.JavInputStatusDuplicateLibrary
+				item.ExistingJavID = &match.ID
+				batch.LibraryDuplicateCount++
+				continue
+			}
+			if match, ok := historyMatches[item.NormalizedCode]; ok {
+				item.Status = models.JavInputStatusDuplicateHistory
+				item.ExistingBatchID = &match.JavInputBatchID
+				batch.HistoryDuplicateCount++
+				continue
+			}
+			item.Status = models.JavInputStatusAccepted
+			batch.AcceptedCount++
+		}
+
+		if err := tx.Create(&batch).Error; err != nil {
+			return fmt.Errorf("create JAV input batch: %w", err)
+		}
+		for i := range items {
+			items[i].JavInputBatchID = batch.ID
+		}
+		if err := tx.Create(&items).Error; err != nil {
+			return fmt.Errorf("create JAV input items: %w", err)
+		}
+		return nil
+	})
+	if err != nil {
+		return nil, err
+	}
+	batch.Items = items
+	return &batch, nil
+}
+
+func prepareJavInputBatch(rawInput string) ([]models.JavInputItem, models.JavInputBatch) {
+	now := time.Now().UTC()
+	batch := models.JavInputBatch{RawInput: rawInput, CreatedAt: now}
+	lines := strings.Split(strings.ReplaceAll(rawInput, "\r\n", "\n"), "\n")
+	items := make([]models.JavInputItem, 0, len(lines))
+	firstLineByCode := make(map[string]int)
+
+	for index, value := range lines {
+		rawLine := strings.TrimSuffix(value, "\r")
+		if strings.TrimSpace(rawLine) == "" {
+			continue
+		}
+		batch.InputCount++
+		item := models.JavInputItem{
+			LineNumber: index + 1,
+			RawLine:    rawLine,
+			CreatedAt:  now,
+		}
+		codes := util.ExtractCodeFromName(rawLine)
+		if len(codes) == 0 || (!containsASCIILetter(codes[0]) && !leadingNumericJavInputCodePattern.MatchString(rawLine)) {
+			item.Status = models.JavInputStatusInvalid
+			batch.InvalidCount++
+			items = append(items, item)
+			continue
+		}
+
+		item.Code = strings.ToUpper(strings.TrimSpace(codes[0]))
+		item.NormalizedCode = normalizeJavInputCode(item.Code)
+		if item.NormalizedCode == "" {
+			item.Status = models.JavInputStatusInvalid
+			batch.InvalidCount++
+			items = append(items, item)
+			continue
+		}
+		batch.ParsedCount++
+		if firstLine, exists := firstLineByCode[item.NormalizedCode]; exists {
+			item.Status = models.JavInputStatusDuplicateBatch
+			item.DuplicateOfLine = firstLine
+			batch.BatchDuplicateCount++
+		} else {
+			firstLineByCode[item.NormalizedCode] = item.LineNumber
+			batch.BatchUniqueCount++
+		}
+		items = append(items, item)
+	}
+	return items, batch
+}
+
+func containsASCIILetter(value string) bool {
+	for _, char := range value {
+		if (char >= 'a' && char <= 'z') || (char >= 'A' && char <= 'Z') {
+			return true
+		}
+	}
+	return false
+}
+
+func normalizeJavInputCode(value string) string {
+	if codes := util.ExtractCodeFromName(value); len(codes) > 0 {
+		value = codes[0]
+	}
+	var builder strings.Builder
+	for _, char := range strings.ToUpper(strings.TrimSpace(value)) {
+		if unicode.IsLetter(char) || unicode.IsDigit(char) {
+			builder.WriteRune(char)
+		}
+	}
+	return builder.String()
+}
+
+func listJavInputLibraryMatches(tx *gorm.DB, normalizedCodes []string) (map[string]javInputLibraryMatch, error) {
+	result := make(map[string]javInputLibraryMatch)
+	if len(normalizedCodes) == 0 {
+		return result, nil
+	}
+	var rows []javInputLibraryMatch
+	if err := tx.
+		Table("jav j").
+		Select("DISTINCT j.id, j.code").
+		Joins("JOIN video_location vl ON vl.jav_id = j.id").
+		Joins("JOIN directory d ON d.id = vl.directory_id").
+		Where(activeLocationWhereSQL("vl", "d")).
+		Where("COALESCE(j.code, '') <> ''").
+		Scan(&rows).Error; err != nil {
+		return nil, fmt.Errorf("list final JAV codes for input de-duplication: %w", err)
+	}
+	wanted := make(map[string]struct{}, len(normalizedCodes))
+	for _, code := range normalizedCodes {
+		wanted[code] = struct{}{}
+	}
+	for _, row := range rows {
+		key := normalizeJavInputCode(row.Code)
+		if _, ok := wanted[key]; ok {
+			result[key] = row
+		}
+	}
+	return result, nil
+}
+
+func listJavInputHistoryMatches(tx *gorm.DB, normalizedCodes []string) (map[string]javInputHistoryMatch, error) {
+	result := make(map[string]javInputHistoryMatch)
+	if len(normalizedCodes) == 0 {
+		return result, nil
+	}
+	var rows []javInputHistoryMatch
+	if err := tx.
+		Model(&models.JavInputItem{}).
+		Select("jav_input_batch_id, normalized_code").
+		Where("status = ?", models.JavInputStatusAccepted).
+		Where("normalized_code IN ?", normalizedCodes).
+		Order("id ASC").
+		Find(&rows).Error; err != nil {
+		return nil, fmt.Errorf("list historical JAV input codes: %w", err)
+	}
+	for _, row := range rows {
+		if _, exists := result[row.NormalizedCode]; !exists {
+			result[row.NormalizedCode] = row
+		}
+	}
+	return result, nil
+}
+
+// ListJavInputBatches returns immutable input history in reverse chronological order.
+func ListJavInputBatches(ctx context.Context, page, pageSize int) ([]models.JavInputBatch, int64, error) {
+	if common.DB == nil {
+		return nil, 0, errors.New("database is not initialized")
+	}
+	if page < 1 {
+		page = 1
+	}
+	if pageSize < 1 {
+		pageSize = 20
+	}
+	var total int64
+	query := common.DB.WithContext(ctx).Model(&models.JavInputBatch{})
+	if err := query.Count(&total).Error; err != nil {
+		return nil, 0, fmt.Errorf("count JAV input batches: %w", err)
+	}
+	var batches []models.JavInputBatch
+	if err := query.
+		Omit("raw_input").
+		Order("id DESC").
+		Limit(pageSize).
+		Offset((page - 1) * pageSize).
+		Find(&batches).Error; err != nil {
+		return nil, 0, fmt.Errorf("list JAV input batches: %w", err)
+	}
+	return batches, total, nil
+}
+
+// GetJavInputBatch returns one history record with its original ordered lines.
+func GetJavInputBatch(ctx context.Context, id int64) (*models.JavInputBatch, error) {
+	if common.DB == nil {
+		return nil, errors.New("database is not initialized")
+	}
+	if id <= 0 {
+		return nil, gorm.ErrRecordNotFound
+	}
+	var batch models.JavInputBatch
+	if err := common.DB.WithContext(ctx).
+		Preload("Items", func(query *gorm.DB) *gorm.DB {
+			return query.Order("line_number ASC, id ASC")
+		}).
+		First(&batch, id).Error; err != nil {
+		return nil, err
+	}
+	return &batch, nil
+}
