@@ -913,19 +913,19 @@ func TestListJavPrefixesAndSearchByPrefix(t *testing.T) {
 	if len(prefixes) != 3 {
 		t.Fatalf("unexpected prefix count: got %d want 3: %#v", len(prefixes), prefixes)
 	}
-	if prefixes[0].Prefix != "PFX" || prefixes[0].StudioName != "Studio A" || prefixes[0].WorkCount != 3 {
+	if prefixes[0].Prefix != "PFX" || prefixes[0].StudioName != "Studio A" || prefixes[0].WorkCount != 4 || prefixes[0].PendingCount != 1 || prefixes[0].ImportedCount != 3 {
 		t.Fatalf("unexpected first prefix: %#v", prefixes[0])
 	}
 	if prefixes[0].IsUncensored == nil || *prefixes[0].IsUncensored {
 		t.Fatalf("unexpected first prefix censor status: %#v", prefixes[0].IsUncensored)
 	}
-	if prefixes[1].Prefix != "ALT" || prefixes[1].StudioName != "Studio B" || prefixes[1].WorkCount != 1 {
+	if prefixes[1].Prefix != "ALT" || prefixes[1].StudioName != "Studio B" || prefixes[1].WorkCount != 1 || prefixes[1].PendingCount != 0 || prefixes[1].ImportedCount != 1 {
 		t.Fatalf("unexpected second prefix: %#v", prefixes[1])
 	}
 	if prefixes[1].IsUncensored == nil || !*prefixes[1].IsUncensored {
 		t.Fatalf("unexpected second prefix censor status: %#v", prefixes[1].IsUncensored)
 	}
-	if prefixes[2].Prefix != "PFX" || prefixes[2].StudioID != nil || prefixes[2].StudioName != "" || prefixes[2].WorkCount != 1 {
+	if prefixes[2].Prefix != "PFX" || prefixes[2].StudioID != nil || prefixes[2].StudioName != "" || prefixes[2].WorkCount != 1 || prefixes[2].PendingCount != 0 || prefixes[2].ImportedCount != 1 {
 		t.Fatalf("unexpected unknown-studio prefix: %#v", prefixes[2])
 	}
 
@@ -947,6 +947,156 @@ func TestListJavPrefixesAndSearchByPrefix(t *testing.T) {
 	if total != 1 || len(items) != 1 || items[0].Code != "PFX-006" {
 		t.Fatalf("unexpected unknown-studio pfx result: total=%d items=%#v", total, items)
 	}
+}
+
+func TestListJavPrefixesCanonicalVisibilityAndDirectoryScope(t *testing.T) {
+	db := openTestDB(t)
+	ctx := context.Background()
+	now := time.Unix(1710000000, 0).UTC()
+
+	directories := []models.Directory{
+		{Path: "/media/prefix-a"},
+		{Path: "/media/prefix-b"},
+	}
+	if err := db.Create(&directories).Error; err != nil {
+		t.Fatalf("create directories: %v", err)
+	}
+	studioA := models.JavStudio{Name: "Prefix Studio A"}
+	studioB := models.JavStudio{Name: "Prefix Studio B"}
+	if err := db.Create(&[]models.JavStudio{studioA, studioB}).Error; err != nil {
+		t.Fatalf("create studios: %v", err)
+	}
+	var studios []models.JavStudio
+	if err := db.Order("name").Find(&studios).Error; err != nil {
+		t.Fatalf("load studios: %v", err)
+	}
+	studioA, studioB = studios[0], studios[1]
+	censored := false
+	uncensored := true
+	// PFX-001 is a top-down pending work with no video_location.  PFX-002
+	// has only a hidden location and is therefore pending as well.  PFX-003
+	// is imported in directory A; PFX-004 is imported only in directory B.
+	// ALT-001 exercises a second studio and the unknown-studio row below
+	// verifies that aggregation does not require metadata relations.
+	javs := []models.Jav{
+		{Code: "PFX-001", StudioID: int64Ptr(studioA.ID), IsUncensored: &censored, FetchedAt: now},
+		{Code: "PFX-002", StudioID: int64Ptr(studioA.ID), IsUncensored: &censored, FetchedAt: now},
+		{Code: "PFX-003", StudioID: int64Ptr(studioA.ID), IsUncensored: &censored, FetchedAt: now},
+		{Code: "PFX-004", StudioID: int64Ptr(studioA.ID), IsUncensored: &censored, FetchedAt: now},
+		{Code: "ALT-001", StudioID: int64Ptr(studioB.ID), IsUncensored: &uncensored, FetchedAt: now},
+		{Code: "ALT-002", IsUncensored: &uncensored, FetchedAt: now},
+		{Code: "NOSEP001", StudioID: int64Ptr(studioA.ID), IsUncensored: &censored, FetchedAt: now},
+	}
+	if err := db.Create(&javs).Error; err != nil {
+		t.Fatalf("create JAVs: %v", err)
+	}
+	videos := []models.Video{
+		{
+			DirectoryID: directories[0].ID,
+			Path:        "pfx-002-hidden.mp4",
+			Filename:    "pfx-002-hidden.mp4",
+			Fingerprint: "prefix-hidden",
+			JavID:       int64Ptr(javs[1].ID),
+			ModifiedAt:  now,
+			Hidden:      true,
+		},
+		{
+			DirectoryID: directories[0].ID,
+			Path:        "pfx-003.mp4",
+			Filename:    "pfx-003.mp4",
+			Fingerprint: "prefix-a",
+			JavID:       int64Ptr(javs[2].ID),
+			ModifiedAt:  now,
+		},
+		{
+			DirectoryID: directories[1].ID,
+			Path:        "pfx-004.mp4",
+			Filename:    "pfx-004.mp4",
+			Fingerprint: "prefix-b",
+			JavID:       int64Ptr(javs[3].ID),
+			ModifiedAt:  now,
+		},
+		{
+			DirectoryID: directories[0].ID,
+			Path:        "alt-001.mp4",
+			Filename:    "alt-001.mp4",
+			Fingerprint: "prefix-alt-studio",
+			JavID:       int64Ptr(javs[4].ID),
+			ModifiedAt:  now,
+		},
+		{
+			DirectoryID: directories[0].ID,
+			Path:        "alt-002.mp4",
+			Filename:    "alt-002.mp4",
+			Fingerprint: "prefix-alt-unknown",
+			JavID:       int64Ptr(javs[5].ID),
+			ModifiedAt:  now,
+		},
+	}
+	if err := db.Create(&videos).Error; err != nil {
+		t.Fatalf("create videos: %v", err)
+	}
+	createVideoLocationsForVideos(t, db, videos...)
+
+	assertPrefixRows := func(name string, directoryIDs []int64, want []struct {
+		prefix   string
+		studio   string
+		count    int64
+		pending  int64
+		imported int64
+	}) {
+		t.Helper()
+		rows, err := ListJavPrefixes(ctx, directoryIDs)
+		if err != nil {
+			t.Fatalf("ListJavPrefixes %s: %v", name, err)
+		}
+		if len(rows) != len(want) {
+			t.Fatalf("%s rows = %#v, want %d rows", name, rows, len(want))
+		}
+		for i, expected := range want {
+			row := rows[i]
+			if row.Prefix != expected.prefix || row.StudioName != expected.studio || row.WorkCount != expected.count || row.PendingCount != expected.pending || row.ImportedCount != expected.imported {
+				t.Fatalf("%s row %d = %#v, want prefix=%q studio=%q count=%d pending=%d imported=%d", name, i, row, expected.prefix, expected.studio, expected.count, expected.pending, expected.imported)
+			}
+		}
+	}
+
+	// With no directory filter every canonical work contributes, including
+	// pending works with no location and works whose only location is hidden.
+	assertPrefixRows("all", nil, []struct {
+		prefix   string
+		studio   string
+		count    int64
+		pending  int64
+		imported int64
+	}{
+		{prefix: "PFX", studio: "Prefix Studio A", count: 4, pending: 2, imported: 2},
+		{prefix: "ALT", studio: "", count: 1, pending: 0, imported: 1},
+		{prefix: "ALT", studio: "Prefix Studio B", count: 1, pending: 0, imported: 1},
+	})
+
+	// A directory scope keeps pending works visible but excludes imported
+	// works whose active location lives only in another directory.
+	assertPrefixRows("directory-a", []int64{directories[0].ID}, []struct {
+		prefix   string
+		studio   string
+		count    int64
+		pending  int64
+		imported int64
+	}{
+		{prefix: "PFX", studio: "Prefix Studio A", count: 3, pending: 2, imported: 1}, // 001 pending, 002 hidden, 003 in A
+		{prefix: "ALT", studio: "", count: 1, pending: 0, imported: 1},
+		{prefix: "ALT", studio: "Prefix Studio B", count: 1, pending: 0, imported: 1},
+	})
+	assertPrefixRows("directory-b", []int64{directories[1].ID}, []struct {
+		prefix   string
+		studio   string
+		count    int64
+		pending  int64
+		imported int64
+	}{
+		{prefix: "PFX", studio: "Prefix Studio A", count: 3, pending: 2, imported: 1}, // 001 pending, 002 hidden, 004 in B
+	})
 }
 
 func TestDeleteJavFavoriteGroupCascadesMapsOnNewConnection(t *testing.T) {

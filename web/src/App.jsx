@@ -3632,6 +3632,13 @@ export default function App() {
       typeof prefixItem === 'object' && prefixItem !== null && prefixItem.include_studio_filter
     const studioId = shouldIncludeStudio ? Number(prefixItem?.studio_id) : null
     const hasStudio = Number.isFinite(studioId) && studioId > 0
+    const hasInventoryOverride =
+      typeof prefixItem === 'object' &&
+      prefixItem !== null &&
+      Object.prototype.hasOwnProperty.call(prefixItem, 'inventory_mode')
+    const inventoryOverride = hasInventoryOverride
+      ? normalizeJavInventory(prefixItem.inventory_mode)
+      : null
     saveScrollBeforeUrlStateChange()
     useStore.setState({
       viewMode: 'jav',
@@ -3648,6 +3655,7 @@ export default function App() {
       javSeriesId: null,
       javSeriesName: '',
       javPrefix: prefix,
+      ...(hasInventoryOverride ? { javInventory: inventoryOverride } : {}),
       javSoloOnly: false,
       javFavoriteRatingEnabled: false,
       javFavoriteRatingMin: 0.5,
@@ -3903,6 +3911,9 @@ export default function App() {
             studioName: item?.include_studio_filter ? item?.studio_name || '' : '',
             seriesId: null,
             prefix: item?.prefix || '',
+            inventory: Object.prototype.hasOwnProperty.call(item || {}, 'inventory_mode')
+              ? item.inventory_mode
+              : undefined,
             soloOnly: false,
             favoriteRatingEnabled: false,
             favoriteGroupId: null,

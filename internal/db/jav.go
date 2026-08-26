@@ -39,14 +39,17 @@ type JavTagOrganizeResult struct {
 	UnmatchedTagCount int `json:"unmatched_tag_count"`
 }
 
-// JavPrefixSummary represents an aggregated JAV code prefix.
+// JavPrefixSummary represents an aggregated JAV code prefix. Inventory counts
+// are derived from the same active-location rule used by the JAV work list.
 type JavPrefixSummary struct {
-	Prefix       string `json:"prefix"`
-	StudioID     *int64 `json:"studio_id"`
-	StudioName   string `json:"studio_name"`
-	IsUncensored *bool  `json:"is_uncensored"`
-	WorkCount    int64  `json:"work_count"`
-	SampleCode   string `json:"sample_code"`
+	Prefix        string `json:"prefix"`
+	StudioID      *int64 `json:"studio_id"`
+	StudioName    string `json:"studio_name"`
+	IsUncensored  *bool  `json:"is_uncensored"`
+	WorkCount     int64  `json:"work_count"`
+	PendingCount  int64  `json:"pending_count"`
+	ImportedCount int64  `json:"imported_count"`
+	SampleCode    string `json:"sample_code"`
 }
 
 // JavStudioCodePrefixSummary represents a code prefix attached to a studio.
@@ -295,20 +298,26 @@ func SearchJavWithPrefixFilters(ctx context.Context, idolIDs []int64, tagIDs []i
 	return items, total, nil
 }
 
-// ListJavPrefixes returns visible JAV code prefixes with studio, censor status, and work count.
+// ListJavPrefixes returns visible JAV code prefixes with studio, censor status,
+// total work count, and the pending/imported inventory breakdown.
 func ListJavPrefixes(ctx context.Context, directoryIDs []int64) ([]JavPrefixSummary, error) {
 	prefixExpr := javCodePrefixSQL("j.code")
 	query := common.DB.WithContext(ctx).
 		Table("jav j").
-		Select(prefixExpr + " AS prefix, j.studio_id, COALESCE(js.name, '') AS studio_name, j.is_uncensored, COUNT(DISTINCT j.id) AS work_count, MIN(j.code) AS sample_code").
-		Joins("JOIN video_location vl ON vl.jav_id = j.id").
-		Joins("JOIN directory d ON d.id = vl.directory_id").
+		Select(prefixExpr+" AS prefix, j.studio_id, COALESCE(js.name, '') AS studio_name, j.is_uncensored, COUNT(DISTINCT j.id) AS work_count, COUNT(DISTINCT CASE WHEN entity_inventory.jav_id IS NULL THEN j.id END) AS pending_count, COUNT(DISTINCT CASE WHEN entity_inventory.jav_id IS NOT NULL THEN j.id END) AS imported_count, MIN(j.code) AS sample_code").
 		Joins("LEFT JOIN jav_studio js ON js.id = j.studio_id").
-		Where(prefixExpr + " <> ''").
-		Where(activeLocationWhereSQL("vl", "d")).
+		Joins("LEFT JOIN (?) entity_inventory ON entity_inventory.jav_id = j.id", importedJavIDsSubquery(ctx)).
+		Where(prefixExpr + " <> ''")
+	// Prefixes are an index over the canonical JAV work set, not only over
+	// files currently present on disk.  In particular, a work entered from
+	// the top-down input path is pending until a file is scanned, but it must
+	// still be available in this modal.  Keep the same visibility rule used by
+	// the studio/series/idol entity lists: pending works remain visible when a
+	// directory filter is selected, while imported works are included only if
+	// an active location exists in one of those directories.
+	query = applyVisibleJavFilter(ctx, query, "j", directoryIDs).
 		Group(prefixExpr + ", j.studio_id, js.name, j.is_uncensored").
 		Order("work_count DESC, prefix ASC, studio_name ASC")
-	query = applyDirectoryFilter(query, "vl", directoryIDs)
 
 	var rows []JavPrefixSummary
 	if err := query.Scan(&rows).Error; err != nil {
@@ -1464,7 +1473,8 @@ func ListJavFilterOptions(ctx context.Context, idolIDs []int64, tagIDs []int64, 
 		prefixQuery = prefixQuery.Where(prefixExpr+" LIKE ? OR js.name LIKE ?", like, fmt.Sprintf("%%%s%%", prefixSearch))
 	}
 	if err := prefixQuery.
-		Select(prefixExpr + " AS prefix, GROUP_CONCAT(DISTINCT js.name) AS studio_name, COUNT(DISTINCT matched.id) AS work_count, MIN(j_option_prefix.code) AS sample_code").
+		Joins("LEFT JOIN (?) entity_inventory ON entity_inventory.jav_id = matched.id", importedJavIDsSubquery(ctx)).
+		Select(prefixExpr + " AS prefix, GROUP_CONCAT(DISTINCT js.name) AS studio_name, COUNT(DISTINCT matched.id) AS work_count, COUNT(DISTINCT CASE WHEN entity_inventory.jav_id IS NULL THEN matched.id END) AS pending_count, COUNT(DISTINCT CASE WHEN entity_inventory.jav_id IS NOT NULL THEN matched.id END) AS imported_count, MIN(j_option_prefix.code) AS sample_code").
 		Group(prefixExpr).
 		Order("work_count DESC, prefix ASC").
 		Limit(limit).
