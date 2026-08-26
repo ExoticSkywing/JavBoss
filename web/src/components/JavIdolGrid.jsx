@@ -292,7 +292,6 @@ export function IdolCard({
             {primaryName}
           </div>
         )}
-        {showWorkCount ? <JavEntityInventoryBadges item={item} /> : null}
         <button
           type="button"
           className={`card-hover-focus-visible absolute right-2 top-2 flex h-8 w-8 items-center justify-center rounded-full shadow-lg shadow-black/40 transition ${
@@ -358,6 +357,7 @@ export function IdolCard({
             </span>
           ) : null}
         </div>
+        {showWorkCount ? <JavEntityInventoryBadges item={item} /> : null}
         {metaRows.length > 0 ? (
           <div className="flex flex-col gap-1.5 text-[10px] text-gray-900">
             {metaRows.map((row) => (

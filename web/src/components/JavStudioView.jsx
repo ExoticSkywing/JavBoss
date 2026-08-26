@@ -54,7 +54,6 @@ export default function JavStudioView({
 }) {
   return (
     <>
-      <JavEntityScopeNotice entity="studio" />
       {loading || Number(totalItems) > 0 ? (
         <div className="sticky-pagination mb-4 flex justify-center">
           <Pagination
@@ -75,6 +74,7 @@ export default function JavStudioView({
           />
         </div>
       ) : null}
+      <JavEntityScopeNotice entity="studio" />
       {loading ? (
         <div className="mt-4 flex min-h-[200px] items-center justify-center rounded border border-dashed border-gray-200 text-gray-500">
           {zh('加载中…', 'Loading...')}
@@ -505,7 +505,6 @@ export function StudioCard({
             {name}
           </div>
         )}
-        <JavEntityInventoryBadges item={item} />
         <button
           type="button"
           className={`card-hover-focus-visible absolute right-2 top-2 flex h-8 w-8 items-center justify-center rounded-full shadow-lg shadow-black/40 transition ${
@@ -566,6 +565,7 @@ export function StudioCard({
             </span>
           ) : null}
         </div>
+        <JavEntityInventoryBadges item={item} />
         {codePrefixes.length > 0 ? (
           <div
             className="mt-1 flex max-h-20 flex-wrap gap-0.5 overflow-y-auto"

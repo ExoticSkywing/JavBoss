@@ -3,6 +3,7 @@ import { defineConfig } from 'vite'
 import react from '@vitejs/plugin-react'
 
 const backendProxy = () => ({ target: 'http://localhost:17654', changeOrigin: false })
+const frontendPort = Number(process.env.VITE_DEV_PORT || 5173)
 
 // https://vitejs.dev/config/
 export default defineConfig({
@@ -13,7 +14,7 @@ export default defineConfig({
     },
   },
   server: {
-    port: 5173,
+    port: frontendPort,
     proxy: {
       '/healthz': backendProxy(),
       '/auth': backendProxy(),

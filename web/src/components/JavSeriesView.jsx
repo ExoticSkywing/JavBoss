@@ -37,7 +37,6 @@ export default function JavSeriesView({
 }) {
   return (
     <>
-      <JavEntityScopeNotice entity="series" />
       {loading || Number(totalItems) > 0 ? (
         <div className="sticky-pagination mb-4 flex justify-center">
           <Pagination
@@ -58,6 +57,7 @@ export default function JavSeriesView({
           />
         </div>
       ) : null}
+      <JavEntityScopeNotice entity="series" />
       {loading ? (
         <div className="mt-4 flex min-h-[200px] items-center justify-center rounded border border-dashed border-gray-200 text-gray-500">
           {zh('加载中…', 'Loading...')}
@@ -183,7 +183,6 @@ export function SeriesCard({ item, href, onSelectSeries, onSelectStudio, onOpenF
             {name}
           </div>
         )}
-        <JavEntityInventoryBadges item={item} />
         <button
           type="button"
           className={`card-hover-focus-visible absolute right-2 top-2 flex h-8 w-8 items-center justify-center rounded-full shadow-lg shadow-black/40 transition ${
@@ -216,6 +215,7 @@ export function SeriesCard({ item, href, onSelectSeries, onSelectStudio, onOpenF
       </div>
       <div className="flex flex-1 flex-col gap-1 p-3">
         <div className="line-clamp-2 text-sm font-semibold leading-tight">{name}</div>
+        <JavEntityInventoryBadges item={item} />
         <div
           className={`flex min-w-0 items-center gap-2 text-xs ${
             studioName ? 'text-gray-500' : 'text-amber-700'

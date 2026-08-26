@@ -74,7 +74,6 @@ export default function JavIdolView({
 
   return (
     <>
-      <JavEntityScopeNotice entity="idol" />
       <div className="sticky-pagination pagination-toolbar-grid relative mb-2.5 grid md:grid-cols-[1fr_auto_1fr] md:items-center">
         <div />
         <div className="flex justify-center overflow-x-auto">
@@ -181,6 +180,7 @@ export default function JavIdolView({
           </Popover>
         </div>
       </div>
+      <JavEntityScopeNotice entity="idol" />
       {loading ? (
         <div className="mt-4 flex min-h-[200px] items-center justify-center rounded border border-dashed border-gray-200 text-gray-500">
           {zh('加载中…', 'Loading...')}

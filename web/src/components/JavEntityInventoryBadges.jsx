@@ -29,21 +29,22 @@ export default function JavEntityInventoryBadges({ item }) {
 
   return (
     <div
-      className="pointer-events-none absolute left-2 top-2 flex flex-col items-start gap-1 text-[11px] font-semibold tabular-nums"
+      className="flex min-w-0 flex-nowrap items-center gap-0.5 overflow-hidden text-[9px] font-semibold tabular-nums leading-3"
+      title={statusLabel}
       aria-label={statusLabel}
     >
-      <span className="rounded bg-slate-950/80 px-2 py-1 text-white shadow-sm">
-        {zh(`共 ${workCount} 部`, `${workCount} works`)}
+      <span className="inline-flex shrink-0 items-center whitespace-nowrap rounded-sm bg-slate-900 px-1 py-0.5 text-white">
+        {zh(`共${workCount}部`, `${workCount} works`)}
       </span>
       {hasBreakdown ? (
-        <span className="inline-flex overflow-hidden rounded shadow-sm">
-          <span className="bg-amber-100/95 px-2 py-1 text-amber-900">
-            {zh(`待入库 ${pendingCount}`, `Pending ${pendingCount}`)}
+        <>
+          <span className="inline-flex shrink-0 items-center whitespace-nowrap rounded-sm border border-violet-200 bg-violet-100 px-1 py-0.5 text-violet-900">
+            {zh(`待入库${pendingCount}`, `Pending ${pendingCount}`)}
           </span>
-          <span className="bg-emerald-100/95 px-2 py-1 text-emerald-900">
-            {zh(`已入库 ${importedCount}`, `Imported ${importedCount}`)}
+          <span className="inline-flex shrink-0 items-center whitespace-nowrap rounded-sm border border-pink-200 bg-pink-100 px-1 py-0.5 text-pink-900">
+            {zh(`已入库${importedCount}`, `Imported ${importedCount}`)}
           </span>
-        </span>
+        </>
       ) : null}
     </div>
   )
