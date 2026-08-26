@@ -351,8 +351,6 @@ export default function JavSettingsModal({
   onJavSortRulesChange,
   idolSortInput,
   onIdolSortChange,
-  javIdolPreferChineseNameInput = false,
-  onJavIdolPreferChineseNameChange,
   javTagShowSimplifiedInput = false,
   onJavTagShowSimplifiedChange,
   onSave,
@@ -375,7 +373,6 @@ export default function JavSettingsModal({
         onIdolPageSizeChange?.(24)
         onIdolWaterfallDefaultChange?.(false)
         onIdolSortChange?.(IDOL_SORT_OPTIONS[0]?.defaultValue || 'recent')
-        onJavIdolPreferChineseNameChange?.(false)
         break
       case 'studio':
         onStudioPageSizeChange?.(25)
@@ -687,12 +684,13 @@ export default function JavSettingsModal({
               </div>
             </SettingsSection>
             <SettingsSection title={zh('卡片设置', 'Card settings')}>
-              <SettingsRow label={zh('优先显示中文名', 'Prefer Chinese name')}>
-                <SettingsSwitch
-                  label={zh('优先显示中文名', 'Prefer Chinese name')}
-                  checked={javIdolPreferChineseNameInput}
-                  onChange={onJavIdolPreferChineseNameChange}
-                />
+              <SettingsRow label={zh('名称显示规则', 'Name display rule')}>
+                <span className="text-sm text-slate-600">
+                  {zh(
+                    '日文艺名作为主名，中文名在同行辅助显示',
+                    'Japanese stage name first; Chinese name appears alongside it'
+                  )}
+                </span>
               </SettingsRow>
             </SettingsSection>
             <SettingsSection title={zh('默认排序', 'Default sort')}>

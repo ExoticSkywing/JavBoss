@@ -90,30 +90,31 @@ func (images JavSampleImages) MarshalJSON() ([]byte, error) {
 // locations may mirror the same Video; linking a different media asset is
 // rejected by the database service layer.
 type Jav struct {
-	ID               int64           `json:"id" gorm:"primaryKey"`
-	Code             string          `json:"code" gorm:"uniqueIndex"`
-	NormalizedCode   string          `json:"normalized_code" gorm:"not null;uniqueIndex"`
-	Title            string          `json:"title"`
-	StudioID         *int64          `json:"studio_id" gorm:"index"`
-	Studio           *JavStudio      `json:"studio,omitempty" gorm:"foreignKey:StudioID;references:ID;constraint:OnUpdate:CASCADE,OnDelete:SET NULL"`
-	SeriesID         *int64          `json:"series_id" gorm:"index"`
-	Series           *JavSeries      `json:"series,omitempty" gorm:"foreignKey:SeriesID;references:ID;constraint:OnUpdate:CASCADE,OnDelete:SET NULL"`
-	SeriesEnID       *int64          `json:"-" gorm:"index"`
-	SeriesEn         *JavSeries      `json:"-" gorm:"foreignKey:SeriesEnID;references:ID;constraint:OnUpdate:CASCADE,OnDelete:SET NULL"`
-	ReleaseUnix      int64           `json:"release_unix"`
-	DurationMin      int             `json:"duration_min"`
-	FetchedAt        time.Time       `json:"fetched_at"`
-	CreatedAt        time.Time       `json:"created_at"`
-	UpdatedAt        time.Time       `json:"updated_at"`
-	IsUncensored     *bool           `json:"is_uncensored"`
-	SampleImages     JavSampleImages `json:"sample_images" gorm:"type:text;not null;default:'[]'"`
-	FavoriteRating   float64         `json:"favorite_rating" gorm:"not null;default:0"`
-	Tags             []JavTag        `json:"tags,omitempty" gorm:"-"`
-	Idols            []JavIdol       `json:"idols,omitempty" gorm:"many2many:jav_idol_map"`
-	Videos           []Video         `json:"videos,omitempty" gorm:"-"`
-	FavoriteCount    int64           `json:"favorite_count" gorm:"-"`
-	InventoryState   string          `json:"inventory_state" gorm:"-"`
-	AcquisitionStage string          `json:"acquisition_stage,omitempty" gorm:"-"`
+	ID                     int64           `json:"id" gorm:"primaryKey"`
+	Code                   string          `json:"code" gorm:"uniqueIndex"`
+	NormalizedCode         string          `json:"normalized_code" gorm:"not null;uniqueIndex"`
+	Title                  string          `json:"title"`
+	StudioID               *int64          `json:"studio_id" gorm:"index"`
+	Studio                 *JavStudio      `json:"studio,omitempty" gorm:"foreignKey:StudioID;references:ID;constraint:OnUpdate:CASCADE,OnDelete:SET NULL"`
+	SeriesID               *int64          `json:"series_id" gorm:"index"`
+	Series                 *JavSeries      `json:"series,omitempty" gorm:"foreignKey:SeriesID;references:ID;constraint:OnUpdate:CASCADE,OnDelete:SET NULL"`
+	SeriesEnID             *int64          `json:"-" gorm:"index"`
+	SeriesEn               *JavSeries      `json:"-" gorm:"foreignKey:SeriesEnID;references:ID;constraint:OnUpdate:CASCADE,OnDelete:SET NULL"`
+	ReleaseUnix            int64           `json:"release_unix"`
+	DurationMin            int             `json:"duration_min"`
+	FetchedAt              time.Time       `json:"fetched_at"`
+	CreatedAt              time.Time       `json:"created_at"`
+	UpdatedAt              time.Time       `json:"updated_at"`
+	IsUncensored           *bool           `json:"is_uncensored"`
+	SampleImages           JavSampleImages `json:"sample_images" gorm:"type:text;not null;default:'[]'"`
+	FavoriteRating         float64         `json:"favorite_rating" gorm:"not null;default:0"`
+	JavDBIdolsReconciledAt *time.Time      `json:"-" gorm:"index"`
+	Tags                   []JavTag        `json:"tags,omitempty" gorm:"-"`
+	Idols                  []JavIdol       `json:"idols,omitempty" gorm:"many2many:jav_idol_map"`
+	Videos                 []Video         `json:"videos,omitempty" gorm:"-"`
+	FavoriteCount          int64           `json:"favorite_count" gorm:"-"`
+	InventoryState         string          `json:"inventory_state" gorm:"-"`
+	AcquisitionStage       string          `json:"acquisition_stage,omitempty" gorm:"-"`
 }
 
 type JavStudio struct {
@@ -185,6 +186,29 @@ type JavIdolAlias struct {
 	JavIdol   JavIdol   `json:"-" gorm:"foreignKey:JavIdolID;references:ID;constraint:OnUpdate:CASCADE,OnDelete:CASCADE"`
 	Alias     string    `json:"alias" gorm:"not null;uniqueIndex"`
 	CreatedAt time.Time `json:"created_at"`
+}
+
+// JavIdolExternalIdentity binds a provider's stable actress identity to the
+// canonical local idol. Names are presentation data; this key is what lets a
+// provider such as JavDB keep the same person from being recreated under a
+// different alias.
+type JavIdolExternalIdentity struct {
+	ID         int64     `json:"id" gorm:"primaryKey"`
+	JavIdolID  int64     `json:"jav_idol_id" gorm:"not null;index"`
+	Provider   int       `json:"provider" gorm:"not null;uniqueIndex:idx_jav_idol_external_identity_provider_key,priority:1"`
+	ExternalID string    `json:"external_id" gorm:"not null;uniqueIndex:idx_jav_idol_external_identity_provider_key,priority:2"`
+	ProfileURL string    `json:"profile_url,omitempty"`
+	CreatedAt  time.Time `json:"created_at"`
+	JavIdol    JavIdol   `json:"-" gorm:"foreignKey:JavIdolID;references:ID;constraint:OnUpdate:CASCADE,OnDelete:CASCADE"`
+}
+
+// JavIdolRedirect preserves links to an idol row that was merged into another
+// canonical row. Source rows are intentionally not foreign-keyed because the
+// redirect must survive their deletion.
+type JavIdolRedirect struct {
+	SourceID    int64     `json:"source_id" gorm:"primaryKey"`
+	CanonicalID int64     `json:"canonical_id" gorm:"not null;index"`
+	CreatedAt   time.Time `json:"created_at"`
 }
 
 type JavFavoriteGroup struct {

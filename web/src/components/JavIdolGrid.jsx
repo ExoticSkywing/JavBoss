@@ -144,7 +144,6 @@ export function IdolCard({
   const [coverFrame, setCoverFrame] = useState({ width: 0, height: 0 })
   const [coverImageSize, setCoverImageSize] = useState(null)
   const favoriteCount = Number(item?.favorite_count) || 0
-  const aliases = Array.isArray(item?.aliases) ? item.aliases : []
   const birthDate = formatBirthDateWithAge(item?.birth_date)
   const height = typeof item?.height_cm === 'number' ? `${item.height_cm}cm` : ''
   const bwh = formatBwh(item)
@@ -155,7 +154,7 @@ export function IdolCard({
     ? `https://javdb.com/search?f=actor&q=${encodeURIComponent(javDBSearchName)}`
     : ''
   const { primaryName, secondaryName } = getIdolDisplayNames(item, preferChineseName)
-  const metaRows = buildMetaRows({ birthDate, height, bwh, bwhDisplay, cup, aliases })
+  const metaRows = buildMetaRows({ birthDate, height, bwh, bwhDisplay, cup })
   const canOpenJavDB = Boolean(javDBSearchURL)
   const hasCoverImageSize =
     coverImageSize?.src === cover &&
@@ -341,16 +340,16 @@ export function IdolCard({
         </button>
       </div>
       <div className="flex flex-1 select-text flex-col gap-2 p-3">
-        <div className="flex min-w-0 items-baseline gap-1.5 leading-tight">
+        <div className="flex min-w-0 items-baseline gap-2 leading-tight">
           <span
-            className="min-w-0 max-w-[70%] truncate text-sm font-semibold text-gray-950"
+            className="min-w-0 max-w-[72%] shrink-0 truncate text-base font-semibold text-gray-950"
             title={primaryName}
           >
             {primaryName}
           </span>
           {secondaryName ? (
             <span
-              className="min-w-0 flex-1 truncate text-[11px] font-normal text-gray-500"
+              className="min-w-0 flex-1 truncate text-xs font-normal text-gray-500"
               title={secondaryName}
             >
               {secondaryName}
@@ -1046,22 +1045,8 @@ function formatCup(value) {
   return zh(`${letter}罩杯`, `${letter} cup`)
 }
 
-function buildMetaRows({ birthDate, height, bwh, bwhDisplay, cup, aliases = [] }) {
+function buildMetaRows({ birthDate, height, bwh, bwhDisplay, cup }) {
   const rows = []
-  const aliasText = joinUniqueDisplayParts(aliases, [], ', ')
-  if (aliasText) {
-    rows.push({
-      key: 'aliases',
-      wrap: true,
-      items: [
-        {
-          key: `aliases-${aliasText}`,
-          label: zh(`别名：${aliasText}`, `Alias: ${aliasText}`),
-          wrap: true,
-        },
-      ],
-    })
-  }
   if (birthDate) {
     rows.push({ key: 'row-2', items: [{ key: `birth-${birthDate}`, label: birthDate }] })
   }

@@ -2258,6 +2258,11 @@ func GetJavIdolSummary(ctx context.Context, idolID int64, directoryIDs []int64) 
 	if idolID <= 0 {
 		return nil, errors.New("idol id must be positive")
 	}
+	resolvedID, err := ResolveJavIdolID(ctx, idolID)
+	if err != nil {
+		return nil, err
+	}
+	idolID = resolvedID
 
 	var item JavIdolSummary
 	tx := common.DB.WithContext(ctx).
@@ -2290,6 +2295,15 @@ func ResolveJavIdols(ctx context.Context, ids []int64) ([]JavIdolSummary, error)
 	if len(cleanIDs) == 0 {
 		return []JavIdolSummary{}, nil
 	}
+	resolvedIDs := make([]int64, 0, len(cleanIDs))
+	for _, id := range cleanIDs {
+		resolved, err := ResolveJavIdolID(ctx, id)
+		if err != nil {
+			return nil, err
+		}
+		resolvedIDs = append(resolvedIDs, resolved)
+	}
+	cleanIDs = uniqueInt64s(resolvedIDs)
 
 	var items []JavIdolSummary
 	if err := common.DB.WithContext(ctx).
@@ -2304,6 +2318,135 @@ func ResolveJavIdols(ctx context.Context, ids []int64) ([]JavIdolSummary, error)
 		return nil, err
 	}
 	return items, nil
+}
+
+// ResolveJavIdolID follows merge redirects so bookmarks and old API URLs keep
+// addressing the surviving canonical idol. The short cycle guard also makes a
+// manually corrupted redirect table fail safely instead of looping forever.
+func ResolveJavIdolID(ctx context.Context, idolID int64) (int64, error) {
+	if idolID <= 0 {
+		return 0, errors.New("idol id must be positive")
+	}
+	seen := map[int64]struct{}{}
+	current := idolID
+	for step := 0; step < 32; step++ {
+		if _, ok := seen[current]; ok {
+			return 0, errors.New("jav idol redirect cycle")
+		}
+		seen[current] = struct{}{}
+		var redirect models.JavIdolRedirect
+		err := common.DB.WithContext(ctx).Where("source_id = ?", current).First(&redirect).Error
+		if errors.Is(err, gorm.ErrRecordNotFound) {
+			return current, nil
+		}
+		if err != nil {
+			return 0, fmt.Errorf("resolve jav idol redirect: %w", err)
+		}
+		if redirect.CanonicalID <= 0 {
+			return 0, errors.New("invalid jav idol redirect")
+		}
+		current = redirect.CanonicalID
+	}
+	return 0, errors.New("jav idol redirect chain is too deep")
+}
+
+// NormalizeJavIdolIdentities collapses legacy rows that already share an exact
+// name, profile field, or alias. It is deliberately deterministic and local:
+// no fuzzy matching is performed, and the Japanese name wins when a canonical
+// display name has to be selected.
+func NormalizeJavIdolIdentities(ctx context.Context) (int, error) {
+	mergedCount := 0
+	err := common.DB.WithContext(ctx).Transaction(func(tx *gorm.DB) error {
+		var idols []models.JavIdol
+		if err := tx.Order("id ASC").Find(&idols).Error; err != nil {
+			return fmt.Errorf("list jav idols for normalization: %w", err)
+		}
+		if len(idols) == 0 {
+			return nil
+		}
+		var aliases []models.JavIdolAlias
+		if err := tx.Find(&aliases).Error; err != nil {
+			return fmt.Errorf("list jav idol aliases for normalization: %w", err)
+		}
+		parent := make(map[int64]int64, len(idols))
+		find := func(id int64) int64 {
+			root := id
+			for parent[root] != 0 && parent[root] != root {
+				root = parent[root]
+			}
+			if parent[root] == 0 {
+				parent[root] = root
+			}
+			for id != root && parent[id] != 0 {
+				next := parent[id]
+				parent[id] = root
+				id = next
+			}
+			return root
+		}
+		union := func(left, right int64) {
+			leftRoot, rightRoot := find(left), find(right)
+			if leftRoot != rightRoot {
+				if leftRoot < rightRoot {
+					parent[rightRoot] = leftRoot
+				} else {
+					parent[leftRoot] = rightRoot
+				}
+			}
+		}
+		byKey := make(map[string]int64)
+		bind := func(id int64, value string) {
+			key := strings.ToLower(strings.TrimSpace(value))
+			if key == "" {
+				return
+			}
+			if existing, ok := byKey[key]; ok {
+				union(existing, id)
+				return
+			}
+			byKey[key] = id
+		}
+		for _, idol := range idols {
+			find(idol.ID)
+			for _, value := range []string{idol.Name, idol.RomanName, idol.JapaneseName, idol.ChineseName} {
+				bind(idol.ID, value)
+			}
+		}
+		for _, alias := range aliases {
+			bind(alias.JavIdolID, alias.Alias)
+		}
+		groups := make(map[int64][]models.JavIdol)
+		for _, idol := range idols {
+			groups[find(idol.ID)] = append(groups[find(idol.ID)], idol)
+		}
+		for _, group := range groups {
+			canonical := chooseCanonicalJavIdol(group, "")
+			preferred := strings.TrimSpace(canonical.JapaneseName)
+			sourceIDs := make([]int64, 0, len(group)-1)
+			for _, candidate := range group {
+				if candidate.ID != canonical.ID {
+					sourceIDs = append(sourceIDs, candidate.ID)
+				}
+			}
+			if len(sourceIDs) > 0 {
+				if err := mergeJavIdolRecordsTx(tx, canonical.ID, sourceIDs, preferred, nil); err != nil {
+					return err
+				}
+				mergedCount += len(sourceIDs)
+				continue
+			}
+			if preferred != "" {
+				if err := reconcileJavIdolNameTx(tx, canonical, preferred, nil); err != nil {
+					return err
+				}
+			}
+		}
+		return nil
+	})
+	if err != nil {
+		return 0, err
+	}
+	return mergedCount, nil
 }
 
 // ListJavIdolOptions returns all idols for edit selectors.
@@ -2516,9 +2659,20 @@ func UpdateJavIdol(ctx context.Context, idolID int64, input JavIdolUpdateInput, 
 	if idolID <= 0 {
 		return nil, errors.New("idol id must be positive")
 	}
+	resolvedID, err := ResolveJavIdolID(ctx, idolID)
+	if err != nil {
+		return nil, err
+	}
+	idolID = resolvedID
 	input.Name = strings.TrimSpace(input.Name)
 	if input.Name == "" {
 		return nil, errors.New("idol name cannot be empty")
+	}
+	nameParts := jav.ParseActressName(input.Name)
+	input.Name = strings.TrimSpace(nameParts.Primary)
+	input.Aliases = append(nameParts.Aliases, input.Aliases...)
+	if strings.TrimSpace(input.JapaneseName) == "" && jav.IsJapaneseName(input.Name) {
+		input.JapaneseName = input.Name
 	}
 
 	if err := common.DB.WithContext(ctx).Transaction(func(tx *gorm.DB) error {
@@ -2648,6 +2802,14 @@ func replaceJavIdolAliasesTx(tx *gorm.DB, idolID int64, aliases []string) error 
 
 // ListIdolCoverCodes returns a prioritized list of codes for an idol, preferring solo works first.
 func ListIdolCoverCodes(ctx context.Context, idolID int64, directoryIDs []int64) ([]string, error) {
+	if idolID <= 0 {
+		return nil, errors.New("idol id must be positive")
+	}
+	resolvedID, err := ResolveJavIdolID(ctx, idolID)
+	if err != nil {
+		return nil, err
+	}
+	idolID = resolvedID
 	var codes []string
 	sub := common.DB.WithContext(ctx).
 		Table("jav_idol_map").
@@ -2689,6 +2851,11 @@ func ListIdolCoverOptions(ctx context.Context, idolID int64, directoryIDs []int6
 	if idolID <= 0 {
 		return nil, errors.New("idol id must be positive")
 	}
+	resolvedID, err := ResolveJavIdolID(ctx, idolID)
+	if err != nil {
+		return nil, err
+	}
+	idolID = resolvedID
 
 	sub := common.DB.WithContext(ctx).
 		Table("jav_idol_map jim_count").
@@ -2736,6 +2903,11 @@ func UpdateJavIdolCoverSelection(ctx context.Context, idolID, javID int64, cropL
 	if idolID <= 0 {
 		return nil, errors.New("idol id must be positive")
 	}
+	resolvedID, err := ResolveJavIdolID(ctx, idolID)
+	if err != nil {
+		return nil, err
+	}
+	idolID = resolvedID
 	cropLeft = normalizeCoverCropLeft(cropLeft)
 
 	if err := common.DB.WithContext(ctx).Transaction(func(tx *gorm.DB) error {
@@ -2801,6 +2973,11 @@ func FindIdolSoloCode(ctx context.Context, idolID int64) (string, error) {
 	if idolID == 0 {
 		return "", errors.New("idol id cannot be zero")
 	}
+	resolvedID, err := ResolveJavIdolID(ctx, idolID)
+	if err != nil {
+		return "", err
+	}
+	idolID = resolvedID
 	sub := common.DB.WithContext(ctx).
 		Table("jav_idol_map jim_count").
 		Select("jim_count.jav_id, COUNT(*) as c").
@@ -2859,6 +3036,11 @@ func UpdateIdolProfile(ctx context.Context, idolID int64, info *jav.ActressInfo)
 	if info == nil {
 		return false, errors.New("actress info is nil")
 	}
+	resolvedID, err := ResolveJavIdolID(ctx, idolID)
+	if err != nil {
+		return false, err
+	}
+	idolID = resolvedID
 	var idol models.JavIdol
 	if err := common.DB.WithContext(ctx).Where("id = ?", idolID).First(&idol).Error; err != nil {
 		return false, fmt.Errorf("get idol profile: %w", err)
@@ -3360,6 +3542,154 @@ func ListJavsMissingPrimaryMetadata(ctx context.Context) ([]JavMetadataScanItem,
 	return items, nil
 }
 
+// ListJavsPendingJavDBIdolReconciliation returns a bounded oldest-first batch
+// whose actress relationships have not yet been verified against JavDB's
+// stable actor identities. Batching keeps a large legacy library from blocking
+// the normal minute-level metadata pass.
+func ListJavsPendingJavDBIdolReconciliation(ctx context.Context, limit int) ([]JavMetadataScanItem, error) {
+	if limit <= 0 {
+		limit = 20
+	}
+	var items []JavMetadataScanItem
+	if err := common.DB.WithContext(ctx).
+		Model(&models.Jav{}).
+		Select("id, code, title, (SELECT COUNT(*) FROM jav_idol_map jim_javdb_reconcile WHERE jim_javdb_reconcile.jav_id = jav.id) AS idol_count").
+		Where("TRIM(COALESCE(code, '')) <> ''").
+		Where("jav_db_idols_reconciled_at IS NULL").
+		Order("created_at ASC, id ASC").
+		Limit(limit).
+		Find(&items).Error; err != nil {
+		return nil, fmt.Errorf("list JAVs pending JavDB idol reconciliation: %w", err)
+	}
+	return items, nil
+}
+
+// MarkJavDBIdolsReconciled records that JavDB has no usable actress metadata
+// for a work. Successful actor responses are marked by ReconcileJavDBIdols.
+func MarkJavDBIdolsReconciled(ctx context.Context, javID int64, expectedCode string) error {
+	if javID <= 0 {
+		return errors.New("jav id must be positive")
+	}
+	expectedNormalized := models.NormalizeJavCode(expectedCode)
+	if expectedNormalized == "" {
+		return models.ErrInvalidJavCode
+	}
+	now := time.Now().UTC()
+	result := common.DB.WithContext(ctx).Model(&models.Jav{}).
+		Where("id = ?", javID).
+		Where("normalized_code = ? OR (TRIM(COALESCE(normalized_code, '')) = '' AND UPPER(REPLACE(REPLACE(code, '-', ''), '_', '')) = ?)", expectedNormalized, expectedNormalized).
+		Update("jav_db_idols_reconciled_at", now)
+	if result.Error != nil {
+		return fmt.Errorf("mark JavDB idols reconciled: %w", result.Error)
+	}
+	if result.RowsAffected == 0 {
+		return gorm.ErrRecordNotFound
+	}
+	return nil
+}
+
+// ReconcileJavDBIdols replaces one work's actress relationships with the
+// actresses returned by JavDB and binds their stable /actors/<id> keys. Any
+// duplicate local entities encountered through those identities are merged in
+// the same transaction.
+func ReconcileJavDBIdols(ctx context.Context, javID int64, expectedCode string, info *jav.JavInfo) (bool, error) {
+	if javID <= 0 {
+		return false, errors.New("jav id must be positive")
+	}
+	if info == nil {
+		return false, errors.New("jav info is nil")
+	}
+	expectedNormalized := models.NormalizeJavCode(expectedCode)
+	if expectedNormalized == "" {
+		return false, models.ErrInvalidJavCode
+	}
+	if responseNormalized := models.NormalizeJavCode(info.Code); responseNormalized != "" && responseNormalized != expectedNormalized {
+		return false, fmt.Errorf("provider JAV code %q does not match requested code %q", info.Code, expectedCode)
+	}
+	if jav.ParseProvider(int(info.Provider)) != jav.ProviderJavDB {
+		return false, errors.New("JavDB idol reconciliation requires JavDB metadata")
+	}
+
+	updated := false
+	err := common.DB.WithContext(ctx).Transaction(func(tx *gorm.DB) error {
+		var record models.Jav
+		if err := tx.Clauses(clause.Locking{Strength: "UPDATE"}).Where("id = ?", javID).First(&record).Error; err != nil {
+			return fmt.Errorf("load JAV for JavDB idol reconciliation: %w", err)
+		}
+		currentNormalized := models.NormalizeJavCode(record.NormalizedCode)
+		if currentNormalized == "" {
+			currentNormalized = models.NormalizeJavCode(record.Code)
+		}
+		if currentNormalized != expectedNormalized {
+			return fmt.Errorf("JAV id %d identity changed from requested code %q", javID, expectedCode)
+		}
+
+		idolIDs, err := ensureJavDBIdolIDsTx(tx, info.Actors, info.ActorIdentities)
+		if err != nil {
+			return err
+		}
+		if len(idolIDs) > 0 {
+			var existingIDs []int64
+			if err := tx.Model(&models.JavIdolMap{}).Where("jav_id = ?", javID).Order("jav_idol_id").Pluck("jav_idol_id", &existingIDs).Error; err != nil {
+				return fmt.Errorf("list existing JavDB idol maps: %w", err)
+			}
+			sort.Slice(idolIDs, func(i, j int) bool { return idolIDs[i] < idolIDs[j] })
+			if !equalInt64Slices(existingIDs, idolIDs) {
+				if err := replaceJavIdolsTx(tx, javID, idolIDs); err != nil {
+					return err
+				}
+				updated = true
+			}
+		}
+		if err := tx.Model(&models.Jav{}).Where("id = ?", javID).Update("jav_db_idols_reconciled_at", time.Now().UTC()).Error; err != nil {
+			return fmt.Errorf("mark JavDB idol reconciliation: %w", err)
+		}
+		return nil
+	})
+	if err != nil {
+		return false, err
+	}
+	return updated, nil
+}
+
+func ensureJavDBIdolIDsTx(tx *gorm.DB, names []string, identities map[string]string) ([]int64, error) {
+	ids := make([]int64, 0, len(names))
+	seen := make(map[int64]struct{})
+	for _, name := range names {
+		var idol models.JavIdol
+		var err error
+		if externalID := strings.TrimSpace(identityForActor(identities, name)); externalID != "" {
+			idol, err = ensureJavIdolForExternalIdentityTx(tx, name, jav.ProviderJavDB, externalID)
+		} else {
+			idol, err = findOrCreateJavIdolByNameOrAliasTx(tx, name)
+		}
+		if err != nil {
+			return nil, err
+		}
+		if idol.ID <= 0 {
+			continue
+		}
+		if _, ok := seen[idol.ID]; ok {
+			continue
+		}
+		seen[idol.ID] = struct{}{}
+		ids = append(ids, idol.ID)
+	}
+	return ids, nil
+}
+
+func equalInt64Slices(left, right []int64) bool {
+	if len(left) != len(right) {
+		return false
+	}
+	for index := range left {
+		if left[index] != right[index] {
+			return false
+		}
+	}
+	return true
+}
+
 // ListJavsMissingUncensored returns JAV rows whose censored/uncensored state is unknown.
 func ListJavsMissingUncensored(ctx context.Context) ([]JavMetadataScanItem, error) {
 	var items []JavMetadataScanItem
@@ -3697,7 +4027,7 @@ func saveJavInfoTx(tx *gorm.DB, info *jav.JavInfo, now ...time.Time) (*models.Ja
 			return nil, err
 		}
 	}
-	if err := appendJavIdolsTx(tx, javRec, info.Actors); err != nil {
+	if err := appendJavIdolsForMetadataTx(tx, javRec, info.Actors, info.Provider, info.ActorIdentities); err != nil {
 		return nil, err
 	}
 	if err := advanceJavAcquisitionAfterMetadataTx(tx, javRec.ID, ts); err != nil {
@@ -4003,31 +4333,314 @@ func deleteJavTagIfUnusedTx(tx *gorm.DB, tagID int64) error {
 }
 
 func appendJavIdolsTx(tx *gorm.DB, javRec *models.Jav, names []string) error {
+	return appendJavIdolsForMetadataTx(tx, javRec, names, jav.ProviderUnknown, nil)
+}
+
+func appendJavIdolsForMetadataTx(tx *gorm.DB, javRec *models.Jav, names []string, provider jav.Provider, identities map[string]string) error {
 	if javRec == nil || javRec.ID == 0 {
 		return errors.New("jav record is missing")
 	}
 
+	provider = jav.ParseProvider(int(provider))
+	authoritativeJavDB := provider == jav.ProviderJavDB && len(names) > 0
 	var existingCount int64
 	if err := tx.Model(&models.JavIdolMap{}).
 		Where("jav_idol_map.jav_id = ?", javRec.ID).
 		Count(&existingCount).Error; err != nil {
 		return fmt.Errorf("count jav idol maps: %w", err)
 	}
-	if existingCount > 0 {
+	if existingCount > 0 && !authoritativeJavDB {
 		return nil
 	}
 
-	idols, err := ensureJavIdolsTx(tx, names)
-	if err != nil {
-		return err
+	idols := make([]models.JavIdol, 0, len(names))
+	seen := make(map[int64]struct{})
+	for _, name := range names {
+		var idol models.JavIdol
+		var err error
+		if externalID := strings.TrimSpace(identityForActor(identities, name)); externalID != "" && provider != jav.ProviderUnknown {
+			idol, err = ensureJavIdolForExternalIdentityTx(tx, name, provider, externalID)
+		} else {
+			idol, err = findOrCreateJavIdolByNameOrAliasTx(tx, name)
+		}
+		if err != nil {
+			return err
+		}
+		if idol.ID == 0 {
+			continue
+		}
+		if _, ok := seen[idol.ID]; ok {
+			continue
+		}
+		seen[idol.ID] = struct{}{}
+		idols = append(idols, idol)
 	}
 	if len(idols) == 0 {
+		return nil
+	}
+	if authoritativeJavDB {
+		ids := make([]int64, 0, len(idols))
+		for _, idol := range idols {
+			ids = append(ids, idol.ID)
+		}
+		if err := replaceJavIdolsTx(tx, javRec.ID, ids); err != nil {
+			return err
+		}
+		if err := tx.Model(&models.Jav{}).Where("id = ?", javRec.ID).Update("jav_db_idols_reconciled_at", time.Now().UTC()).Error; err != nil {
+			return fmt.Errorf("mark JavDB idol reconciliation: %w", err)
+		}
 		return nil
 	}
 	if err := tx.Model(javRec).Association("Idols").Append(idols); err != nil {
 		return fmt.Errorf("append jav idols: %w", err)
 	}
 	return nil
+}
+
+func identityForActor(identities map[string]string, rawName string) string {
+	if len(identities) == 0 {
+		return ""
+	}
+	if value := strings.TrimSpace(identities[rawName]); value != "" {
+		return value
+	}
+	parts := jav.ParseActressName(rawName)
+	for key, value := range identities {
+		other := jav.ParseActressName(key)
+		if strings.EqualFold(strings.TrimSpace(other.Primary), strings.TrimSpace(parts.Primary)) {
+			return strings.TrimSpace(value)
+		}
+	}
+	return ""
+}
+
+func findJavIdolMatchesTx(tx *gorm.DB, names []string) ([]models.JavIdol, error) {
+	keys := make([]string, 0, len(names))
+	seen := make(map[string]struct{})
+	for _, name := range names {
+		name = strings.TrimSpace(name)
+		if name == "" {
+			continue
+		}
+		key := strings.ToLower(name)
+		if _, ok := seen[key]; ok {
+			continue
+		}
+		seen[key] = struct{}{}
+		keys = append(keys, name)
+	}
+	if len(keys) == 0 {
+		return nil, nil
+	}
+
+	var idols []models.JavIdol
+	if err := tx.Where(
+		"name IN ? OR roman_name IN ? OR japanese_name IN ? OR chinese_name IN ?",
+		keys, keys, keys, keys,
+	).Find(&idols).Error; err != nil {
+		return nil, fmt.Errorf("find jav idol names: %w", err)
+	}
+	ids := make(map[int64]struct{}, len(idols))
+	for _, idol := range idols {
+		ids[idol.ID] = struct{}{}
+	}
+	var aliasOwners []int64
+	if err := tx.Model(&models.JavIdolAlias{}).
+		Where("alias IN ?", keys).
+		Distinct("jav_idol_id").
+		Pluck("jav_idol_id", &aliasOwners).Error; err != nil {
+		return nil, fmt.Errorf("find jav idol aliases: %w", err)
+	}
+	missingIDs := make([]int64, 0, len(aliasOwners))
+	for _, id := range aliasOwners {
+		if _, ok := ids[id]; ok {
+			continue
+		}
+		ids[id] = struct{}{}
+		missingIDs = append(missingIDs, id)
+	}
+	if len(missingIDs) > 0 {
+		var aliasIdols []models.JavIdol
+		if err := tx.Where("id IN ?", missingIDs).Find(&aliasIdols).Error; err != nil {
+			return nil, fmt.Errorf("load jav idols for aliases: %w", err)
+		}
+		idols = append(idols, aliasIdols...)
+	}
+	sort.Slice(idols, func(i, j int) bool { return idols[i].ID < idols[j].ID })
+	return idols, nil
+}
+
+func chooseCanonicalJavIdol(candidates []models.JavIdol, preferredName string) models.JavIdol {
+	if len(candidates) == 0 {
+		return models.JavIdol{}
+	}
+	preferredName = strings.TrimSpace(preferredName)
+	best := candidates[0]
+	bestScore := javIdolCanonicalScore(best, preferredName)
+	for _, candidate := range candidates[1:] {
+		score := javIdolCanonicalScore(candidate, preferredName)
+		if score > bestScore || (score == bestScore && candidate.ID < best.ID) {
+			best = candidate
+			bestScore = score
+		}
+	}
+	return best
+}
+
+func javIdolCanonicalScore(idol models.JavIdol, preferredName string) int {
+	preferredName = strings.TrimSpace(preferredName)
+	name := strings.TrimSpace(idol.Name)
+	japanese := strings.TrimSpace(idol.JapaneseName)
+	score := 0
+	if preferredName != "" && strings.EqualFold(japanese, preferredName) {
+		score += 100
+	}
+	if preferredName != "" && strings.EqualFold(name, preferredName) {
+		score += 80
+	}
+	if japanese != "" {
+		score += 40
+	}
+	if jav.IsJapaneseName(name) {
+		score += 20
+	}
+	if idol.CoverJavID != nil {
+		score++
+	}
+	return score
+}
+
+func reconcileJavIdolNameTx(tx *gorm.DB, idol models.JavIdol, preferredJapaneseName string, aliases []string) error {
+	preferredJapaneseName = strings.TrimSpace(preferredJapaneseName)
+	if preferredJapaneseName != "" && jav.IsJapaneseName(preferredJapaneseName) {
+		if strings.TrimSpace(idol.JapaneseName) == "" {
+			idol.JapaneseName = preferredJapaneseName
+		}
+		if strings.TrimSpace(idol.Name) == "" || !jav.IsJapaneseName(idol.Name) {
+			idol.Name = preferredJapaneseName
+		}
+	}
+	updates := map[string]any{}
+	if strings.TrimSpace(idol.Name) != "" {
+		updates["name"] = strings.TrimSpace(idol.Name)
+	}
+	if idol.JapaneseName != "" {
+		updates["japanese_name"] = strings.TrimSpace(idol.JapaneseName)
+	}
+	if len(updates) > 0 {
+		if err := tx.Model(&models.JavIdol{}).Where("id = ?", idol.ID).Updates(updates).Error; err != nil {
+			return fmt.Errorf("set canonical jav idol name: %w", err)
+		}
+	}
+	return addJavIdolAliasesTx(tx, idol, aliases)
+}
+
+func addJavIdolAliasesTx(tx *gorm.DB, idol models.JavIdol, aliases []string) error {
+	if idol.ID <= 0 || len(aliases) == 0 {
+		return nil
+	}
+	ownNames := map[string]struct{}{}
+	for _, name := range []string{idol.Name, idol.RomanName, idol.JapaneseName, idol.ChineseName} {
+		name = strings.TrimSpace(name)
+		if name != "" {
+			ownNames[strings.ToLower(name)] = struct{}{}
+		}
+	}
+	rows := make([]models.JavIdolAlias, 0, len(aliases))
+	seen := make(map[string]struct{})
+	for _, alias := range aliases {
+		alias = strings.TrimSpace(alias)
+		if alias == "" {
+			continue
+		}
+		key := strings.ToLower(alias)
+		if _, ok := ownNames[key]; ok {
+			continue
+		}
+		if _, ok := seen[key]; ok {
+			continue
+		}
+		seen[key] = struct{}{}
+		rows = append(rows, models.JavIdolAlias{JavIdolID: idol.ID, Alias: alias, CreatedAt: time.Now()})
+	}
+	if len(rows) == 0 {
+		return nil
+	}
+	if err := tx.Clauses(clause.OnConflict{DoNothing: true}).Create(&rows).Error; err != nil {
+		return fmt.Errorf("create jav idol aliases: %w", err)
+	}
+	return nil
+}
+
+func ensureJavIdolForExternalIdentityTx(tx *gorm.DB, rawName string, provider jav.Provider, externalID string) (models.JavIdol, error) {
+	provider = jav.ParseProvider(int(provider))
+	if provider == jav.ProviderUnknown {
+		return findOrCreateJavIdolByNameOrAliasTx(tx, rawName)
+	}
+	externalID = strings.TrimSpace(externalID)
+	if externalID == "" {
+		return findOrCreateJavIdolByNameOrAliasTx(tx, rawName)
+	}
+	var identity models.JavIdolExternalIdentity
+	err := tx.Where("provider = ? AND external_id = ?", int(provider), externalID).First(&identity).Error
+	if err != nil && !errors.Is(err, gorm.ErrRecordNotFound) {
+		return models.JavIdol{}, fmt.Errorf("find jav idol external identity: %w", err)
+	}
+	parts := jav.ParseActressName(rawName)
+	if err == nil {
+		var canonical models.JavIdol
+		if err := tx.Where("id = ?", identity.JavIdolID).First(&canonical).Error; err != nil {
+			return models.JavIdol{}, fmt.Errorf("load jav idol external identity owner: %w", err)
+		}
+		matches, matchErr := findJavIdolMatchesTx(tx, append([]string{parts.Primary}, parts.Aliases...))
+		if matchErr != nil {
+			return models.JavIdol{}, matchErr
+		}
+		sourceIDs := make([]int64, 0, len(matches))
+		for _, match := range matches {
+			if match.ID != canonical.ID {
+				sourceIDs = append(sourceIDs, match.ID)
+			}
+		}
+		preferred := parts.Primary
+		if !jav.IsJapaneseName(preferred) {
+			preferred = canonical.JapaneseName
+		}
+		if len(sourceIDs) > 0 {
+			if err := mergeJavIdolRecordsTx(tx, canonical.ID, sourceIDs, preferred, parts.Aliases); err != nil {
+				return models.JavIdol{}, err
+			}
+		} else if err := reconcileJavIdolNameTx(tx, canonical, preferred, parts.Aliases); err != nil {
+			return models.JavIdol{}, err
+		}
+		if err := tx.Where("id = ?", canonical.ID).First(&canonical).Error; err != nil {
+			return models.JavIdol{}, err
+		}
+		return canonical, nil
+	}
+
+	idol, err := findOrCreateJavIdolByNameOrAliasTx(tx, rawName)
+	if err != nil {
+		return models.JavIdol{}, err
+	}
+	identity = models.JavIdolExternalIdentity{
+		JavIdolID:  idol.ID,
+		Provider:   int(provider),
+		ExternalID: externalID,
+		ProfileURL: javDBProfileURL(provider, externalID),
+		CreatedAt:  time.Now(),
+	}
+	if err := tx.Clauses(clause.OnConflict{DoNothing: true}).Create(&identity).Error; err != nil {
+		return models.JavIdol{}, fmt.Errorf("save jav idol external identity: %w", err)
+	}
+	return idol, nil
+}
+
+func javDBProfileURL(provider jav.Provider, externalID string) string {
+	if provider != jav.ProviderJavDB {
+		return ""
+	}
+	return "https://javdb.com/actors/" + strings.Trim(strings.TrimSpace(externalID), "/")
 }
 
 func appendJavIdolsIfMissingForProvider(ctx context.Context, javID int64, names []string, provider jav.Provider) (bool, error) {
@@ -4076,12 +4689,21 @@ func appendJavIdolsIfMissingForProvider(ctx context.Context, javID int64, names 
 }
 
 func ensureJavIdolsTx(tx *gorm.DB, names []string) ([]models.JavIdol, error) {
-	unique := normalizeNames(names)
-	if len(unique) == 0 {
+	if len(names) == 0 {
 		return nil, nil
 	}
-	var idols []models.JavIdol
-	for _, name := range unique {
+	seen := make(map[string]struct{})
+	idols := make([]models.JavIdol, 0, len(names))
+	for _, name := range names {
+		parts := jav.ParseActressName(name)
+		key := strings.ToLower(strings.TrimSpace(parts.Primary))
+		if key == "" {
+			continue
+		}
+		if _, ok := seen[key]; ok {
+			continue
+		}
+		seen[key] = struct{}{}
 		idol, err := findOrCreateJavIdolByNameOrAliasTx(tx, name)
 		if err != nil {
 			return nil, fmt.Errorf("ensure jav idol %q: %w", name, err)
@@ -4092,36 +4714,213 @@ func ensureJavIdolsTx(tx *gorm.DB, names []string) ([]models.JavIdol, error) {
 }
 
 func findOrCreateJavIdolByNameOrAliasTx(tx *gorm.DB, name string) (models.JavIdol, error) {
-	name = strings.TrimSpace(name)
-	if name == "" {
+	parts := jav.ParseActressName(name)
+	primary := strings.TrimSpace(parts.Primary)
+	if primary == "" {
 		return models.JavIdol{}, errors.New("jav idol name cannot be empty")
 	}
-	var idol models.JavIdol
-	err := tx.Where("name = ?", name).First(&idol).Error
-	if err == nil {
-		return idol, nil
-	}
-	if !errors.Is(err, gorm.ErrRecordNotFound) {
-		return models.JavIdol{}, err
-	}
-	err = tx.
-		Table("jav_idol_alias jia").
-		Select("ji.*").
-		Joins("JOIN jav_idol ji ON ji.id = jia.jav_idol_id").
-		Where("jia.alias = ?", name).
-		Limit(1).
-		Scan(&idol).Error
+	candidates, err := findJavIdolMatchesTx(tx, append([]string{primary}, parts.Aliases...))
 	if err != nil {
 		return models.JavIdol{}, err
 	}
-	if idol.ID > 0 {
+	if len(candidates) == 0 {
+		idol := models.JavIdol{Name: primary}
+		if jav.IsJapaneseName(primary) {
+			idol.JapaneseName = primary
+		}
+		if err := tx.Create(&idol).Error; err != nil {
+			return models.JavIdol{}, err
+		}
+		if err := addJavIdolAliasesTx(tx, idol, parts.Aliases); err != nil {
+			return models.JavIdol{}, err
+		}
 		return idol, nil
 	}
-	idol = models.JavIdol{Name: name}
-	if err := tx.Create(&idol).Error; err != nil {
+
+	canonical := chooseCanonicalJavIdol(candidates, primary)
+	sourceIDs := make([]int64, 0, len(candidates)-1)
+	for _, candidate := range candidates {
+		if candidate.ID != canonical.ID {
+			sourceIDs = append(sourceIDs, candidate.ID)
+		}
+	}
+	preferredJapaneseName := ""
+	if jav.IsJapaneseName(primary) {
+		preferredJapaneseName = primary
+	}
+	if len(sourceIDs) > 0 {
+		if err := mergeJavIdolRecordsTx(tx, canonical.ID, sourceIDs, preferredJapaneseName, parts.Aliases); err != nil {
+			return models.JavIdol{}, err
+		}
+	} else if err := reconcileJavIdolNameTx(tx, canonical, preferredJapaneseName, parts.Aliases); err != nil {
 		return models.JavIdol{}, err
 	}
-	return idol, nil
+	if err := tx.Where("id = ?", canonical.ID).First(&canonical).Error; err != nil {
+		return models.JavIdol{}, err
+	}
+	return canonical, nil
+}
+
+// mergeJavIdolRecordsTx performs the destructive part of an automatic or
+// explicit merge. Relationships move in one transaction and old IDs receive
+// redirects before their rows are removed.
+func mergeJavIdolRecordsTx(tx *gorm.DB, canonicalID int64, sourceIDs []int64, preferredJapaneseName string, extraAliases []string) error {
+	if canonicalID <= 0 || len(sourceIDs) == 0 {
+		return errors.New("invalid jav idol merge set")
+	}
+	var canonical models.JavIdol
+	if err := tx.Where("id = ?", canonicalID).First(&canonical).Error; err != nil {
+		return fmt.Errorf("find canonical jav idol: %w", err)
+	}
+	cleanSourceIDs := uniqueInt64s(sourceIDs)
+	var sources []models.JavIdol
+	if err := tx.Where("id IN ?", cleanSourceIDs).Find(&sources).Error; err != nil {
+		return fmt.Errorf("find source jav idols: %w", err)
+	}
+	if len(sources) != len(cleanSourceIDs) {
+		return gorm.ErrRecordNotFound
+	}
+	if err := moveJavIdolAliasesTx(tx, canonical, sources); err != nil {
+		return err
+	}
+	if err := moveJavIdolMapsTx(tx, canonicalID, cleanSourceIDs); err != nil {
+		return err
+	}
+	if err := moveJavIdolFavoriteMapsTx(tx, canonicalID, cleanSourceIDs); err != nil {
+		return err
+	}
+	if err := moveJavIdolExternalIdentitiesTx(tx, canonicalID, cleanSourceIDs); err != nil {
+		return err
+	}
+	if err := inheritJavIdolCoverTx(tx, canonical, sources); err != nil {
+		return err
+	}
+	for _, sourceID := range cleanSourceIDs {
+		if err := tx.Clauses(clause.OnConflict{DoNothing: true}).Create(&models.JavIdolRedirect{
+			SourceID: sourceID, CanonicalID: canonicalID, CreatedAt: time.Now(),
+		}).Error; err != nil {
+			return fmt.Errorf("save jav idol redirect: %w", err)
+		}
+	}
+	if err := tx.Where("id IN ?", cleanSourceIDs).Delete(&models.JavIdol{}).Error; err != nil {
+		return fmt.Errorf("delete merged jav idols: %w", err)
+	}
+
+	updates := make(map[string]any)
+	if strings.TrimSpace(canonical.RomanName) == "" {
+		for _, source := range sources {
+			if value := strings.TrimSpace(source.RomanName); value != "" {
+				updates["roman_name"] = value
+				break
+			}
+		}
+	}
+	if strings.TrimSpace(canonical.JapaneseName) == "" {
+		for _, source := range sources {
+			if value := strings.TrimSpace(source.JapaneseName); value != "" {
+				updates["japanese_name"] = value
+				break
+			}
+		}
+	}
+	if strings.TrimSpace(canonical.ChineseName) == "" {
+		for _, source := range sources {
+			if value := strings.TrimSpace(source.ChineseName); value != "" {
+				updates["chinese_name"] = value
+				break
+			}
+		}
+	}
+	if canonical.HeightCM == nil || canonical.BirthDate == nil || canonical.Bust == nil || canonical.Waist == nil || canonical.Hips == nil || canonical.Cup == nil {
+		for _, source := range sources {
+			if canonical.HeightCM == nil && source.HeightCM != nil {
+				updates["height_cm"] = source.HeightCM
+			}
+			if canonical.BirthDate == nil && source.BirthDate != nil {
+				updates["birth_date"] = source.BirthDate
+			}
+			if canonical.Bust == nil && source.Bust != nil {
+				updates["bust"] = source.Bust
+			}
+			if canonical.Waist == nil && source.Waist != nil {
+				updates["waist"] = source.Waist
+			}
+			if canonical.Hips == nil && source.Hips != nil {
+				updates["hips"] = source.Hips
+			}
+			if canonical.Cup == nil && source.Cup != nil {
+				updates["cup"] = source.Cup
+			}
+		}
+	}
+	preferredJapaneseName = strings.TrimSpace(preferredJapaneseName)
+	if preferredJapaneseName != "" && jav.IsJapaneseName(preferredJapaneseName) {
+		if strings.TrimSpace(canonical.JapaneseName) == "" {
+			updates["name"] = preferredJapaneseName
+			updates["japanese_name"] = preferredJapaneseName
+		} else if strings.TrimSpace(canonical.Name) == "" || !jav.IsJapaneseName(canonical.Name) {
+			updates["name"] = strings.TrimSpace(canonical.JapaneseName)
+		}
+	} else if strings.TrimSpace(canonical.JapaneseName) != "" && !jav.IsJapaneseName(canonical.Name) {
+		updates["name"] = strings.TrimSpace(canonical.JapaneseName)
+	}
+	if len(updates) > 0 {
+		if err := tx.Model(&models.JavIdol{}).Where("id = ?", canonicalID).Updates(updates).Error; err != nil {
+			return fmt.Errorf("merge jav idol profile: %w", err)
+		}
+	}
+	var refreshed models.JavIdol
+	if err := tx.Where("id = ?", canonicalID).First(&refreshed).Error; err != nil {
+		return err
+	}
+	allAliases := append([]string{}, extraAliases...)
+	for _, source := range sources {
+		allAliases = append(allAliases, source.Name, source.RomanName, source.JapaneseName, source.ChineseName)
+	}
+	if err := addJavIdolAliasesTx(tx, refreshed, allAliases); err != nil {
+		return err
+	}
+	return removeCanonicalJavIdolAliasesTx(tx, refreshed)
+}
+
+func moveJavIdolExternalIdentitiesTx(tx *gorm.DB, canonicalID int64, sourceIDs []int64) error {
+	if len(sourceIDs) == 0 {
+		return nil
+	}
+	if err := tx.Exec(
+		`DELETE FROM jav_idol_external_identity
+		 WHERE jav_idol_id IN ?
+		   AND EXISTS (
+			 SELECT 1 FROM jav_idol_external_identity canonical_identity
+			  WHERE canonical_identity.jav_idol_id = ?
+			    AND canonical_identity.provider = jav_idol_external_identity.provider
+			    AND canonical_identity.external_id = jav_idol_external_identity.external_id
+		   )`, sourceIDs, canonicalID,
+	).Error; err != nil {
+		return fmt.Errorf("delete duplicate jav idol external identities: %w", err)
+	}
+	if err := tx.Model(&models.JavIdolExternalIdentity{}).
+		Where("jav_idol_id IN ?", sourceIDs).
+		Update("jav_idol_id", canonicalID).Error; err != nil {
+		return fmt.Errorf("move jav idol external identities: %w", err)
+	}
+	return nil
+}
+
+func removeCanonicalJavIdolAliasesTx(tx *gorm.DB, idol models.JavIdol) error {
+	values := make([]string, 0, 4)
+	for _, value := range []string{idol.Name, idol.RomanName, idol.JapaneseName, idol.ChineseName} {
+		if value = strings.TrimSpace(value); value != "" {
+			values = append(values, value)
+		}
+	}
+	if len(values) == 0 {
+		return nil
+	}
+	if err := tx.Where("jav_idol_id = ? AND alias IN ?", idol.ID, values).Delete(&models.JavIdolAlias{}).Error; err != nil {
+		return fmt.Errorf("clean canonical jav idol aliases: %w", err)
+	}
+	return nil
 }
 
 // MergeJavIdols physically moves source idol relationships onto canonicalID and records source names as aliases.
@@ -4129,10 +4928,23 @@ func MergeJavIdols(ctx context.Context, canonicalID int64, sourceIDs []int64, di
 	if canonicalID <= 0 {
 		return nil, errors.New("canonical_id must be positive")
 	}
+	resolvedCanonicalID, err := ResolveJavIdolID(ctx, canonicalID)
+	if err != nil {
+		return nil, err
+	}
+	canonicalID = resolvedCanonicalID
 	cleanSourceIDs := make([]int64, 0, len(sourceIDs))
 	seen := map[int64]bool{}
 	for _, id := range uniqueInt64s(sourceIDs) {
 		if id <= 0 || id == canonicalID || seen[id] {
+			continue
+		}
+		resolvedID, resolveErr := ResolveJavIdolID(ctx, id)
+		if resolveErr != nil {
+			return nil, resolveErr
+		}
+		id = resolvedID
+		if id == canonicalID || seen[id] {
 			continue
 		}
 		seen[id] = true
@@ -4143,34 +4955,7 @@ func MergeJavIdols(ctx context.Context, canonicalID int64, sourceIDs []int64, di
 	}
 
 	if err := common.DB.WithContext(ctx).Transaction(func(tx *gorm.DB) error {
-		var canonical models.JavIdol
-		if err := tx.Where("id = ?", canonicalID).First(&canonical).Error; err != nil {
-			return fmt.Errorf("find canonical jav idol: %w", err)
-		}
-
-		var sources []models.JavIdol
-		if err := tx.Where("id IN ?", cleanSourceIDs).Find(&sources).Error; err != nil {
-			return fmt.Errorf("find source jav idols: %w", err)
-		}
-		if len(sources) != len(cleanSourceIDs) {
-			return gorm.ErrRecordNotFound
-		}
-		if err := moveJavIdolAliasesTx(tx, canonical, sources); err != nil {
-			return err
-		}
-		if err := moveJavIdolMapsTx(tx, canonicalID, cleanSourceIDs); err != nil {
-			return err
-		}
-		if err := moveJavIdolFavoriteMapsTx(tx, canonicalID, cleanSourceIDs); err != nil {
-			return err
-		}
-		if err := inheritJavIdolCoverTx(tx, canonical, sources); err != nil {
-			return err
-		}
-		if err := tx.Where("id IN ?", cleanSourceIDs).Delete(&models.JavIdol{}).Error; err != nil {
-			return fmt.Errorf("delete merged jav idols: %w", err)
-		}
-		return nil
+		return mergeJavIdolRecordsTx(tx, canonicalID, cleanSourceIDs, "", nil)
 	}); err != nil {
 		return nil, err
 	}

@@ -29,10 +29,10 @@ func TestJavMetadataProvidersReuseScannerFallbackOrder(t *testing.T) {
 		code string
 		want []jav.Provider
 	}{
-		{code: "GANA-1234", want: []jav.Provider{jav.ProviderJavMenu, jav.ProviderJavBus, jav.ProviderAvsox, jav.ProviderJavDBApp}},
-		{code: "AP-001", want: []jav.Provider{jav.ProviderAvmoo, jav.ProviderAvsox, jav.ProviderJavDBApp}},
-		{code: "IPX-001", want: []jav.Provider{jav.ProviderJavBus, jav.ProviderAvsox, jav.ProviderJavDBApp}},
-		{code: "FC2-1579280", want: []jav.Provider{jav.ProviderJavBus, jav.ProviderAvsox, jav.ProviderJavDBApp}},
+		{code: "GANA-1234", want: []jav.Provider{jav.ProviderJavDB, jav.ProviderJavMenu, jav.ProviderJavBus, jav.ProviderAvsox, jav.ProviderJavDBApp}},
+		{code: "AP-001", want: []jav.Provider{jav.ProviderJavDB, jav.ProviderAvmoo, jav.ProviderAvsox, jav.ProviderJavDBApp}},
+		{code: "IPX-001", want: []jav.Provider{jav.ProviderJavDB, jav.ProviderJavBus, jav.ProviderAvsox, jav.ProviderJavDBApp}},
+		{code: "FC2-1579280", want: []jav.Provider{jav.ProviderJavDB, jav.ProviderJavBus, jav.ProviderAvsox, jav.ProviderJavDBApp}},
 	}
 	for _, test := range tests {
 		t.Run(test.code, func(t *testing.T) {
@@ -99,7 +99,7 @@ func TestScanMissingJavZhInfoUsesCodeSpecificFallback(t *testing.T) {
 	if err := scanMissingJavZhInfo(context.Background(), javFastZhMetadataProviders()); err != nil {
 		t.Fatalf("scan missing metadata: %v", err)
 	}
-	wantCalls := []jav.Provider{jav.ProviderAvmoo, jav.ProviderAvsox}
+	wantCalls := []jav.Provider{jav.ProviderJavDB, jav.ProviderAvmoo, jav.ProviderAvsox}
 	if !reflect.DeepEqual(calls, wantCalls) {
 		t.Fatalf("provider calls = %#v, want %#v", calls, wantCalls)
 	}
@@ -166,7 +166,7 @@ func TestScanMissingJavZhInfoAvsoxDoesNotClassifyOrdinaryCode(t *testing.T) {
 	if err := scanMissingJavZhInfo(context.Background(), javFastZhMetadataProviders()); err != nil {
 		t.Fatalf("scan metadata: %v", err)
 	}
-	wantCalls := []jav.Provider{jav.ProviderJavBus, jav.ProviderAvsox}
+	wantCalls := []jav.Provider{jav.ProviderJavDB, jav.ProviderJavBus, jav.ProviderAvsox}
 	if !reflect.DeepEqual(calls, wantCalls) {
 		t.Fatalf("provider calls = %#v, want %#v", calls, wantCalls)
 	}
@@ -397,7 +397,7 @@ func TestScanMissingJavZhInfoContinuesUntilTitleAndIdolsAreFilled(t *testing.T) 
 	if err := scanMissingJavZhInfo(context.Background(), []jav.Provider{jav.ProviderJavBus}); err != nil {
 		t.Fatalf("scan split metadata: %v", err)
 	}
-	wantCalls := []jav.Provider{jav.ProviderJavBus, jav.ProviderAvsox, jav.ProviderJavDBApp}
+	wantCalls := []jav.Provider{jav.ProviderJavDB, jav.ProviderJavBus, jav.ProviderAvsox, jav.ProviderJavDBApp}
 	if !reflect.DeepEqual(calls, wantCalls) {
 		t.Fatalf("provider calls = %#v, want %#v", calls, wantCalls)
 	}

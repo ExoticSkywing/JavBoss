@@ -136,6 +136,11 @@ func main() {
 	defer stop()
 
 	common.DB = database
+	if merged, err := db.NormalizeJavIdolIdentities(ctx); err != nil {
+		logger.Printf("normalize JAV idol identities on startup failed: %v", err)
+	} else if merged > 0 {
+		logger.Printf("normalized JAV idol identities on startup: merged %d legacy rows", merged)
+	}
 	passwordResetPath := filepath.Join(filepath.Dir(cfg.DatabasePath), server.PasswordResetFilename)
 	passwordResetApplied, err := server.ApplyPasswordResetFile(ctx, passwordResetPath)
 	if err != nil {

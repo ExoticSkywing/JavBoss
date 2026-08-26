@@ -18,6 +18,7 @@ import (
 )
 
 const javUncensoredBackfillDoneConfigKey = "jav_uncensored_backfill_done"
+const javDBIdolReconciliationBatchSize = 10
 
 var javSeriesAvmooNoUpdateRounds atomic.Uint32
 var javMetadataScanRequests = make(chan struct{}, 1)
@@ -98,6 +99,62 @@ func ScanJavMetadata(ctx context.Context) error {
 	}
 	if err := scanMissingJavStudioAndEnglishSeries(ctx); err != nil {
 		return err
+	}
+	if err := scanPendingJavDBIdolIdentities(ctx); err != nil {
+		return err
+	}
+	return nil
+}
+
+func scanPendingJavDBIdolIdentities(ctx context.Context) error {
+	items, err := db.ListJavsPendingJavDBIdolReconciliation(ctx, javDBIdolReconciliationBatchSize)
+	if err != nil {
+		return err
+	}
+	if len(items) > 0 {
+		logging.Info("reconciling %d JAV actress identities with JavDB", len(items))
+	}
+	for _, item := range items {
+		if err := ctx.Err(); err != nil {
+			return err
+		}
+		code := strings.TrimSpace(item.Code)
+		if code == "" {
+			continue
+		}
+		info, err := lookupJavMetadataByCode(code, jav.ProviderJavDB)
+		if err != nil {
+			if errors.Is(err, jav.ResourceNotFonud) {
+				if markErr := db.MarkJavDBIdolsReconciled(ctx, item.ID, code); markErr != nil {
+					logging.Error("mark missing JavDB actress metadata id=%d code=%s err=%v", item.ID, code, markErr)
+				}
+				continue
+			}
+			logging.Error("lookup JavDB actress identities failed id=%d code=%s err=%v", item.ID, code, err)
+			continue
+		}
+		if info == nil {
+			continue
+		}
+		if responseCode := models.NormalizeJavCode(info.Code); responseCode != "" && responseCode != models.NormalizeJavCode(code) {
+			logging.Error("ignore mismatched JavDB actress identities id=%d requested=%s response=%s", item.ID, code, strings.TrimSpace(info.Code))
+			continue
+		}
+		if len(info.Actors) == 0 {
+			if err := db.MarkJavDBIdolsReconciled(ctx, item.ID, code); err != nil {
+				logging.Error("mark empty JavDB actress metadata id=%d code=%s err=%v", item.ID, code, err)
+			}
+			continue
+		}
+		info.Provider = jav.ProviderJavDB
+		updated, err := db.ReconcileJavDBIdols(ctx, item.ID, code, info)
+		if err != nil {
+			logging.Error("reconcile JavDB actress identities failed id=%d code=%s err=%v", item.ID, code, err)
+			continue
+		}
+		if updated {
+			logging.Info("reconciled JavDB actress identities id=%d code=%s actors=%d", item.ID, code, len(info.Actors))
+		}
 	}
 	return nil
 }
@@ -574,7 +631,16 @@ func scanMissingJavZhInfo(ctx context.Context, providers []jav.Provider) error {
 				needsTitle = false
 				updated = true
 			} else if needsIdols && hasNonEmptyJavMetadataValue(info.Actors) {
-				appended, err := db.AppendJavIdolsIfMissingForProvider(ctx, item.ID, info.Actors, providerValue)
+				var appended bool
+				var err error
+				if providerValue == jav.ProviderJavDB {
+					metadata := *info
+					metadata.Code = code
+					metadata.Provider = jav.ProviderJavDB
+					appended, err = db.ReconcileJavDBIdols(ctx, item.ID, code, &metadata)
+				} else {
+					appended, err = db.AppendJavIdolsIfMissingForProvider(ctx, item.ID, info.Actors, providerValue)
+				}
 				if err != nil {
 					logging.Error("update jav idol metadata failed provider=%s id=%d code=%s err=%v", provider.String(), item.ID, code, err)
 					continue
@@ -614,7 +680,11 @@ func hasNonEmptyJavMetadataValue(values []string) bool {
 }
 
 func javMetadataProvidersForCode(code string, fallback []jav.Provider) []jav.Provider {
-	providers := javLinkProvidersForCode(code)
+	// JavDB is the identity authority for actresses. Query it first so an
+	// actor's stable /actors/<id> link and Japanese stage name become canonical
+	// before any provider-specific spelling can create a local row.
+	providers := []jav.Provider{jav.ProviderJavDB}
+	providers = append(providers, javLinkProvidersForCode(code)...)
 	if len(providers) == 0 {
 		providers = fallback
 	}

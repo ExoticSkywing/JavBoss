@@ -391,23 +391,60 @@ func parseJavDBMovieInfo(root *html.Node) *JavInfo {
 		title = cleanJavDBMoviePageTitle(strings.TrimSpace(firstTextByTag(root, "title")))
 	}
 
+	actorIdentities := collectJavDBActorIdentities(root)
 	info := &JavInfo{
-		Title:        title,
-		Code:         strings.TrimSpace(fields.Code),
-		Studio:       strings.TrimSpace(fields.Maker),
-		Series:       strings.TrimSpace(fields.Series),
-		ReleaseUnix:  parseDateUnix(fields.ReleaseDate),
-		DurationMin:  parseRuntimeMinutes(fields.Runtime),
-		Tags:         dedupeNonEmpty(fields.Tags),
-		Actors:       dedupeNonEmpty(fields.Actors),
-		CoverURL:     parseJavDBCoverURL(root, ""),
-		SampleImages: parseSampleImages(root, ""),
-		Provider:     ProviderJavDB,
+		Title:           title,
+		Code:            strings.TrimSpace(fields.Code),
+		Studio:          strings.TrimSpace(fields.Maker),
+		Series:          strings.TrimSpace(fields.Series),
+		ReleaseUnix:     parseDateUnix(fields.ReleaseDate),
+		DurationMin:     parseRuntimeMinutes(fields.Runtime),
+		Tags:            dedupeNonEmpty(fields.Tags),
+		Actors:          dedupeNonEmpty(fields.Actors),
+		ActorIdentities: actorIdentities,
+		CoverURL:        parseJavDBCoverURL(root, ""),
+		SampleImages:    parseSampleImages(root, ""),
+		Provider:        ProviderJavDB,
 	}
 	if info.Title == "" && info.Code == "" && info.Studio == "" && info.Series == "" && info.ReleaseUnix == 0 && info.DurationMin == 0 && len(info.Tags) == 0 && len(info.Actors) == 0 {
 		return nil
 	}
 	return info
+}
+
+// collectJavDBActorIdentities extracts the stable token from each female
+// actress link. The display text is intentionally kept as the map key because
+// it may contain a parenthesised former name that the database parser turns
+// into an alias.
+func collectJavDBActorIdentities(root *html.Node) map[string]string {
+	links := collectJavDBActressLinks(root, javDBBaseURL)
+	if len(links) == 0 {
+		return nil
+	}
+	identities := make(map[string]string, len(links))
+	for _, link := range links {
+		if id := javDBActorExternalID(link.href); id != "" {
+			identities[link.text] = id
+		}
+	}
+	if len(identities) == 0 {
+		return nil
+	}
+	return identities
+}
+
+func javDBActorExternalID(rawURL string) string {
+	parsed, err := url.Parse(strings.TrimSpace(rawURL))
+	if err != nil {
+		return ""
+	}
+	parts := strings.Split(strings.Trim(parsed.Path, "/"), "/")
+	for index := 0; index+1 < len(parts); index++ {
+		if strings.EqualFold(parts[index], "actors") {
+			return strings.TrimSpace(parts[index+1])
+		}
+	}
+	return ""
 }
 
 func extractJavDBMovieFields(root *html.Node) javDBMovieFields {

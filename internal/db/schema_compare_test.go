@@ -48,6 +48,8 @@ func TestMigratedSchemaMatchesGormModels(t *testing.T) {
 		&models.JavTagCategory{},
 		&models.JavIdol{},
 		&models.JavIdolAlias{},
+		&models.JavIdolExternalIdentity{},
+		&models.JavIdolRedirect{},
 		&models.JavFavoriteGroup{},
 		&models.JavFavoriteMap{},
 		&models.JavTagMap{},

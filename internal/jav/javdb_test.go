@@ -183,6 +183,9 @@ func TestParseJavDBMovieInfo(t *testing.T) {
 	if info.Provider != ProviderJavDB {
 		t.Fatalf("unexpected provider: %s", info.Provider.String())
 	}
+	if got := info.ActorIdentities["岬ななみ"]; got != "QNen" {
+		t.Fatalf("unexpected JavDB actress identity: %q", got)
+	}
 	if info.Code != "IPX-228" {
 		t.Fatalf("unexpected code: %q", info.Code)
 	}

@@ -86,18 +86,22 @@ var lookupProvidersByProvider = map[Provider]lookupProvider{
 
 // JavInfo holds basic metadata extracted from a JAV metadata provider.
 type JavInfo struct {
-	Title        string
-	Code         string
-	Studio       string
-	Series       string
-	ReleaseUnix  int64
-	DurationMin  int
-	Tags         []string
-	Actors       []string
-	CoverURL     string
-	SampleImages []SampleImage
-	IsUncensored *bool `json:",omitempty"`
-	Provider     Provider
+	Title       string
+	Code        string
+	Studio      string
+	Series      string
+	ReleaseUnix int64
+	DurationMin int
+	Tags        []string
+	Actors      []string
+	// ActorIdentities contains provider-stable actress keys keyed by the actor
+	// text in Actors. JavDB fills this from /actors/<id> links; other providers
+	// may leave it empty and continue to use deterministic name matching.
+	ActorIdentities map[string]string `json:"actor_identities,omitempty"`
+	CoverURL        string
+	SampleImages    []SampleImage
+	IsUncensored    *bool `json:",omitempty"`
+	Provider        Provider
 }
 
 // ActressInfo describes basic actress profile fields from JavDatabase.
