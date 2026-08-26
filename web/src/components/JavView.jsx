@@ -4,7 +4,15 @@ import { useState } from 'react'
 import JavGrid from '@/components/JavGrid'
 import Pagination from '@/components/Pagination'
 import WaterfallLoader from '@/components/WaterfallLoader'
-import { JAV_SORT_OPTIONS, findSortOption, reverseSortValue, sortLabelParts } from '@/constants/jav'
+import {
+  JAV_INVENTORY_IMPORTED,
+  JAV_INVENTORY_PENDING,
+  JAV_SORT_OPTIONS,
+  findSortOption,
+  normalizeJavInventory,
+  reverseSortValue,
+  sortLabelParts,
+} from '@/constants/jav'
 import { zh } from '@/utils/i18n'
 
 function SortText({ option, value, className = '' }) {
@@ -26,6 +34,7 @@ export default function JavView({
   javHasPrev,
   javHasNext,
   javLoading,
+  javInventory = 'all',
   javRandomMode,
   javResolvedSort,
   javSortSource,
@@ -73,6 +82,13 @@ export default function JavView({
   const effectiveSort = javResolvedSort
   const currentOption = findSortOption(JAV_SORT_OPTIONS, effectiveSort) || JAV_SORT_OPTIONS[0]
   const activeWaterfallMode = waterfallMode && !javRandomMode
+  const normalizedInventory = normalizeJavInventory(javInventory)
+  const emptyMessage =
+    normalizedInventory === JAV_INVENTORY_PENDING
+      ? zh('暂无未入库作品', 'No pending works')
+      : normalizedInventory === JAV_INVENTORY_IMPORTED
+        ? zh('暂无已入库作品', 'No imported works')
+        : zh('暂无 JAV 数据', 'No JAV data')
 
   const isOptionActive = (option) => {
     return findSortOption([option], effectiveSort)
@@ -204,6 +220,7 @@ export default function JavView({
         <div className={contentClass}>
           <JavGrid
             items={javItems}
+            emptyMessage={emptyMessage}
             columns={javGridColumns}
             titleMaxRows={javTitleMaxRows}
             idolTagMaxRows={javIdolTagMaxRows}

@@ -98,6 +98,7 @@ function ReleaseIcon() {
 
 export default function JavGrid({
   items,
+  emptyMessage,
   columns = 0,
   titleMaxRows = 2,
   idolTagMaxRows = 2,
@@ -176,7 +177,7 @@ export default function JavGrid({
   const gridClassName = 'grid gap-4'
   const gridStyle = fixedColumnCount
     ? { gridTemplateColumns: `repeat(${fixedColumnCount}, minmax(0, 1fr))` }
-    : { gridTemplateColumns: 'repeat(auto-fill, minmax(21rem, 1fr))' }
+    : { gridTemplateColumns: 'repeat(auto-fill, minmax(min(21rem, 100%), 1fr))' }
 
   const loadIdolPreview = async (idol) => {
     const idolId = Number(idol?.id)
@@ -278,7 +279,7 @@ export default function JavGrid({
   if (!hasItems) {
     return (
       <div className="mt-4 flex min-h-[200px] items-center justify-center rounded border border-dashed border-gray-200 text-gray-500">
-        {zh('暂无 JAV 数据', 'No JAV data')}
+        {emptyMessage || zh('暂无 JAV 数据', 'No JAV data')}
       </div>
     )
   }
@@ -2197,7 +2198,23 @@ function JavCard({
   const openableVideos = videos.filter((video) =>
     Boolean(video?.path && (video?.directory?.path || video?.directory_path))
   )
+  const playableVideo = openableVideos[0] || null
   const canOpen = openableVideos.length > 0
+  const inventoryState = String(item?.inventory_state || '')
+    .trim()
+    .toLowerCase()
+  const isPending = inventoryState === 'pending' || (!inventoryState && !canOpen)
+  const acquisitionStage = String(item?.acquisition_stage || '')
+    .trim()
+    .toLowerCase()
+  const acquisitionStageLabel =
+    {
+      metadata_pending: zh('正在补全元数据', 'Collecting metadata'),
+      magnet_collecting: zh('正在收集磁链', 'Collecting magnets'),
+      magnet_review: zh('待筛选磁链', 'Magnet review'),
+      ready_to_download: zh('等待提交下载', 'Ready to download'),
+      download_submitted: zh('已提交下载', 'Download submitted'),
+    }[acquisitionStage] || zh('等待处理', 'Awaiting processing')
   const encodedCode = code ? encodeURIComponent(code) : ''
   const javdbSearchURL = encodedCode ? `https://javdb.com/search?q=${encodedCode}&f=all` : ''
   const favoriteCount = Number(item?.favorite_count) || 0
@@ -2405,11 +2422,16 @@ function JavCard({
     setCustomTagEditorOpen(false)
   }
 
-  const canPlay = Boolean(primaryVideo && primaryVideo.id)
+  const canPlay = Boolean(playableVideo?.id)
+  const playLabel = canPlay
+    ? zh('播放', 'Play')
+    : isPending
+      ? zh('未入库，暂无可播放文件', 'Pending import; no playable file yet')
+      : zh('暂无可播放文件', 'No playable file')
   const handlePlay = (event) => {
     event?.stopPropagation()
     if (!canPlay) return
-    onPlay?.(primaryVideo, item)
+    onPlay?.(playableVideo, item)
   }
   const tags = useMemo(() => {
     const rawTags = Array.isArray(item?.tags) ? item.tags : []
@@ -2744,8 +2766,8 @@ function JavCard({
               className={`pointer-events-auto rounded-full p-3 ${
                 canPlay ? 'bg-black/60 hover:bg-black/80' : 'cursor-not-allowed bg-black/30'
               }`}
-              aria-label={zh('播放', 'Play')}
-              title={zh('播放', 'Play')}
+              aria-label={playLabel}
+              title={playLabel}
             >
               <svg
                 xmlns="http://www.w3.org/2000/svg"
@@ -2926,6 +2948,17 @@ function JavCard({
           ) : null}
         </div>
         <div className="flex flex-1 flex-col gap-2 p-3">
+          {isPending ? (
+            <div
+              className="flex flex-wrap items-center gap-2"
+              aria-label={zh('库存状态', 'Inventory state')}
+            >
+              <span className="inline-flex min-h-6 items-center rounded-full bg-amber-100 px-2.5 text-xs font-bold text-amber-800">
+                {zh('未入库', 'Pending')}
+              </span>
+              <span className="text-xs font-medium text-slate-500">{acquisitionStageLabel}</span>
+            </div>
+          ) : null}
           <div className="text-sm leading-tight" title={titleText} style={titleClampStyle}>
             {codeText ? <span className="font-semibold text-gray-800">{codeText}</span> : null}
             {codeText ? ' ' : null}
@@ -2948,13 +2981,20 @@ function JavCard({
               </Tooltip>
               <span>{releaseText}</span>
             </span>
-            {studioText ? (
-              <span className="flex min-w-0 flex-1 items-center gap-1 overflow-hidden">
-                <Tooltip title={zh('片商', 'Studio')} arrow>
-                  <span className="inline-flex">
-                    <VideocamOutlinedIcon sx={{ fontSize: 16 }} className="shrink-0 text-sky-600" />
-                  </span>
-                </Tooltip>
+            <span
+              className={`flex min-w-0 flex-1 items-center gap-1 overflow-hidden ${
+                studioText ? '' : 'text-amber-700'
+              }`}
+            >
+              <Tooltip title={zh('片商', 'Studio')} arrow>
+                <span className="inline-flex">
+                  <VideocamOutlinedIcon
+                    sx={{ fontSize: 16 }}
+                    className={`shrink-0 ${studioText ? 'text-sky-600' : 'text-amber-600'}`}
+                  />
+                </span>
+              </Tooltip>
+              {studioText ? (
                 <a
                   href={buildStudioFilterHref(item.studio)}
                   className={`block min-w-0 truncate text-left ${
@@ -2970,31 +3010,44 @@ function JavCard({
                 >
                   {studioText}
                 </a>
-              </span>
-            ) : null}
+              ) : (
+                <span className="truncate font-medium">{zh('片商待补全', 'Studio pending')}</span>
+              )}
+            </span>
           </div>
-          {!hideSeries && seriesText ? (
-            <div className="flex min-w-0 items-start gap-1 text-xs text-gray-600">
+          {!hideSeries ? (
+            <div
+              className={`flex min-w-0 items-start gap-1 text-xs ${
+                seriesText ? 'text-gray-600' : 'text-amber-700'
+              }`}
+            >
               <Tooltip title={zh('系列', 'Series')} arrow>
                 <span className="inline-flex">
-                  <MovieCreationIcon sx={{ fontSize: 16 }} className="shrink-0 text-emerald-600" />
+                  <MovieCreationIcon
+                    sx={{ fontSize: 16 }}
+                    className={`shrink-0 ${seriesText ? 'text-emerald-600' : 'text-amber-600'}`}
+                  />
                 </span>
               </Tooltip>
-              <a
-                href={buildSeriesFilterHref(preferredSeries)}
-                className={`min-w-0 whitespace-normal break-words text-left leading-snug ${
-                  canFilterSeries ? 'cursor-pointer hover:text-blue-700 hover:underline' : ''
-                }`}
-                onClick={(event) =>
-                  handleFilterLinkClick(event, () => {
-                    if (canFilterSeries) onSeriesClick(preferredSeries)
-                  })
-                }
-                onMouseEnter={(event) => handleSeriesHoverStart(preferredSeries, event)}
-                onMouseLeave={scheduleHoverClose}
-              >
-                {seriesText}
-              </a>
+              {seriesText ? (
+                <a
+                  href={buildSeriesFilterHref(preferredSeries)}
+                  className={`min-w-0 whitespace-normal break-words text-left leading-snug ${
+                    canFilterSeries ? 'cursor-pointer hover:text-blue-700 hover:underline' : ''
+                  }`}
+                  onClick={(event) =>
+                    handleFilterLinkClick(event, () => {
+                      if (canFilterSeries) onSeriesClick(preferredSeries)
+                    })
+                  }
+                  onMouseEnter={(event) => handleSeriesHoverStart(preferredSeries, event)}
+                  onMouseLeave={scheduleHoverClose}
+                >
+                  {seriesText}
+                </a>
+              ) : (
+                <span className="font-medium">{zh('系列待补全', 'Series pending')}</span>
+              )}
             </div>
           ) : null}
           <Popper
@@ -3132,6 +3185,14 @@ function JavCard({
               />
             </>
           )}
+          {!hideIdols && (!Array.isArray(item?.idols) || item.idols.length === 0) ? (
+            <div
+              className="inline-flex w-fit items-center rounded-full border border-amber-200 bg-amber-50 px-2 py-1 text-xs font-medium text-amber-700"
+              role="status"
+            >
+              {zh('女优待补全', 'Idol metadata pending')}
+            </div>
+          ) : null}
           {!hideTags && tags.length > 0 && (
             <JavTagList
               tags={tags}
@@ -3216,8 +3277,8 @@ function JavCard({
           canPlay={canPlay}
           onClose={() => setDetailOpen(false)}
           onPlay={() => {
-            if (onManageVideoPlay) onManageVideoPlay(primaryVideo)
-            else onPlay?.(primaryVideo, item)
+            if (onManageVideoPlay) onManageVideoPlay(playableVideo)
+            else onPlay?.(playableVideo, item)
           }}
           onOpenFavorites={() => onOpenJavFavorites?.(item)}
           onEdit={() => setEditorOpen(true)}

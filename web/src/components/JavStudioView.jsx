@@ -15,6 +15,9 @@ import {
 import AppModal from '@/components/AppModal'
 import Pagination from '@/components/Pagination'
 import { SeriesCard } from '@/components/JavSeriesView'
+import JavEntityEmptyState from '@/components/JavEntityEmptyState'
+import JavEntityInventoryBadges from '@/components/JavEntityInventoryBadges'
+import JavEntityScopeNotice from '@/components/JavEntityScopeNotice'
 import WaterfallLoader from '@/components/WaterfallLoader'
 import { getErrorMessage } from '@/utils/errors'
 import { zh } from '@/utils/i18n'
@@ -51,24 +54,27 @@ export default function JavStudioView({
 }) {
   return (
     <>
-      <div className="sticky-pagination mb-4 flex justify-center">
-        <Pagination
-          page={page}
-          lastPage={lastPage}
-          totalItems={totalItems}
-          hasPrev={hasPrev}
-          hasNext={hasNext}
-          loading={loading}
-          buildPageUrl={buildPageUrl}
-          onFirst={onFirst}
-          onPrev={onPrev}
-          onGoToPage={onGoToPage}
-          onNext={onNext}
-          onLast={onLast}
-          waterfallMode={waterfallMode}
-          onWaterfallModeChange={onWaterfallModeChange}
-        />
-      </div>
+      <JavEntityScopeNotice entity="studio" />
+      {loading || Number(totalItems) > 0 ? (
+        <div className="sticky-pagination mb-4 flex justify-center">
+          <Pagination
+            page={page}
+            lastPage={lastPage}
+            totalItems={totalItems}
+            hasPrev={hasPrev}
+            hasNext={hasNext}
+            loading={loading}
+            buildPageUrl={buildPageUrl}
+            onFirst={onFirst}
+            onPrev={onPrev}
+            onGoToPage={onGoToPage}
+            onNext={onNext}
+            onLast={onLast}
+            waterfallMode={waterfallMode}
+            onWaterfallModeChange={onWaterfallModeChange}
+          />
+        </div>
+      ) : null}
       {loading ? (
         <div className="mt-4 flex min-h-[200px] items-center justify-center rounded border border-dashed border-gray-200 text-gray-500">
           {zh('加载中…', 'Loading...')}
@@ -121,11 +127,7 @@ function JavStudioGrid({
   }, [items, overrides])
   const hasItems = displayItems.length > 0
   if (!hasItems) {
-    return (
-      <div className="flex min-h-[200px] items-center justify-center rounded border border-dashed border-gray-200 text-gray-500">
-        {zh('暂无片商数据', 'No studio data')}
-      </div>
-    )
+    return <JavEntityEmptyState entity="studio" />
   }
 
   return (
@@ -193,8 +195,6 @@ export function StudioCard({
   const cover = sampleCode ? `/jav/${encodeURIComponent(sampleCode)}/cover` : null
   const name = item?.name || zh('未知片商', 'Unknown studio')
   const studioId = Number(item?.id)
-  const workCount = Number(item?.work_count)
-  const showWorkCount = Number.isFinite(workCount) && workCount > 0
   const codePrefixes = Array.isArray(item?.code_prefixes)
     ? item.code_prefixes
         .map((prefixItem) => {
@@ -505,11 +505,7 @@ export function StudioCard({
             {name}
           </div>
         )}
-        {showWorkCount ? (
-          <div className="absolute left-2 top-2 rounded bg-black/70 px-2 py-1 text-xs text-white">
-            {zh(`作品 ${workCount}`, `${workCount} works`)}
-          </div>
-        ) : null}
+        <JavEntityInventoryBadges item={item} />
         <button
           type="button"
           className={`card-hover-focus-visible absolute right-2 top-2 flex h-8 w-8 items-center justify-center rounded-full shadow-lg shadow-black/40 transition ${

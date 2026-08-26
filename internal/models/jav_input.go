@@ -10,6 +10,10 @@ const (
 	JavInputStatusInvalid          = "invalid"
 	JavInputStatusNote             = "note"
 	JavInputStatusCleared          = "cleared"
+
+	JavAcquisitionStageMetadataPending  = "metadata_pending"
+	JavAcquisitionStageMagnetCollecting = "magnet_collecting"
+	JavAcquisitionStageImported         = "imported"
 )
 
 // JavInputBatch is a complete snapshot of one single or bulk raw-code input.
@@ -37,7 +41,9 @@ type JavInputItem struct {
 	LineNumber      int       `json:"line_number" gorm:"not null"`
 	RawLine         string    `json:"raw_line" gorm:"type:text;not null"`
 	Code            string    `json:"code" gorm:"not null;default:''"`
-	NormalizedCode  string    `json:"normalized_code" gorm:"not null;default:'';index:idx_jav_input_item_normalized_code;uniqueIndex:idx_jav_input_item_accepted_code,where:status = 'accepted'"`
+	NormalizedCode  string    `json:"normalized_code" gorm:"not null;default:'';index:idx_jav_input_item_normalized_code"`
+	JavID           *int64    `json:"jav_id,omitempty" gorm:"index:idx_jav_input_item_jav_id"`
+	Jav             *Jav      `json:"-" gorm:"foreignKey:JavID;references:ID;constraint:OnUpdate:CASCADE,OnDelete:SET NULL"`
 	Status          string    `json:"status" gorm:"not null;index:idx_jav_input_item_status"`
 	DuplicateOfLine int       `json:"duplicate_of_line" gorm:"not null;default:0"`
 	ExistingBatchID *int64    `json:"existing_batch_id,omitempty" gorm:"index:idx_jav_input_item_existing_batch_id"`
@@ -45,14 +51,27 @@ type JavInputItem struct {
 	CreatedAt       time.Time `json:"created_at" gorm:"not null"`
 }
 
+// JavAcquisition marks a canonical work as participating in the top-down
+// acquisition workflow. File inventory is intentionally derived from active
+// VideoLocation rows rather than duplicated as mutable state here.
+type JavAcquisition struct {
+	JavID     int64     `json:"jav_id" gorm:"primaryKey"`
+	Jav       Jav       `json:"-" gorm:"foreignKey:JavID;references:ID;constraint:OnUpdate:CASCADE,OnDelete:CASCADE"`
+	Stage     string    `json:"stage" gorm:"not null;default:metadata_pending;index:idx_jav_acquisition_stage"`
+	CreatedAt time.Time `json:"created_at" gorm:"not null"`
+	UpdatedAt time.Time `json:"updated_at" gorm:"not null"`
+}
+
 // JavInputPreprocessedItem is one globally accepted raw code that has not yet
 // appeared as a final library work backed by an active real file.
 type JavInputPreprocessedItem struct {
 	ID              int64     `json:"id"`
+	JavID           int64     `json:"jav_id"`
 	JavInputBatchID int64     `json:"batch_id"`
 	LineNumber      int       `json:"line_number"`
 	RawLine         string    `json:"raw_line"`
 	Code            string    `json:"code"`
 	NormalizedCode  string    `json:"normalized_code"`
+	Stage           string    `json:"stage"`
 	CreatedAt       time.Time `json:"created_at"`
 }

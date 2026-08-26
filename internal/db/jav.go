@@ -18,6 +18,8 @@ import (
 	"gorm.io/gorm/clause"
 )
 
+var ErrJavMediaConflict = errors.New("JAV already has a different active media asset")
+
 // JavTagCount represents a JAV tag with associated work count.
 type JavTagCount struct {
 	ID             int64  `json:"id"`
@@ -125,13 +127,18 @@ type JavStudioUpdateInput struct {
 	Aliases []string
 }
 
-// JavMetadataScanItem contains a JAV row that needs studio or series metadata.
+// JavMetadataScanItem contains the fields needed to decide which metadata a
+// provider response is still allowed to fill.
 type JavMetadataScanItem struct {
-	ID         int64  `gorm:"column:id"`
-	Code       string `gorm:"column:code"`
-	StudioID   *int64 `gorm:"column:studio_id"`
-	SeriesID   *int64 `gorm:"column:series_id"`
-	SeriesEnID *int64 `gorm:"column:series_en_id"`
+	ID          int64  `gorm:"column:id"`
+	Code        string `gorm:"column:code"`
+	Title       string `gorm:"column:title"`
+	ReleaseUnix int64  `gorm:"column:release_unix"`
+	DurationMin int    `gorm:"column:duration_min"`
+	StudioID    *int64 `gorm:"column:studio_id"`
+	SeriesID    *int64 `gorm:"column:series_id"`
+	SeriesEnID  *int64 `gorm:"column:series_en_id"`
+	IdolCount   int64  `gorm:"column:idol_count"`
 }
 
 // GetJav returns one JAV record with visible files and tags.
@@ -151,6 +158,9 @@ func GetJav(ctx context.Context, javID int64, directoryIDs []int64) (*models.Jav
 	}
 	items := []models.Jav{item}
 	if err := attachJavLocationVideos(ctx, items, directoryIDs); err != nil {
+		return nil, err
+	}
+	if err := attachJavLifecycleStates(ctx, items); err != nil {
 		return nil, err
 	}
 	if err := attachVisibleJavTags(ctx, items); err != nil {
@@ -175,6 +185,7 @@ type JavSearchFilters struct {
 	FavoriteGroupID   int64
 	FavoriteRatingMin *float64
 	FavoriteRatingMax *float64
+	Inventory         string
 }
 
 // SearchJavWithPrefix lists Jav metadata filtered by an exact code prefix plus other filters.
@@ -270,6 +281,9 @@ func SearchJavWithPrefixFilters(ctx context.Context, idolIDs []int64, tagIDs []i
 		return nil, 0, fmt.Errorf("list jav: %w", err)
 	}
 	if err := attachJavLocationVideos(ctx, items, directoryIDs); err != nil {
+		return nil, 0, err
+	}
+	if err := attachJavLifecycleStates(ctx, items); err != nil {
 		return nil, 0, err
 	}
 	if err := attachVisibleJavTags(ctx, items); err != nil {
@@ -398,6 +412,64 @@ func attachJavLocationVideos(ctx context.Context, items []models.Jav, directoryI
 	return nil
 }
 
+func attachJavLifecycleStates(ctx context.Context, items []models.Jav) error {
+	if len(items) == 0 {
+		return nil
+	}
+	ids := make([]int64, 0, len(items))
+	for _, item := range items {
+		if item.ID > 0 {
+			ids = append(ids, item.ID)
+		}
+	}
+	if len(ids) == 0 {
+		return nil
+	}
+
+	var importedIDs []int64
+	if err := common.DB.WithContext(ctx).
+		Table("video_location vl_inventory").
+		Distinct("vl_inventory.jav_id").
+		Joins("JOIN directory d_inventory ON d_inventory.id = vl_inventory.directory_id").
+		Where("vl_inventory.jav_id IN ?", ids).
+		Where(activeLocationWhereSQL("vl_inventory", "d_inventory")).
+		Pluck("vl_inventory.jav_id", &importedIDs).Error; err != nil {
+		return fmt.Errorf("load JAV inventory states: %w", err)
+	}
+	imported := make(map[int64]struct{}, len(importedIDs))
+	for _, javID := range importedIDs {
+		imported[javID] = struct{}{}
+	}
+
+	type acquisitionRow struct {
+		JavID int64  `gorm:"column:jav_id"`
+		Stage string `gorm:"column:stage"`
+	}
+	var acquisitionRows []acquisitionRow
+	if err := common.DB.WithContext(ctx).
+		Table("jav_acquisition").
+		Select("jav_id, stage").
+		Where("jav_id IN ?", ids).
+		Scan(&acquisitionRows).Error; err != nil {
+		return fmt.Errorf("load JAV acquisition stages: %w", err)
+	}
+	stageByJavID := make(map[int64]string, len(acquisitionRows))
+	for _, row := range acquisitionRows {
+		stageByJavID[row.JavID] = strings.TrimSpace(row.Stage)
+	}
+
+	for i := range items {
+		if _, ok := imported[items[i].ID]; ok {
+			items[i].InventoryState = models.JavInventoryImported
+			items[i].AcquisitionStage = models.JavAcquisitionStageImported
+			continue
+		}
+		items[i].InventoryState = models.JavInventoryPending
+		items[i].AcquisitionStage = stageByJavID[items[i].ID]
+	}
+	return nil
+}
+
 // ListJavsForDirectoryProcessing returns every JAV with an active video location
 // in directoryID, including the metadata and locations needed by filesystem jobs.
 func ListJavsForDirectoryProcessing(ctx context.Context, directoryID int64) ([]models.Jav, error) {
@@ -516,6 +588,20 @@ func UpdateJav(ctx context.Context, javID int64, input JavUpdateInput, directory
 			if err := replaceJavScrapedTagsTx(tx, javID, *input.ScrapedTagIDs); err != nil {
 				return err
 			}
+		}
+		// A manually completed metadata edit is also a valid way for a bare
+		// acquisition to leave metadata_pending.  Ensure legacy rows participate
+		// in the lifecycle, then let the same metadata/inventory reconciliation
+		// used by scraper and scanner writes derive the next stage.
+		stageTime := time.Now().UTC()
+		if err := ensureJavAcquisitionTx(tx, javID, stageTime); err != nil {
+			return err
+		}
+		if err := advanceJavAcquisitionAfterMetadataTx(tx, javID, stageTime); err != nil {
+			return err
+		}
+		if err := reconcileJavAcquisitionStagesTx(tx, []int64{javID}); err != nil {
+			return err
 		}
 		return nil
 	})
@@ -1160,15 +1246,35 @@ func replaceJavUserTagsTx(tx *gorm.DB, javIDs, tagIDs []int64) error {
 func buildJavFilter(ctx context.Context, idolIDs []int64, tagIDs []int64, search, prefix string, directoryIDs []int64, filters JavSearchFilters) *gorm.DB {
 	q := common.DB.WithContext(ctx).Model(&models.Jav{})
 	visibleTagProviders := visibleJavTagProviders()
-	// Only include JAV entries that have at least one active file location.
-	validLocation := common.DB.WithContext(ctx).
+	// Inventory is a global property. Directory selection only scopes imported
+	// works; it must never make a pending work appear imported or disappear.
+	globalActiveLocation := common.DB.WithContext(ctx).
 		Table("video_location vl").
 		Select("1").
 		Joins("JOIN directory d ON d.id = vl.directory_id").
 		Where("vl.jav_id = jav.id").
 		Where(activeLocationWhereSQL("vl", "d"))
-	validLocation = applyDirectoryFilter(validLocation, "vl", directoryIDs)
-	q = q.Where("EXISTS (?)", validLocation)
+	scopedActiveLocation := common.DB.WithContext(ctx).
+		Table("video_location vl_scope").
+		Select("1").
+		Joins("JOIN directory d_scope ON d_scope.id = vl_scope.directory_id").
+		Where("vl_scope.jav_id = jav.id").
+		Where(activeLocationWhereSQL("vl_scope", "d_scope"))
+	scopedActiveLocation = applyDirectoryFilter(scopedActiveLocation, "vl_scope", directoryIDs)
+
+	switch normalizeJavInventory(filters.Inventory) {
+	case models.JavInventoryAll:
+		if len(directoryIDs) > 0 {
+			q = q.Where("NOT EXISTS (?) OR EXISTS (?)", globalActiveLocation, scopedActiveLocation)
+		}
+	case models.JavInventoryPending:
+		q = q.Where("NOT EXISTS (?)", globalActiveLocation)
+	default:
+		q = q.Where("EXISTS (?)", globalActiveLocation)
+		if len(directoryIDs) > 0 {
+			q = q.Where("EXISTS (?)", scopedActiveLocation)
+		}
+	}
 	if search != "" {
 		like := fmt.Sprintf("%%%s%%", search)
 		q = q.Where("code LIKE ? OR title LIKE ?", like, like)
@@ -1217,6 +1323,21 @@ func buildJavFilter(ctx context.Context, idolIDs []int64, tagIDs []int64, search
 			Having("COUNT(DISTINCT jim.jav_idol_id) = ?", len(idolIDs))
 	}
 	return q
+}
+
+func normalizeJavInventory(value string) string {
+	switch strings.ToLower(strings.TrimSpace(value)) {
+	case models.JavInventoryAll:
+		return models.JavInventoryAll
+	case models.JavInventoryPending:
+		return models.JavInventoryPending
+	case models.JavInventoryImported:
+		return models.JavInventoryImported
+	default:
+		// Preserve the historical behavior for internal callers that do not yet
+		// opt into the unified inventory view.
+		return models.JavInventoryImported
+	}
 }
 
 // ListJavFilterOptions returns faceted filter candidates for the current JAV
@@ -1394,6 +1515,8 @@ type JavStudioSummary struct {
 	Name          string                       `json:"name"`
 	Aliases       []string                     `json:"aliases,omitempty" gorm:"-"`
 	WorkCount     int64                        `json:"work_count"`
+	PendingCount  int64                        `json:"pending_count"`
+	ImportedCount int64                        `json:"imported_count"`
 	SampleCode    string                       `json:"sample_code"`
 	FavoriteCount int64                        `json:"favorite_count"`
 	CodePrefixes  []JavStudioCodePrefixSummary `json:"code_prefixes" gorm:"-"`
@@ -1407,6 +1530,8 @@ type JavSeriesSummary struct {
 	StudioID      *int64 `json:"studio_id"`
 	StudioName    string `json:"studio_name"`
 	WorkCount     int64  `json:"work_count"`
+	PendingCount  int64  `json:"pending_count"`
+	ImportedCount int64  `json:"imported_count"`
 	SampleCode    string `json:"sample_code"`
 	FavoriteCount int64  `json:"favorite_count"`
 }
@@ -1422,6 +1547,63 @@ func applyJavStudioSearch(q *gorm.DB, search string) *gorm.DB {
 		like,
 		like,
 	)
+}
+
+// applyVisibleJavFilter applies the inventory visibility rule to a query that
+// already has a jav row joined under javAlias. A work without an active file
+// location is pending and remains visible regardless of the directory filter;
+// an imported work is visible only when it has an active location in one of the
+// selected directories. With no directory filter all metadata works are
+// visible. This mirrors buildJavFilter's inventory=all semantics while keeping
+// the entity-list APIs backward compatible (they have no inventory parameter).
+func applyVisibleJavFilter(ctx context.Context, q *gorm.DB, javAlias string, directoryIDs []int64) *gorm.DB {
+	if len(directoryIDs) == 0 {
+		return q
+	}
+	javAlias = strings.TrimSpace(javAlias)
+	if javAlias == "" {
+		javAlias = "jav"
+	}
+
+	globalActiveLocation := common.DB.WithContext(ctx).
+		Table("video_location vl_entity_all").
+		Select("1").
+		Joins("JOIN directory d_entity_all ON d_entity_all.id = vl_entity_all.directory_id").
+		Where("vl_entity_all.jav_id = " + javAlias + ".id").
+		Where(activeLocationWhereSQL("vl_entity_all", "d_entity_all"))
+
+	scopedActiveLocation := common.DB.WithContext(ctx).
+		Table("video_location vl_entity_scope").
+		Select("1").
+		Joins("JOIN directory d_entity_scope ON d_entity_scope.id = vl_entity_scope.directory_id").
+		Where("vl_entity_scope.jav_id = " + javAlias + ".id").
+		Where(activeLocationWhereSQL("vl_entity_scope", "d_entity_scope"))
+	scopedActiveLocation = applyDirectoryFilter(scopedActiveLocation, "vl_entity_scope", directoryIDs)
+
+	return q.Where("NOT EXISTS (?) OR EXISTS (?)", globalActiveLocation, scopedActiveLocation)
+}
+
+// visibleJavIDsSubquery returns the metadata works visible to an entity query.
+// Keeping this as a distinct-id subquery is useful for LEFT JOIN based views
+// such as favorite-group counts, where applying a WHERE predicate directly
+// would incorrectly remove groups that currently have no visible items.
+func visibleJavIDsSubquery(ctx context.Context, directoryIDs []int64) *gorm.DB {
+	query := common.DB.WithContext(ctx).
+		Table("jav j_visible").
+		Select("j_visible.id")
+	return applyVisibleJavFilter(ctx, query, "j_visible", directoryIDs)
+}
+
+// importedJavIDsSubquery returns the globally imported JAV set. Inventory is
+// deliberately global: a directory filter limits which imported works are
+// visible, but it must not turn a work stored elsewhere into a pending work.
+func importedJavIDsSubquery(ctx context.Context) *gorm.DB {
+	return common.DB.WithContext(ctx).
+		Table("video_location vl_entity_inventory").
+		Distinct("vl_entity_inventory.jav_id").
+		Joins("JOIN directory d_entity_inventory ON d_entity_inventory.id = vl_entity_inventory.directory_id").
+		Where("vl_entity_inventory.jav_id IS NOT NULL").
+		Where(activeLocationWhereSQL("vl_entity_inventory", "d_entity_inventory"))
 }
 
 func applyJavSeriesSearch(q *gorm.DB, search string) *gorm.DB {
@@ -1448,11 +1630,8 @@ func ListJavStudios(ctx context.Context, search string, limit, offset int, direc
 
 	countBase := common.DB.WithContext(ctx).
 		Table("jav_studio js").
-		Joins("JOIN jav j ON j.studio_id = js.id").
-		Joins("JOIN video_location vl ON vl.jav_id = j.id").
-		Joins("JOIN directory d ON d.id = vl.directory_id").
-		Where(activeLocationWhereSQL("vl", "d"))
-	countBase = applyDirectoryFilter(countBase, "vl", directoryIDs)
+		Joins("JOIN jav j ON j.studio_id = js.id")
+	countBase = applyVisibleJavFilter(ctx, countBase, "j", directoryIDs)
 	countBase = applyJavStudioSearch(countBase, search)
 	if favoriteGroupID > 0 {
 		countBase = countBase.Joins("JOIN jav_favorite_map jfm_filter ON jfm_filter.entity_id = js.id AND jfm_filter.entity_type = ? AND jfm_filter.jav_favorite_group_id = ?", JavFavoriteEntityStudio, favoriteGroupID)
@@ -1466,11 +1645,8 @@ func ListJavStudios(ctx context.Context, search string, limit, offset int, direc
 	var items []JavStudioSummary
 	base := common.DB.WithContext(ctx).
 		Table("jav_studio js").
-		Joins("JOIN jav j ON j.studio_id = js.id").
-		Joins("JOIN video_location vl ON vl.jav_id = j.id").
-		Joins("JOIN directory d ON d.id = vl.directory_id").
-		Where(activeLocationWhereSQL("vl", "d"))
-	base = applyDirectoryFilter(base, "vl", directoryIDs)
+		Joins("JOIN jav j ON j.studio_id = js.id")
+	base = applyVisibleJavFilter(ctx, base, "j", directoryIDs)
 	base = applyJavStudioSearch(base, search)
 	if favoriteGroupID > 0 {
 		base = base.Joins("JOIN jav_favorite_map jfm_filter ON jfm_filter.entity_id = js.id AND jfm_filter.entity_type = ? AND jfm_filter.jav_favorite_group_id = ?", JavFavoriteEntityStudio, favoriteGroupID)
@@ -1480,8 +1656,9 @@ func ListJavStudios(ctx context.Context, search string, limit, offset int, direc
 		order = "jfm_filter.sort_order ASC, js.name ASC, js.id ASC"
 	}
 	if err := base.
+		Joins("LEFT JOIN (?) entity_inventory ON entity_inventory.jav_id = j.id", importedJavIDsSubquery(ctx)).
 		Joins("LEFT JOIN (?) favorite_counts ON favorite_counts.entity_id = js.id", buildFavoriteCountQuery(ctx, JavFavoriteEntityStudio)).
-		Select("js.id, js.name, COUNT(DISTINCT j.id) AS work_count, MIN(j.code) AS sample_code, COALESCE(favorite_counts.favorite_count, 0) AS favorite_count").
+		Select("js.id, js.name, COUNT(DISTINCT j.id) AS work_count, COUNT(DISTINCT CASE WHEN entity_inventory.jav_id IS NULL THEN j.id END) AS pending_count, COUNT(DISTINCT CASE WHEN entity_inventory.jav_id IS NOT NULL THEN j.id END) AS imported_count, MIN(j.code) AS sample_code, COALESCE(favorite_counts.favorite_count, 0) AS favorite_count").
 		Group("js.id, js.name, favorite_counts.favorite_count").
 		Order(order).
 		Limit(limit).
@@ -1512,14 +1689,12 @@ func GetJavStudioSummary(ctx context.Context, studioID int64, directoryIDs []int
 	query := common.DB.WithContext(ctx).
 		Table("jav_studio js").
 		Joins("JOIN jav j ON j.studio_id = js.id").
-		Joins("JOIN video_location vl ON vl.jav_id = j.id").
-		Joins("JOIN directory d ON d.id = vl.directory_id").
-		Where("js.id = ?", studioID).
-		Where(activeLocationWhereSQL("vl", "d"))
-	query = applyDirectoryFilter(query, "vl", directoryIDs)
+		Where("js.id = ?", studioID)
+	query = applyVisibleJavFilter(ctx, query, "j", directoryIDs)
 	tx := query.
+		Joins("LEFT JOIN (?) entity_inventory ON entity_inventory.jav_id = j.id", importedJavIDsSubquery(ctx)).
 		Joins("LEFT JOIN (?) favorite_counts ON favorite_counts.entity_id = js.id", buildFavoriteCountQuery(ctx, JavFavoriteEntityStudio)).
-		Select("js.id, js.name, COUNT(DISTINCT j.id) AS work_count, MIN(j.code) AS sample_code, COALESCE(favorite_counts.favorite_count, 0) AS favorite_count").
+		Select("js.id, js.name, COUNT(DISTINCT j.id) AS work_count, COUNT(DISTINCT CASE WHEN entity_inventory.jav_id IS NULL THEN j.id END) AS pending_count, COUNT(DISTINCT CASE WHEN entity_inventory.jav_id IS NOT NULL THEN j.id END) AS imported_count, MIN(j.code) AS sample_code, COALESCE(favorite_counts.favorite_count, 0) AS favorite_count").
 		Group("js.id, js.name, favorite_counts.favorite_count").
 		Limit(1).
 		Scan(&item)
@@ -1755,14 +1930,12 @@ func attachJavStudioCodePrefixes(ctx context.Context, items []JavStudioSummary, 
 	query := common.DB.WithContext(ctx).
 		Table("jav j").
 		Select("j.studio_id, "+prefixExpr+" AS prefix, COUNT(DISTINCT j.id) AS work_count").
-		Joins("JOIN video_location vl ON vl.jav_id = j.id").
-		Joins("JOIN directory d ON d.id = vl.directory_id").
 		Where("j.studio_id IN ?", ids).
-		Where(prefixExpr + " <> ''").
-		Where(activeLocationWhereSQL("vl", "d")).
+		Where(prefixExpr + " <> ''")
+	query = applyVisibleJavFilter(ctx, query, "j", directoryIDs)
+	query = query.
 		Group("j.studio_id, " + prefixExpr).
 		Order("j.studio_id, prefix")
-	query = applyDirectoryFilter(query, "vl", directoryIDs)
 	if err := query.Scan(&rows).Error; err != nil {
 		return fmt.Errorf("load jav studio code prefixes: %w", err)
 	}
@@ -1805,23 +1978,23 @@ func attachJavStudioSeries(ctx context.Context, items []JavStudioSummary, direct
 		StudioID       *int64 `gorm:"column:studio_id"`
 		StudioName     string `gorm:"column:studio_name"`
 		WorkCount      int64  `gorm:"column:work_count"`
+		PendingCount   int64  `gorm:"column:pending_count"`
+		ImportedCount  int64  `gorm:"column:imported_count"`
 		SampleCode     string `gorm:"column:sample_code"`
 		FavoriteCount  int64  `gorm:"column:favorite_count"`
 	}
 	var rows []row
 	query := common.DB.WithContext(ctx).
 		Table("jav j").
-		Select("j.studio_id AS parent_studio_id, js.id, js.name, js.studio_id, COALESCE(jst.name, '') AS studio_name, COUNT(DISTINCT j.id) AS work_count, MIN(j.code) AS sample_code, COALESCE(favorite_counts.favorite_count, 0) AS favorite_count").
+		Select("j.studio_id AS parent_studio_id, js.id, js.name, js.studio_id, COALESCE(jst.name, '') AS studio_name, COUNT(DISTINCT j.id) AS work_count, COUNT(DISTINCT CASE WHEN entity_inventory.jav_id IS NULL THEN j.id END) AS pending_count, COUNT(DISTINCT CASE WHEN entity_inventory.jav_id IS NOT NULL THEN j.id END) AS imported_count, MIN(j.code) AS sample_code, COALESCE(favorite_counts.favorite_count, 0) AS favorite_count").
 		Joins("JOIN jav_series js ON j.series_id = js.id").
 		Joins("LEFT JOIN jav_studio jst ON jst.id = js.studio_id").
-		Joins("JOIN video_location vl ON vl.jav_id = j.id").
-		Joins("JOIN directory d ON d.id = vl.directory_id").
+		Joins("LEFT JOIN (?) entity_inventory ON entity_inventory.jav_id = j.id", importedJavIDsSubquery(ctx)).
 		Joins("LEFT JOIN (?) favorite_counts ON favorite_counts.entity_id = js.id", buildFavoriteCountQuery(ctx, JavFavoriteEntitySeries)).
 		Where("j.studio_id IN ?", ids).
-		Where(activeLocationWhereSQL("vl", "d")).
 		Group("j.studio_id, js.id, js.name, js.studio_id, jst.name, favorite_counts.favorite_count").
 		Order("j.studio_id, work_count DESC, js.name ASC")
-	query = applyDirectoryFilter(query, "vl", directoryIDs)
+	query = applyVisibleJavFilter(ctx, query, "j", directoryIDs)
 	if err := query.Scan(&rows).Error; err != nil {
 		return fmt.Errorf("load jav studio series: %w", err)
 	}
@@ -1836,6 +2009,8 @@ func attachJavStudioSeries(ctx context.Context, items []JavStudioSummary, direct
 			StudioID:      r.StudioID,
 			StudioName:    strings.TrimSpace(r.StudioName),
 			WorkCount:     r.WorkCount,
+			PendingCount:  r.PendingCount,
+			ImportedCount: r.ImportedCount,
 			SampleCode:    strings.TrimSpace(r.SampleCode),
 			FavoriteCount: r.FavoriteCount,
 		})
@@ -1852,11 +2027,8 @@ func ListStudioCoverCodes(ctx context.Context, studioID int64, directoryIDs []in
 	query := common.DB.WithContext(ctx).
 		Table("jav j").
 		Select("j.code").
-		Joins("JOIN video_location vl ON vl.jav_id = j.id").
-		Joins("JOIN directory d ON d.id = vl.directory_id").
-		Where("j.studio_id = ?", studioID).
-		Where(activeLocationWhereSQL("vl", "d"))
-	query = applyDirectoryFilter(query, "vl", directoryIDs)
+		Where("j.studio_id = ?", studioID)
+	query = applyVisibleJavFilter(ctx, query, "j", directoryIDs)
 	if err := query.
 		Group("j.code").
 		Order("j.code").
@@ -1881,11 +2053,8 @@ func ListJavSeries(ctx context.Context, search string, limit, offset int, direct
 	countBase := common.DB.WithContext(ctx).
 		Table("jav_series js").
 		Joins("JOIN jav j ON j.series_id = js.id").
-		Joins("JOIN video_location vl ON vl.jav_id = j.id").
-		Joins("JOIN directory d ON d.id = vl.directory_id").
-		Where("COALESCE(js.is_english, 0) = 0").
-		Where(activeLocationWhereSQL("vl", "d"))
-	countBase = applyDirectoryFilter(countBase, "vl", directoryIDs)
+		Where("COALESCE(js.is_english, 0) = 0")
+	countBase = applyVisibleJavFilter(ctx, countBase, "j", directoryIDs)
 	countBase = applyJavSeriesSearch(countBase, search)
 	if favoriteGroupID > 0 {
 		countBase = countBase.Joins("JOIN jav_favorite_map jfm_filter ON jfm_filter.entity_id = js.id AND jfm_filter.entity_type = ? AND jfm_filter.jav_favorite_group_id = ?", JavFavoriteEntitySeries, favoriteGroupID)
@@ -1901,11 +2070,8 @@ func ListJavSeries(ctx context.Context, search string, limit, offset int, direct
 		Table("jav_series js").
 		Joins("JOIN jav j ON j.series_id = js.id").
 		Joins("LEFT JOIN jav_studio jst ON jst.id = js.studio_id").
-		Joins("JOIN video_location vl ON vl.jav_id = j.id").
-		Joins("JOIN directory d ON d.id = vl.directory_id").
-		Where("COALESCE(js.is_english, 0) = 0").
-		Where(activeLocationWhereSQL("vl", "d"))
-	base = applyDirectoryFilter(base, "vl", directoryIDs)
+		Where("COALESCE(js.is_english, 0) = 0")
+	base = applyVisibleJavFilter(ctx, base, "j", directoryIDs)
 	base = applyJavSeriesSearch(base, search)
 	if favoriteGroupID > 0 {
 		base = base.Joins("JOIN jav_favorite_map jfm_filter ON jfm_filter.entity_id = js.id AND jfm_filter.entity_type = ? AND jfm_filter.jav_favorite_group_id = ?", JavFavoriteEntitySeries, favoriteGroupID)
@@ -1915,8 +2081,9 @@ func ListJavSeries(ctx context.Context, search string, limit, offset int, direct
 		order = "jfm_filter.sort_order ASC, js.name ASC, js.id ASC"
 	}
 	if err := base.
+		Joins("LEFT JOIN (?) entity_inventory ON entity_inventory.jav_id = j.id", importedJavIDsSubquery(ctx)).
 		Joins("LEFT JOIN (?) favorite_counts ON favorite_counts.entity_id = js.id", buildFavoriteCountQuery(ctx, JavFavoriteEntitySeries)).
-		Select("js.id, js.name, js.studio_id, jst.name AS studio_name, COUNT(DISTINCT j.id) AS work_count, MIN(j.code) AS sample_code, COALESCE(favorite_counts.favorite_count, 0) AS favorite_count").
+		Select("js.id, js.name, js.studio_id, jst.name AS studio_name, COUNT(DISTINCT j.id) AS work_count, COUNT(DISTINCT CASE WHEN entity_inventory.jav_id IS NULL THEN j.id END) AS pending_count, COUNT(DISTINCT CASE WHEN entity_inventory.jav_id IS NOT NULL THEN j.id END) AS imported_count, MIN(j.code) AS sample_code, COALESCE(favorite_counts.favorite_count, 0) AS favorite_count").
 		Group("js.id, js.name, js.studio_id, jst.name, favorite_counts.favorite_count").
 		Order(order).
 		Limit(limit).
@@ -1939,15 +2106,13 @@ func GetJavSeriesSummary(ctx context.Context, seriesID int64, directoryIDs []int
 		Table("jav_series js").
 		Joins("JOIN jav j ON j.series_id = js.id").
 		Joins("LEFT JOIN jav_studio jst ON jst.id = js.studio_id").
-		Joins("JOIN video_location vl ON vl.jav_id = j.id").
-		Joins("JOIN directory d ON d.id = vl.directory_id").
 		Where("js.id = ?", seriesID).
-		Where("COALESCE(js.is_english, 0) = 0").
-		Where(activeLocationWhereSQL("vl", "d"))
-	query = applyDirectoryFilter(query, "vl", directoryIDs)
+		Where("COALESCE(js.is_english, 0) = 0")
+	query = applyVisibleJavFilter(ctx, query, "j", directoryIDs)
 	tx := query.
+		Joins("LEFT JOIN (?) entity_inventory ON entity_inventory.jav_id = j.id", importedJavIDsSubquery(ctx)).
 		Joins("LEFT JOIN (?) favorite_counts ON favorite_counts.entity_id = js.id", buildFavoriteCountQuery(ctx, JavFavoriteEntitySeries)).
-		Select("js.id, js.name, js.studio_id, jst.name AS studio_name, COUNT(DISTINCT j.id) AS work_count, MIN(j.code) AS sample_code, COALESCE(favorite_counts.favorite_count, 0) AS favorite_count").
+		Select("js.id, js.name, js.studio_id, jst.name AS studio_name, COUNT(DISTINCT j.id) AS work_count, COUNT(DISTINCT CASE WHEN entity_inventory.jav_id IS NULL THEN j.id END) AS pending_count, COUNT(DISTINCT CASE WHEN entity_inventory.jav_id IS NOT NULL THEN j.id END) AS imported_count, MIN(j.code) AS sample_code, COALESCE(favorite_counts.favorite_count, 0) AS favorite_count").
 		Group("js.id, js.name, js.studio_id, jst.name, favorite_counts.favorite_count").
 		Limit(1).
 		Scan(&item)
@@ -1969,11 +2134,8 @@ func ListSeriesCoverCodes(ctx context.Context, seriesID int64, directoryIDs []in
 	query := common.DB.WithContext(ctx).
 		Table("jav j").
 		Select("j.code").
-		Joins("JOIN video_location vl ON vl.jav_id = j.id").
-		Joins("JOIN directory d ON d.id = vl.directory_id").
-		Where("j.series_id = ?", seriesID).
-		Where(activeLocationWhereSQL("vl", "d"))
-	query = applyDirectoryFilter(query, "vl", directoryIDs)
+		Where("j.series_id = ?", seriesID)
+	query = applyVisibleJavFilter(ctx, query, "j", directoryIDs)
 	if err := query.
 		Group("j.code").
 		Order("j.code").
@@ -1998,6 +2160,8 @@ type JavIdolSummary struct {
 	Hips          *int       `json:"hips"`
 	Cup           *int       `json:"cup"`
 	WorkCount     int64      `json:"work_count"`
+	PendingCount  int64      `json:"pending_count"`
+	ImportedCount int64      `json:"imported_count"`
 	CoverJavID    *int64     `json:"cover_jav_id"`
 	CoverCode     string     `json:"cover_code"`
 	CoverCropLeft float64    `json:"cover_crop_left"`
@@ -2044,34 +2208,37 @@ func applyJavIdolSearch(q *gorm.DB, search string) *gorm.DB {
 	)
 }
 
-func buildVisibleSoloIdolCoverQuery(ctx context.Context, directoryIDs []int64) *gorm.DB {
-	soloJavs := common.DB.WithContext(ctx).
+// buildVisibleIdolCoverQuery chooses a deterministic card cover from every
+// visible work linked to an idol. Solo works remain the first choice, but an
+// idol who only appears in multi-idol works must still exist in the catalog.
+func buildVisibleIdolCoverQuery(ctx context.Context, directoryIDs []int64) *gorm.DB {
+	idolCounts := common.DB.WithContext(ctx).
 		Table("jav_idol_map jim_count").
-		Select("jim_count.jav_id").
-		Group("jim_count.jav_id").
-		Having("COUNT(*) = 1")
+		Select("jim_count.jav_id, COUNT(*) AS idol_count").
+		Group("jim_count.jav_id")
 
 	query := common.DB.WithContext(ctx).
-		Table("jav_idol_map jim_solo").
-		Select("jim_solo.jav_idol_id, MIN(j_solo.code) AS cover_code").
-		Joins("JOIN (?) solo_jav ON solo_jav.jav_id = jim_solo.jav_id", soloJavs).
-		Joins("JOIN jav j_solo ON j_solo.id = jim_solo.jav_id").
-		Joins("JOIN video_location vl_solo ON vl_solo.jav_id = jim_solo.jav_id").
-		Joins("JOIN directory d_solo ON d_solo.id = vl_solo.directory_id").
-		Where(activeLocationWhereSQL("vl_solo", "d_solo"))
-	query = applyDirectoryFilter(query, "vl_solo", directoryIDs)
-	return query.
-		Group("jim_solo.jav_idol_id")
+		Table("jav_idol_map jim_cover").
+		Select("jim_cover.jav_idol_id, COALESCE(MIN(CASE WHEN idol_counts.idol_count = 1 THEN NULLIF(TRIM(j_cover.code), '') END), MIN(NULLIF(TRIM(j_cover.code), ''))) AS cover_code").
+		Joins("JOIN jav j_cover ON j_cover.id = jim_cover.jav_id").
+		Joins("LEFT JOIN (?) idol_counts ON idol_counts.jav_id = jim_cover.jav_id", idolCounts)
+	query = applyVisibleJavFilter(ctx, query, "j_cover", directoryIDs)
+	return query.Group("jim_cover.jav_idol_id")
+}
+
+// buildVisibleSoloIdolCoverQuery is kept as a private compatibility shim for
+// older in-package callers. The result now includes a group-work fallback.
+func buildVisibleSoloIdolCoverQuery(ctx context.Context, directoryIDs []int64) *gorm.DB {
+	return buildVisibleIdolCoverQuery(ctx, directoryIDs)
 }
 
 func buildVisibleIdolWorkCountQuery(ctx context.Context, directoryIDs []int64) *gorm.DB {
 	query := common.DB.WithContext(ctx).
 		Table("jav_idol_map jim").
-		Select("jim.jav_idol_id, COUNT(DISTINCT jim.jav_id) AS work_count").
-		Joins("JOIN video_location vl ON vl.jav_id = jim.jav_id").
-		Joins("JOIN directory d ON d.id = vl.directory_id").
-		Where(activeLocationWhereSQL("vl", "d"))
-	query = applyDirectoryFilter(query, "vl", directoryIDs)
+		Select("jim.jav_idol_id, COUNT(DISTINCT jim.jav_id) AS work_count, COUNT(DISTINCT CASE WHEN entity_inventory.jav_id IS NULL THEN jim.jav_id END) AS pending_count, COUNT(DISTINCT CASE WHEN entity_inventory.jav_id IS NOT NULL THEN jim.jav_id END) AS imported_count").
+		Joins("JOIN jav j_visible ON j_visible.id = jim.jav_id").
+		Joins("LEFT JOIN (?) entity_inventory ON entity_inventory.jav_id = j_visible.id", importedJavIDsSubquery(ctx))
+	query = applyVisibleJavFilter(ctx, query, "j_visible", directoryIDs)
 	return query.
 		Group("jim.jav_idol_id")
 }
@@ -2085,13 +2252,13 @@ func GetJavIdolSummary(ctx context.Context, idolID int64, directoryIDs []int64) 
 	var item JavIdolSummary
 	tx := common.DB.WithContext(ctx).
 		Table("jav_idol ji").
-		Select("ji.id, ji.name, ji.roman_name, ji.japanese_name, ji.chinese_name, ji.height_cm, ji.birth_date, ji.bust, ji.waist, ji.hips, ji.cup, COALESCE(idol_work_counts.work_count, 0) AS work_count, ji.cover_jav_id, COALESCE(NULLIF(cover_jav.code, ''), solo_idols.cover_code) AS cover_code, COALESCE(ji.cover_crop_left, 0.53) AS cover_crop_left, COALESCE(favorite_counts.favorite_count, 0) AS favorite_count").
+		Select("ji.id, ji.name, ji.roman_name, ji.japanese_name, ji.chinese_name, ji.height_cm, ji.birth_date, ji.bust, ji.waist, ji.hips, ji.cup, COALESCE(idol_work_counts.work_count, 0) AS work_count, COALESCE(idol_work_counts.pending_count, 0) AS pending_count, COALESCE(idol_work_counts.imported_count, 0) AS imported_count, ji.cover_jav_id, COALESCE(NULLIF(cover_jav.code, ''), idol_covers.cover_code) AS cover_code, COALESCE(ji.cover_crop_left, 0.53) AS cover_crop_left, COALESCE(favorite_counts.favorite_count, 0) AS favorite_count").
 		Joins("LEFT JOIN (?) idol_work_counts ON idol_work_counts.jav_idol_id = ji.id", buildVisibleIdolWorkCountQuery(ctx, directoryIDs)).
-		Joins("LEFT JOIN (?) solo_idols ON solo_idols.jav_idol_id = ji.id", buildVisibleSoloIdolCoverQuery(ctx, directoryIDs)).
+		Joins("LEFT JOIN (?) idol_covers ON idol_covers.jav_idol_id = ji.id", buildVisibleIdolCoverQuery(ctx, directoryIDs)).
 		Joins("LEFT JOIN jav cover_jav ON cover_jav.id = ji.cover_jav_id").
 		Joins("LEFT JOIN (?) favorite_counts ON favorite_counts.jav_idol_id = ji.id", buildIdolFavoriteCountQuery(ctx)).
 		Where("ji.id = ?", idolID).
-		Where("solo_idols.cover_code IS NOT NULL").
+		Where("idol_covers.cover_code IS NOT NULL").
 		Limit(1).
 		Scan(&item)
 	if tx.Error != nil {
@@ -2148,7 +2315,7 @@ func ListJavIdolOptions(ctx context.Context, search string, limit, offset int, d
 
 	var items []JavIdolSummary
 	if err := base.
-		Select("ji.id, ji.name, ji.roman_name, ji.japanese_name, ji.chinese_name, ji.height_cm, ji.birth_date, ji.bust, ji.waist, ji.hips, ji.cup, COALESCE(idol_work_counts.work_count, 0) AS work_count, COALESCE(ji.cover_crop_left, 0.53) AS cover_crop_left").
+		Select("ji.id, ji.name, ji.roman_name, ji.japanese_name, ji.chinese_name, ji.height_cm, ji.birth_date, ji.bust, ji.waist, ji.hips, ji.cup, COALESCE(idol_work_counts.work_count, 0) AS work_count, COALESCE(idol_work_counts.pending_count, 0) AS pending_count, COALESCE(idol_work_counts.imported_count, 0) AS imported_count, COALESCE(ji.cover_crop_left, 0.53) AS cover_crop_left").
 		Joins("LEFT JOIN (?) idol_work_counts ON idol_work_counts.jav_idol_id = ji.id", buildVisibleIdolWorkCountQuery(ctx, directoryIDs)).
 		Order("ji.name ASC, ji.id ASC").
 		Limit(limit).
@@ -2177,11 +2344,11 @@ func ListJavIdols(ctx context.Context, search, sort string, limit, offset int, d
 		filters = filterOptions[0]
 	}
 	filterDate := time.Now().UTC()
-	soloIdols := buildVisibleSoloIdolCoverQuery(ctx, directoryIDs)
+	idolCovers := buildVisibleIdolCoverQuery(ctx, directoryIDs)
 
 	countBase := common.DB.WithContext(ctx).
 		Table("jav_idol ji").
-		Joins("JOIN (?) solo_idols ON solo_idols.jav_idol_id = ji.id", soloIdols)
+		Joins("JOIN (?) idol_covers ON idol_covers.jav_idol_id = ji.id", idolCovers)
 	if favoriteGroupID > 0 {
 		countBase = countBase.Joins("JOIN jav_favorite_map jifm_filter ON jifm_filter.entity_id = ji.id AND jifm_filter.entity_type = ? AND jifm_filter.jav_favorite_group_id = ?", JavFavoriteEntityIdol, favoriteGroupID)
 	}
@@ -2239,23 +2406,21 @@ func ListJavIdols(ctx context.Context, search, sort string, limit, offset int, d
 	}
 	base := common.DB.WithContext(ctx).
 		Table("jav_idol ji").
-		Joins("JOIN (?) solo_idols ON solo_idols.jav_idol_id = ji.id", soloIdols).
+		Joins("JOIN (?) idol_covers ON idol_covers.jav_idol_id = ji.id", idolCovers).
 		Joins("LEFT JOIN (?) favorite_counts ON favorite_counts.jav_idol_id = ji.id", buildIdolFavoriteCountQuery(ctx)).
 		Joins("JOIN jav_idol_map jim ON jim.jav_idol_id = ji.id").
-		Joins("JOIN jav j ON j.id = jim.jav_id").
-		Joins("JOIN video_location vl ON vl.jav_id = j.id").
-		Joins("JOIN directory d ON d.id = vl.directory_id").
-		Where(activeLocationWhereSQL("vl", "d"))
+		Joins("JOIN jav j ON j.id = jim.jav_id")
+	base = applyVisibleJavFilter(ctx, base, "j", directoryIDs)
 	if favoriteGroupID > 0 {
 		base = base.Joins("JOIN jav_favorite_map jifm_filter ON jifm_filter.entity_id = ji.id AND jifm_filter.entity_type = ? AND jifm_filter.jav_favorite_group_id = ?", JavFavoriteEntityIdol, favoriteGroupID)
 	}
-	base = applyDirectoryFilter(base, "vl", directoryIDs)
 	base = applyJavIdolSearch(base, search)
 	base = applyJavIdolFilters(base, filters, filterDate)
 	if err := base.
+		Joins("LEFT JOIN (?) entity_inventory ON entity_inventory.jav_id = j.id", importedJavIDsSubquery(ctx)).
 		Joins("LEFT JOIN jav cover_jav ON cover_jav.id = ji.cover_jav_id").
-		Select("ji.id, ji.name, ji.roman_name, ji.japanese_name, ji.chinese_name, ji.height_cm, ji.birth_date, ji.bust, ji.waist, ji.hips, ji.cup, COUNT(DISTINCT j.id) AS work_count, ji.cover_jav_id, COALESCE(NULLIF(cover_jav.code, ''), solo_idols.cover_code) AS cover_code, COALESCE(ji.cover_crop_left, 0.53) AS cover_crop_left, COALESCE(favorite_counts.favorite_count, 0) AS favorite_count").
-		Group("ji.id, ji.name, ji.roman_name, ji.japanese_name, ji.chinese_name, ji.height_cm, ji.birth_date, ji.bust, ji.waist, ji.hips, ji.cup, ji.cover_jav_id, cover_jav.code, ji.cover_crop_left, solo_idols.cover_code, favorite_counts.favorite_count").
+		Select("ji.id, ji.name, ji.roman_name, ji.japanese_name, ji.chinese_name, ji.height_cm, ji.birth_date, ji.bust, ji.waist, ji.hips, ji.cup, COUNT(DISTINCT j.id) AS work_count, COUNT(DISTINCT CASE WHEN entity_inventory.jav_id IS NULL THEN j.id END) AS pending_count, COUNT(DISTINCT CASE WHEN entity_inventory.jav_id IS NOT NULL THEN j.id END) AS imported_count, ji.cover_jav_id, COALESCE(NULLIF(cover_jav.code, ''), idol_covers.cover_code) AS cover_code, COALESCE(ji.cover_crop_left, 0.53) AS cover_crop_left, COALESCE(favorite_counts.favorite_count, 0) AS favorite_count").
+		Group("ji.id, ji.name, ji.roman_name, ji.japanese_name, ji.chinese_name, ji.height_cm, ji.birth_date, ji.bust, ji.waist, ji.hips, ji.cup, ji.cover_jav_id, cover_jav.code, ji.cover_crop_left, idol_covers.cover_code, favorite_counts.favorite_count").
 		Order(order).
 		Limit(limit).
 		Offset(offset).
@@ -2483,12 +2648,9 @@ func ListIdolCoverCodes(ctx context.Context, idolID int64, directoryIDs []int64)
 		Table("jav_idol_map jim").
 		Select("j.code, CASE WHEN s.c = 1 THEN 1 ELSE 0 END as solo").
 		Joins("JOIN jav j ON j.id = jim.jav_id").
-		Joins("JOIN video_location vl ON vl.jav_id = j.id").
-		Joins("JOIN directory d ON d.id = vl.directory_id").
 		Joins("LEFT JOIN (?) s ON s.jav_id = jim.jav_id", sub).
-		Where("jim.jav_idol_id = ?", idolID).
-		Where(activeLocationWhereSQL("vl", "d"))
-	query = applyDirectoryFilter(query, "vl", directoryIDs)
+		Where("jim.jav_idol_id = ?", idolID)
+	query = applyVisibleJavFilter(ctx, query, "j", directoryIDs)
 	rows, err := query.
 		Group("j.code, solo").
 		Order("solo DESC, j.code").
@@ -2533,12 +2695,9 @@ func ListIdolCoverOptions(ctx context.Context, idolID int64, directoryIDs []int6
 		Table("jav_idol_map jim").
 		Select("j.id, j.code, j.title, CASE WHEN s.c = 1 THEN 1 ELSE 0 END AS solo").
 		Joins("JOIN jav j ON j.id = jim.jav_id").
-		Joins("JOIN video_location vl ON vl.jav_id = j.id").
-		Joins("JOIN directory d ON d.id = vl.directory_id").
 		Joins("LEFT JOIN (?) s ON s.jav_id = jim.jav_id", sub).
-		Where("jim.jav_idol_id = ?", idolID).
-		Where(activeLocationWhereSQL("vl", "d"))
-	query = applyDirectoryFilter(query, "vl", directoryIDs)
+		Where("jim.jav_idol_id = ?", idolID)
+	query = applyVisibleJavFilter(ctx, query, "j", directoryIDs)
 	if err := query.
 		Group("j.id, j.code, j.title, solo").
 		Order("solo DESC, j.code ASC").
@@ -2592,11 +2751,8 @@ func UpdateJavIdolCoverSelection(ctx context.Context, idolID, javID int64, cropL
 
 		visible := tx.Table("jav_idol_map jim").
 			Joins("JOIN jav j ON j.id = jim.jav_id").
-			Joins("JOIN video_location vl ON vl.jav_id = j.id").
-			Joins("JOIN directory d ON d.id = vl.directory_id").
-			Where("jim.jav_idol_id = ? AND jim.jav_id = ?", idolID, javID).
-			Where(activeLocationWhereSQL("vl", "d"))
-		visible = applyDirectoryFilter(visible, "vl", directoryIDs)
+			Where("jim.jav_idol_id = ? AND jim.jav_id = ?", idolID, javID)
+		visible = applyVisibleJavFilter(ctx, visible, "j", directoryIDs)
 		if err := visible.Count(&count).Error; err != nil {
 			return fmt.Errorf("validate idol cover jav: %w", err)
 		}
@@ -2645,12 +2801,9 @@ func FindIdolSoloCode(ctx context.Context, idolID int64) (string, error) {
 		Table("jav_idol_map jim").
 		Select("j.code").
 		Joins("JOIN jav j ON j.id = jim.jav_id").
-		Joins("JOIN video_location vl ON vl.jav_id = j.id").
-		Joins("JOIN directory d ON d.id = vl.directory_id").
 		Joins("LEFT JOIN (?) s ON s.jav_id = jim.jav_id", sub).
 		Where("jim.jav_idol_id = ?", idolID).
 		Where("s.c = 1").
-		Where(activeLocationWhereSQL("vl", "d")).
 		Group("j.code").
 		Order("RANDOM()").
 		Limit(1).
@@ -2666,9 +2819,9 @@ func FindIdolSoloCode(ctx context.Context, idolID int64) (string, error) {
 // ListIdolsMissingProfile returns idols that have no profile fields populated.
 func ListIdolsMissingProfile(ctx context.Context) ([]models.JavIdol, error) {
 	var idols []models.JavIdol
-	soloIdols := buildVisibleSoloIdolCoverQuery(ctx, nil)
+	idolWorks := buildVisibleIdolCoverQuery(ctx, nil)
 	if err := common.DB.WithContext(ctx).
-		Joins("JOIN (?) solo_idols ON solo_idols.jav_idol_id = jav_idol.id", soloIdols).
+		Joins("JOIN (?) idol_works ON idol_works.jav_idol_id = jav_idol.id", idolWorks).
 		Where(`
 (
   japanese_name IS NULL OR japanese_name = '' OR
@@ -2784,8 +2937,12 @@ func videosForJavScanQuery(ctx context.Context) *gorm.DB {
 
 // GetJavByCode fetches a jav record by code.
 func GetJavByCode(ctx context.Context, code string) (*models.Jav, error) {
+	normalizedCode := models.NormalizeJavCode(code)
+	if normalizedCode == "" {
+		return nil, nil
+	}
 	var javRec models.Jav
-	err := common.DB.WithContext(ctx).Where("code = ?", code).First(&javRec).Error
+	err := common.DB.WithContext(ctx).Where("normalized_code = ?", normalizedCode).First(&javRec).Error
 	if err != nil {
 		if errors.Is(err, gorm.ErrRecordNotFound) {
 			return nil, nil
@@ -2797,12 +2954,16 @@ func GetJavByCode(ctx context.Context, code string) (*models.Jav, error) {
 
 // SetVideoLocationJavID links a file location to a jav record, guarding against stale updates when expectedUpdatedAt is provided.
 func SetVideoLocationJavID(ctx context.Context, locationID, javID int64, expectedUpdatedAt time.Time) error {
-	return setVideoLocationJavIDTx(common.DB.WithContext(ctx), locationID, 0, javID, expectedUpdatedAt)
+	return withSQLiteTransactionRetry(ctx, common.DB, func(tx *gorm.DB) error {
+		return setVideoLocationJavIDTx(tx, locationID, 0, javID, expectedUpdatedAt)
+	})
 }
 
 // SetVideoLocationJavIDForVideo links a file location to a jav record while ensuring the location still points at the scanned video.
 func SetVideoLocationJavIDForVideo(ctx context.Context, locationID, videoID, javID int64, expectedUpdatedAt time.Time) error {
-	return setVideoLocationJavIDTx(common.DB.WithContext(ctx), locationID, videoID, javID, expectedUpdatedAt)
+	return withSQLiteTransactionRetry(ctx, common.DB, func(tx *gorm.DB) error {
+		return setVideoLocationJavIDTx(tx, locationID, videoID, javID, expectedUpdatedAt)
+	})
 }
 
 // SaveJavInfoAndLinkLocation upserts jav metadata and associates the video location in one transaction.
@@ -2816,7 +2977,8 @@ func SaveJavInfoAndLinkLocationForVideo(ctx context.Context, info *jav.JavInfo, 
 		return nil, errors.New("jav info is nil")
 	}
 	var javRec *models.Jav
-	err := common.DB.WithContext(ctx).Transaction(func(tx *gorm.DB) error {
+	err := withSQLiteTransactionRetry(ctx, common.DB, func(tx *gorm.DB) error {
+		javRec = nil
 		rec, err := saveJavInfoTx(tx, info)
 		if err != nil {
 			return err
@@ -2842,19 +3004,14 @@ func SaveJavInfoAndLinkVideoLocations(ctx context.Context, info *jav.JavInfo, vi
 		return nil, errors.New("video id cannot be zero")
 	}
 	var javRec *models.Jav
-	err := common.DB.WithContext(ctx).Transaction(func(tx *gorm.DB) error {
+	err := withSQLiteTransactionRetry(ctx, common.DB, func(tx *gorm.DB) error {
+		javRec = nil
 		rec, err := saveJavInfoTx(tx, info)
 		if err != nil {
 			return err
 		}
-		res := tx.Model(&models.VideoLocation{}).
-			Where("video_id = ?", videoID).
-			UpdateColumn("jav_id", rec.ID)
-		if res.Error != nil {
-			return fmt.Errorf("link video locations to jav: %w", res.Error)
-		}
-		if res.RowsAffected == 0 {
-			return gorm.ErrRecordNotFound
+		if err := linkVideoLocationsToJavTx(tx, videoID, rec.ID); err != nil {
+			return err
 		}
 		javRec = rec
 		return nil
@@ -2880,19 +3037,14 @@ func SaveManualJavInfoAndLinkVideoLocations(ctx context.Context, info *jav.JavIn
 	}
 
 	var javRec *models.Jav
-	err := common.DB.WithContext(ctx).Transaction(func(tx *gorm.DB) error {
+	err := withSQLiteTransactionRetry(ctx, common.DB, func(tx *gorm.DB) error {
+		javRec = nil
 		rec, err := saveJavInfoTx(tx, info)
 		if err != nil {
 			return err
 		}
-		res := tx.Model(&models.VideoLocation{}).
-			Where("video_id = ?", videoID).
-			UpdateColumn("jav_id", rec.ID)
-		if res.Error != nil {
-			return fmt.Errorf("link video locations to jav: %w", res.Error)
-		}
-		if res.RowsAffected == 0 {
-			return gorm.ErrRecordNotFound
+		if err := linkVideoLocationsToJavTx(tx, videoID, rec.ID); err != nil {
+			return err
 		}
 		override := models.JavScrapeOverrideManualPrefix + strings.ToUpper(strings.TrimSpace(info.Code))
 		if err := updateVideoJavScrapeOverrideTx(tx, videoID, override); err != nil {
@@ -2923,7 +3075,8 @@ func LinkVideoLocationsToExistingJav(ctx context.Context, code string, videoID i
 	}
 
 	var javRec *models.Jav
-	err := common.DB.WithContext(ctx).Transaction(func(tx *gorm.DB) error {
+	err := withSQLiteTransactionRetry(ctx, common.DB, func(tx *gorm.DB) error {
+		javRec = nil
 		rec, err := lockJavByCodeTx(tx, code)
 		if err != nil {
 			return err
@@ -2931,10 +3084,8 @@ func LinkVideoLocationsToExistingJav(ctx context.Context, code string, videoID i
 		if rec == nil {
 			return nil
 		}
-		if err := tx.Model(&models.VideoLocation{}).
-			Where("video_id = ?", videoID).
-			UpdateColumn("jav_id", rec.ID).Error; err != nil {
-			return fmt.Errorf("link video locations to existing jav: %w", err)
+		if err := linkVideoLocationsToJavTx(tx, videoID, rec.ID); err != nil {
+			return err
 		}
 		override := models.JavScrapeOverrideManualPrefix + code
 		if err := updateVideoJavScrapeOverrideTx(tx, videoID, override); err != nil {
@@ -2955,7 +3106,8 @@ func SaveJavInfo(ctx context.Context, info *jav.JavInfo) (*models.Jav, error) {
 		return nil, errors.New("jav info is nil")
 	}
 	var javRec *models.Jav
-	err := common.DB.WithContext(ctx).Transaction(func(tx *gorm.DB) error {
+	err := withSQLiteTransactionRetry(ctx, common.DB, func(tx *gorm.DB) error {
+		javRec = nil
 		rec, err := saveJavInfoTx(tx, info)
 		if err != nil {
 			return err
@@ -2969,20 +3121,107 @@ func SaveJavInfo(ctx context.Context, info *jav.JavInfo) (*models.Jav, error) {
 	return javRec, nil
 }
 
-// DeleteOrphanJavs removes JAV records that have no video referencing them.
-func DeleteOrphanJavs(ctx context.Context) error {
-	var orphanIDs []int64
-	sub := common.DB.WithContext(ctx).Model(&models.VideoLocation{}).Select("DISTINCT jav_id").Where("jav_id IS NOT NULL")
-	if err := common.DB.WithContext(ctx).Model(&models.Jav{}).
-		Where("id NOT IN (?)", sub).
-		Pluck("id", &orphanIDs).Error; err != nil {
-		return fmt.Errorf("find orphan javs: %w", err)
+// SaveJavPrimaryMetadataIfMissing merges a background provider response into
+// one known canonical work without refreshing fields that are already set.
+// The identity check and missing-field decisions happen in the same
+// transaction, so a concurrent manual edit cannot be overwritten by a stale
+// scanner snapshot.
+func SaveJavPrimaryMetadataIfMissing(ctx context.Context, javID int64, expectedCode string, info *jav.JavInfo) (*models.Jav, error) {
+	if javID <= 0 {
+		return nil, errors.New("jav id must be positive")
 	}
-	if len(orphanIDs) == 0 {
-		return nil
+	if info == nil {
+		return nil, errors.New("jav info is nil")
+	}
+	expectedNormalized := models.NormalizeJavCode(expectedCode)
+	if expectedNormalized == "" {
+		return nil, models.ErrInvalidJavCode
+	}
+	if responseNormalized := models.NormalizeJavCode(info.Code); responseNormalized != "" && responseNormalized != expectedNormalized {
+		return nil, fmt.Errorf("provider JAV code %q does not match requested code %q", info.Code, expectedCode)
 	}
 
-	return common.DB.WithContext(ctx).Transaction(func(tx *gorm.DB) error {
+	var saved *models.Jav
+	err := withSQLiteTransactionRetry(ctx, common.DB, func(tx *gorm.DB) error {
+		saved = nil
+		var current models.Jav
+		if err := tx.Clauses(clause.Locking{Strength: "UPDATE"}).
+			Where("id = ?", javID).
+			First(&current).Error; err != nil {
+			return fmt.Errorf("load JAV for primary metadata merge: %w", err)
+		}
+		currentNormalized := models.NormalizeJavCode(current.NormalizedCode)
+		if currentNormalized == "" {
+			currentNormalized = models.NormalizeJavCode(current.Code)
+		}
+		if currentNormalized != expectedNormalized {
+			return fmt.Errorf("JAV id %d identity changed from requested code %q", javID, expectedCode)
+		}
+
+		metadata := *info
+		metadata.Code = current.Code
+		if strings.TrimSpace(current.Title) != "" {
+			metadata.Title = ""
+		}
+		if current.ReleaseUnix > 0 {
+			metadata.ReleaseUnix = 0
+		}
+		if current.DurationMin > 0 {
+			metadata.DurationMin = 0
+		}
+		if current.StudioID != nil {
+			metadata.Studio = ""
+		}
+		if current.SeriesID != nil {
+			metadata.Series = ""
+		}
+		if current.IsUncensored != nil {
+			metadata.IsUncensored = nil
+		}
+
+		if len(metadata.Tags) > 0 {
+			provider := normalizeJavTagProvider(metadata.Provider)
+			var existingTagCount int64
+			if err := tx.Model(&models.JavTagMap{}).
+				Where("jav_id = ? AND provider = ?", current.ID, int(provider)).
+				Count(&existingTagCount).Error; err != nil {
+				return fmt.Errorf("count existing primary metadata tags: %w", err)
+			}
+			if existingTagCount > 0 {
+				metadata.Tags = nil
+			}
+		}
+
+		record, err := saveJavInfoTx(tx, &metadata)
+		if err != nil {
+			return err
+		}
+		saved = record
+		return nil
+	})
+	if err != nil {
+		return nil, err
+	}
+	return saved, nil
+}
+
+// DeleteOrphanJavs removes JAV records that have no video referencing them.
+func DeleteOrphanJavs(ctx context.Context) error {
+	return withSQLiteTransactionRetry(ctx, common.DB, func(tx *gorm.DB) error {
+		// Select and delete under one write transaction.  Otherwise a concurrent
+		// scanner could link a location after the initial orphan query and lose
+		// the canonical work before the delete transaction begins.
+		var orphanIDs []int64
+		sub := tx.Model(&models.VideoLocation{}).Select("DISTINCT jav_id").Where("jav_id IS NOT NULL")
+		if err := tx.Model(&models.Jav{}).
+			Where("id NOT IN (?)", sub).
+			Where("NOT EXISTS (SELECT 1 FROM jav_acquisition ja WHERE ja.jav_id = jav.id)").
+			Pluck("id", &orphanIDs).Error; err != nil {
+			return fmt.Errorf("find orphan javs: %w", err)
+		}
+		if len(orphanIDs) == 0 {
+			return nil
+		}
 		if err := tx.Where("jav_id IN ?", orphanIDs).Delete(&models.JavTagMap{}).Error; err != nil {
 			return fmt.Errorf("delete orphan jav tag maps: %w", err)
 		}
@@ -3074,12 +3313,39 @@ func ListJavsMissingTitle(ctx context.Context) ([]JavMetadataScanItem, error) {
 	var items []JavMetadataScanItem
 	if err := common.DB.WithContext(ctx).
 		Model(&models.Jav{}).
-		Select("id, code, studio_id, series_id").
+		Select("id, code, title, release_unix, duration_min, studio_id, series_id, (SELECT COUNT(*) FROM jav_idol_map jim_primary_count WHERE jim_primary_count.jav_id = jav.id) AS idol_count").
 		Where("COALESCE(code, '') <> ''").
 		Where("TRIM(COALESCE(title, '')) = ''").
 		Order("created_at ASC, id ASC").
 		Find(&items).Error; err != nil {
 		return nil, fmt.Errorf("list javs missing title: %w", err)
+	}
+	return items, nil
+}
+
+// ListJavsMissingPrimaryMetadata returns JAV rows that still need the localized
+// metadata provider because either their title or their idol relationships are
+// missing. Idol profile enrichment can only run after at least one idol entity
+// exists, so a work that received a title-only response must remain eligible
+// for the primary metadata scanner.
+//
+// Studio and localized series have dedicated provider pipelines and are not
+// included here. Keeping those concerns separate avoids turning a legitimate
+// missing series response into repeated general metadata requests.
+func ListJavsMissingPrimaryMetadata(ctx context.Context) ([]JavMetadataScanItem, error) {
+	var items []JavMetadataScanItem
+	idolMap := common.DB.WithContext(ctx).
+		Table("jav_idol_map jim_primary_metadata").
+		Select("1").
+		Where("jim_primary_metadata.jav_id = jav.id")
+	if err := common.DB.WithContext(ctx).
+		Model(&models.Jav{}).
+		Select("id, code, title, release_unix, duration_min, studio_id, series_id, (SELECT COUNT(*) FROM jav_idol_map jim_primary_count WHERE jim_primary_count.jav_id = jav.id) AS idol_count").
+		Where("TRIM(COALESCE(code, '')) <> ''").
+		Where("TRIM(COALESCE(title, '')) = '' OR NOT EXISTS (?)", idolMap).
+		Order("created_at ASC, id ASC").
+		Find(&items).Error; err != nil {
+		return nil, fmt.Errorf("list javs missing primary metadata: %w", err)
 	}
 	return items, nil
 }
@@ -3323,6 +3589,24 @@ func AppendJavIdolsIfMissingForProvider(ctx context.Context, javID int64, names 
 	return appendJavIdolsIfMissingForProvider(ctx, javID, names, provider)
 }
 
+// JavHasIdols reports whether a canonical work has at least one linked idol.
+// Scanners use this after a best-effort provider response so a concurrent
+// writer or an already-populated mapping cannot be mistaken for a failed
+// append.
+func JavHasIdols(ctx context.Context, javID int64) (bool, error) {
+	if javID <= 0 {
+		return false, errors.New("jav id must be positive")
+	}
+	var count int64
+	if err := common.DB.WithContext(ctx).
+		Model(&models.JavIdolMap{}).
+		Where("jav_id = ?", javID).
+		Count(&count).Error; err != nil {
+		return false, fmt.Errorf("count JAV idols: %w", err)
+	}
+	return count > 0, nil
+}
+
 func saveJavInfoTx(tx *gorm.DB, info *jav.JavInfo, now ...time.Time) (*models.Jav, error) {
 	if tx == nil {
 		return nil, errors.New("tx is nil")
@@ -3332,21 +3616,35 @@ func saveJavInfoTx(tx *gorm.DB, info *jav.JavInfo, now ...time.Time) (*models.Ja
 		ts = now[0]
 	}
 
+	normalizedCode := models.NormalizeJavCode(info.Code)
+	if normalizedCode == "" {
+		return nil, models.ErrInvalidJavCode
+	}
 	javRec, err := lockJavByCodeTx(tx, info.Code)
 	if err != nil {
 		return nil, err
 	}
 	if javRec == nil {
-		javRec = &models.Jav{Code: info.Code}
+		javRec = &models.Jav{Code: info.Code, NormalizedCode: normalizedCode}
 	}
 	provider := jav.ParseProvider(int(info.Provider))
 	if provider == jav.ProviderJavDatabase || provider == jav.ProviderThePornDB {
 		return nil, errors.New("english JAV metadata cannot be persisted")
 	}
 	javRec.Code = info.Code
-	javRec.Title = info.Title
-	javRec.ReleaseUnix = info.ReleaseUnix
-	javRec.DurationMin = info.DurationMin
+	javRec.NormalizedCode = normalizedCode
+	// Providers are allowed to return partial records. Never erase a value
+	// already collected merely because a fallback response omitted it; missing
+	// fields are retried by the corresponding metadata scanner.
+	if title := strings.TrimSpace(info.Title); title != "" {
+		javRec.Title = info.Title
+	}
+	if info.ReleaseUnix > 0 {
+		javRec.ReleaseUnix = info.ReleaseUnix
+	}
+	if info.DurationMin > 0 {
+		javRec.DurationMin = info.DurationMin
+	}
 	javRec.FetchedAt = ts
 	if info.IsUncensored != nil {
 		isUncensored := *info.IsUncensored
@@ -3372,18 +3670,62 @@ func saveJavInfoTx(tx *gorm.DB, info *jav.JavInfo, now ...time.Time) (*models.Ja
 	if err := tx.Omit("sample_images").Save(javRec).Error; err != nil {
 		return nil, fmt.Errorf("save jav: %w", err)
 	}
-
-	tags, err := ensureJavTagsTx(tx, info.Tags, info.Provider)
-	if err != nil {
+	// Metadata may arrive from the scanner (or a manual scrape) without first
+	// passing through the top-down input endpoint.  Keep every canonical work
+	// represented in the same acquisition lifecycle so it cannot be mistaken
+	// for an orphan and can resume the correct stage if its file link changes.
+	if err := ensureJavAcquisitionTx(tx, javRec.ID, ts); err != nil {
 		return nil, err
 	}
-	if err := replaceJavTagsForProviderTx(tx, javRec.ID, tags, info.Provider); err != nil {
-		return nil, err
+
+	if len(info.Tags) > 0 {
+		tags, err := ensureJavTagsTx(tx, info.Tags, info.Provider)
+		if err != nil {
+			return nil, err
+		}
+		if err := replaceJavTagsForProviderTx(tx, javRec.ID, tags, info.Provider); err != nil {
+			return nil, err
+		}
 	}
 	if err := appendJavIdolsTx(tx, javRec, info.Actors); err != nil {
 		return nil, err
 	}
+	if err := advanceJavAcquisitionAfterMetadataTx(tx, javRec.ID, ts); err != nil {
+		return nil, err
+	}
+	if err := reconcileJavAcquisitionStagesTx(tx, []int64{javRec.ID}); err != nil {
+		return nil, err
+	}
 	return javRec, nil
+}
+
+func advanceJavAcquisitionAfterMetadataTx(tx *gorm.DB, javID int64, updatedAt time.Time) error {
+	if tx == nil {
+		return errors.New("tx is nil")
+	}
+	if javID <= 0 {
+		return errors.New("jav id must be positive")
+	}
+	if updatedAt.IsZero() {
+		updatedAt = time.Now().UTC()
+	}
+	metadata := tx.Table("jav j_metadata").
+		Select("1").
+		Where("j_metadata.id = jav_acquisition.jav_id").
+		Where(`TRIM(COALESCE(j_metadata.title, '')) <> '' OR
+			COALESCE(CAST(strftime('%s', j_metadata.fetched_at) AS INTEGER), 0) > 0 OR
+			(typeof(j_metadata.fetched_at) IN ('integer', 'real') AND
+				CAST(j_metadata.fetched_at AS REAL) > 0)`)
+	if err := tx.Model(&models.JavAcquisition{}).
+		Where("jav_id = ? AND stage = ?", javID, models.JavAcquisitionStageMetadataPending).
+		Where("EXISTS (?)", metadata).
+		Updates(map[string]any{
+			"stage":      models.JavAcquisitionStageMagnetCollecting,
+			"updated_at": updatedAt,
+		}).Error; err != nil {
+		return fmt.Errorf("advance JAV acquisition after metadata: %w", err)
+	}
+	return nil
 }
 
 // SetJavSampleImagesIfEmpty stores sample images without replacing an existing list.
@@ -3485,8 +3827,12 @@ func normalizeJavTagProvider(provider jav.Provider) jav.Provider {
 }
 
 func lockJavByCodeTx(tx *gorm.DB, code string) (*models.Jav, error) {
+	normalizedCode := models.NormalizeJavCode(code)
+	if normalizedCode == "" {
+		return nil, nil
+	}
 	var javRec models.Jav
-	err := tx.Clauses(clause.Locking{Strength: "UPDATE"}).Where("code = ?", code).First(&javRec).Error
+	err := tx.Clauses(clause.Locking{Strength: "UPDATE"}).Where("normalized_code = ?", normalizedCode).First(&javRec).Error
 	if err != nil {
 		if errors.Is(err, gorm.ErrRecordNotFound) {
 			return nil, nil
@@ -4160,7 +4506,26 @@ func setVideoLocationJavIDTx(tx *gorm.DB, locationID, expectedVideoID, javID int
 	if tx == nil {
 		return errors.New("tx is nil")
 	}
-	q := tx.Model(&models.VideoLocation{}).Where("id = ?", locationID)
+	var previous struct {
+		JavID *int64 `gorm:"column:jav_id"`
+	}
+	if err := tx.Model(&models.VideoLocation{}).
+		Select("jav_id").
+		Where("id = ?", locationID).
+		Take(&previous).Error; err != nil && !errors.Is(err, gorm.ErrRecordNotFound) {
+		return fmt.Errorf("load previous video location JAV link: %w", err)
+	}
+	q := tx.Model(&models.VideoLocation{}).
+		Where("id = ?", locationID).
+		Where(`NOT EXISTS (
+			SELECT 1
+			FROM video_location vl_existing
+			JOIN directory d_existing ON d_existing.id = vl_existing.directory_id
+			WHERE vl_existing.jav_id = ?
+				AND vl_existing.video_id <> video_location.video_id
+				AND COALESCE(vl_existing.is_delete, 0) = 0
+				AND COALESCE(d_existing.is_delete, 0) = 0
+		)`, javID)
 	if expectedVideoID > 0 {
 		q = q.Where("video_id = ?", expectedVideoID).
 			Where("jav_id IS NULL OR jav_id = ?", javID)
@@ -4171,17 +4536,88 @@ func setVideoLocationJavIDTx(tx *gorm.DB, locationID, expectedVideoID, javID int
 	if res.Error != nil {
 		return res.Error
 	}
-	if res.RowsAffected == 0 && (expectedVideoID > 0 || !expectedUpdatedAt.IsZero()) {
+	if res.RowsAffected > 0 {
+		if err := ensureJavAcquisitionTx(tx, javID, time.Now().UTC()); err != nil {
+			return err
+		}
+		affected := []int64{javID}
+		if previous.JavID != nil {
+			affected = append(affected, *previous.JavID)
+		}
+		return reconcileJavAcquisitionStagesTx(tx, affected)
+	}
+	if res.RowsAffected == 0 {
 		ok, err := videoLocationHasJavIDTx(tx, locationID, expectedVideoID, javID)
 		if err != nil {
 			return err
 		}
 		if ok {
-			return nil
+			return markJavAcquisitionImportedTx(tx, javID)
 		}
-		return fmt.Errorf("video location %d stale or missing", locationID)
+		conflict, err := videoLocationJavMediaConflictTx(tx, locationID, javID)
+		if err != nil {
+			return err
+		}
+		if conflict {
+			return fmt.Errorf("%w: jav_id=%d location_id=%d", ErrJavMediaConflict, javID, locationID)
+		}
+		if expectedVideoID > 0 || !expectedUpdatedAt.IsZero() {
+			return fmt.Errorf("video location %d stale or missing", locationID)
+		}
 	}
 	return nil
+}
+
+func markJavAcquisitionImportedTx(tx *gorm.DB, javID int64) error {
+	if tx == nil {
+		return errors.New("tx is nil")
+	}
+	if javID <= 0 {
+		return errors.New("jav id must be positive")
+	}
+	if err := ensureJavAcquisitionTx(tx, javID, time.Now().UTC()); err != nil {
+		return err
+	}
+	return reconcileJavAcquisitionStagesTx(tx, []int64{javID})
+}
+
+func linkVideoLocationsToJavTx(tx *gorm.DB, videoID, javID int64) error {
+	if tx == nil {
+		return errors.New("tx is nil")
+	}
+	var locationIDs []int64
+	if err := tx.Model(&models.VideoLocation{}).
+		Where("video_id = ?", videoID).
+		Order("id").
+		Pluck("id", &locationIDs).Error; err != nil {
+		return fmt.Errorf("list video locations to link to jav: %w", err)
+	}
+	if len(locationIDs) == 0 {
+		return gorm.ErrRecordNotFound
+	}
+	for _, locationID := range locationIDs {
+		if err := setVideoLocationJavIDTx(tx, locationID, videoID, javID, time.Time{}); err != nil {
+			return fmt.Errorf("link video locations to jav: %w", err)
+		}
+	}
+	return nil
+}
+
+func videoLocationJavMediaConflictTx(tx *gorm.DB, locationID, javID int64) (bool, error) {
+	if tx == nil {
+		return false, errors.New("tx is nil")
+	}
+	var count int64
+	if err := tx.
+		Table("video_location vl_target").
+		Joins("JOIN video_location vl_existing ON vl_existing.jav_id = ? AND vl_existing.video_id <> vl_target.video_id", javID).
+		Joins("JOIN directory d_existing ON d_existing.id = vl_existing.directory_id").
+		Where("vl_target.id = ?", locationID).
+		Where(activeLocationWhereSQL("vl_existing", "d_existing")).
+		Count(&count).Error; err != nil {
+		return false, fmt.Errorf("check JAV media conflict: %w", err)
+	}
+	return count > 0, nil
 }
 
 func videoLocationHasJavIDTx(tx *gorm.DB, locationID, expectedVideoID, javID int64) (bool, error) {

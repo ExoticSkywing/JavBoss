@@ -134,29 +134,39 @@ func UpdateDirectory(ctx context.Context, id int64, path *string, isDelete *bool
 	}
 
 	return updateDirectoryWithVisibility(ctx, id, func(tx *gorm.DB, dir *models.Directory) error {
-		if normalizedPath != nil && dir.Path != *normalizedPath {
+		// The transaction callback can be retried after a stale SQLite snapshot;
+		// keep all attempt-specific decisions local to this invocation.
+		attemptPath := normalizedPath
+		if attemptPath != nil && dir.Path != *attemptPath {
 			var other models.Directory
-			if err := tx.Where("path = ?", *normalizedPath).First(&other).Error; err != nil {
+			if err := tx.Where("path = ?", *attemptPath).First(&other).Error; err != nil {
 				if !errors.Is(err, gorm.ErrRecordNotFound) {
 					return fmt.Errorf("lookup conflicting directory: %w", err)
 				}
 			} else if other.ID != dir.ID {
 				if other.IsDelete {
+					otherJavIDs, err := javIDsForDirectoryTx(tx, other.ID)
+					if err != nil {
+						return err
+					}
 					// Restore the soft-deleted record (other) and mark current dir as deleted instead.
 					if err := tx.Model(&models.Directory{}).
 						Where("id = ?", other.ID).
 						Updates(map[string]any{"is_delete": false, "missing": false}).Error; err != nil {
 						return fmt.Errorf("restore deleted directory: %w", err)
 					}
+					if err := reconcileJavAcquisitionStagesTx(tx, otherJavIDs); err != nil {
+						return err
+					}
 					dir.IsDelete = true
 					// Keep dir.Path unchanged to avoid uniqueness conflict; caller attempted to reuse other's path.
-					normalizedPath = nil
+					attemptPath = nil
 				} else {
-					return fmt.Errorf("directory %q already exists", *normalizedPath)
+					return fmt.Errorf("directory %q already exists", *attemptPath)
 				}
 			}
-			if normalizedPath != nil {
-				dir.Path = *normalizedPath
+			if attemptPath != nil {
+				dir.Path = *attemptPath
 				if err := hideVideoLocationsByDirectoryID(tx, dir.ID); err != nil {
 					return err
 				}
@@ -244,6 +254,10 @@ func hideVideoLocationsByDirectoryID(tx *gorm.DB, directoryID int64) error {
 	if directoryID <= 0 {
 		return errors.New("directory id cannot be zero")
 	}
+	javIDs, err := javIDsForDirectoryTx(tx, directoryID)
+	if err != nil {
+		return err
+	}
 	if err := tx.
 		Model(&models.VideoLocation{}).
 		Where("directory_id = ?", directoryID).
@@ -251,7 +265,7 @@ func hideVideoLocationsByDirectoryID(tx *gorm.DB, directoryID int64) error {
 		Update("is_delete", true).Error; err != nil {
 		return fmt.Errorf("hide video locations for directory: %w", err)
 	}
-	return nil
+	return reconcileJavAcquisitionStagesTx(tx, javIDs)
 }
 
 // SetDirectoryDeletedAndHideVideos toggles deletion flag and hides/unhides its videos.
@@ -268,10 +282,19 @@ func updateDirectoryWithVisibility(ctx context.Context, id int64, mutate func(tx
 	}
 
 	var dir models.Directory
-	err := common.DB.WithContext(ctx).Transaction(func(tx *gorm.DB) error {
+	err := withSQLiteTransactionRetry(ctx, common.DB, func(tx *gorm.DB) error {
+		dir = models.Directory{}
+		// Keep the candidate IDs even when the mutation only changes directory
+		// visibility; active inventory joins directory.is_delete.
+		var affectedJavIDs []int64
 		if err := tx.First(&dir, id).Error; err != nil {
 			return err
 		}
+		beforeIDs, err := javIDsForDirectoryTx(tx, id)
+		if err != nil {
+			return err
+		}
+		affectedJavIDs = append(affectedJavIDs, beforeIDs...)
 
 		if mutate != nil {
 			if err := mutate(tx, &dir); err != nil {
@@ -283,7 +306,12 @@ func updateDirectoryWithVisibility(ctx context.Context, id int64, mutate func(tx
 			return fmt.Errorf("update directory: %w", err)
 		}
 
-		return nil
+		afterIDs, err := javIDsForDirectoryTx(tx, id)
+		if err != nil {
+			return err
+		}
+		affectedJavIDs = append(affectedJavIDs, afterIDs...)
+		return reconcileJavAcquisitionStagesTx(tx, affectedJavIDs)
 	})
 
 	if errors.Is(err, gorm.ErrRecordNotFound) {

@@ -20,6 +20,8 @@ const (
 	javLinkQueueSize   = 4096
 )
 
+var lookupJavByCodeForLocationLink = jav.LookupJavByCode
+
 type javLinkBatch struct {
 	ctx     context.Context
 	tasks   chan int64
@@ -202,7 +204,7 @@ func processVideoLocationJavLinkResult(ctx context.Context, locationID int64) (j
 			return javLinkResult{Outcome: javLinkOutcomeSkipped}, nil
 		}
 	} else if v.JavID != nil {
-		if strings.EqualFold(strings.TrimSpace(v.JavCode), forcedCode) {
+		if javCodesEquivalent(v.JavCode, forcedCode) {
 			return javLinkResult{Outcome: javLinkOutcomeAlreadyLinked}, nil
 		}
 		if err := db.ClearVideoLocationJavIDForVideo(ctx, v.LocationID, v.VideoID, v.UpdatedAt); err != nil {
@@ -253,6 +255,23 @@ func processVideoLocationJavLinkResult(ctx context.Context, locationID int64) (j
 		return javLinkResult{Outcome: javLinkOutcomeError}, nil
 	}
 	return javLinkResult{Outcome: javLinkOutcomeNotFound}, nil
+}
+
+// javCodesEquivalent compares display codes by the same canonical identity
+// used by the database.  A forced scrape may use a provider alias such as
+// FC2-PPV-123 while the linked Jav stores FC2-123; these must not trigger an
+// unnecessary unlink/relink cycle.  Keep the direct case-insensitive check as
+// a compatibility fallback for legacy display values that cannot be
+// normalized.
+func javCodesEquivalent(left, right string) bool {
+	left = strings.TrimSpace(left)
+	right = strings.TrimSpace(right)
+	if strings.EqualFold(left, right) {
+		return true
+	}
+	leftNormalized := models.NormalizeJavCode(left)
+	rightNormalized := models.NormalizeJavCode(right)
+	return leftNormalized != "" && leftNormalized == rightNormalized
 }
 
 func linkExistingJav(ctx context.Context, v *db.JavScanVideo, possibleCodes []string) (bool, bool) {
@@ -329,7 +348,7 @@ func forcedJavScrapeCode(override string) string {
 func lookupAndLinkVideoLocationJav(ctx context.Context, v *db.JavScanVideo, filename string, possibleCodes []string, provider jav.Provider) (bool, bool) {
 	hadError := false
 	for _, code := range possibleCodes {
-		info, err := jav.LookupJavByCode(code, provider)
+		info, err := lookupJavByCodeForLocationLink(code, provider)
 		if err != nil {
 			if errors.Is(err, jav.ResourceNotFonud) {
 				continue

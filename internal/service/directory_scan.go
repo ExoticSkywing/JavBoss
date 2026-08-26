@@ -28,6 +28,7 @@ type FileEntry struct {
 	Filename      string
 	Size          int64
 	ModifiedAt    time.Time
+	FileIdentity  string
 	Fingerprint   string
 	PathKey       string
 	DurationSec   int64
@@ -289,13 +290,15 @@ func walkAndReconcileVideoFiles(ctx context.Context, directory models.Directory,
 
 		relativePath = filepath.ToSlash(cleanRelativePath(relativePath))
 		modTime := info.ModTime().UTC()
+		fileIdentity := filesystemIdentity(info)
 		summary.FilesSeen++
 
-		// If file unchanged (size + mtime), skip probe and DB touches but mark as seen.
+		// If file unchanged (size + mtime + stat identity), skip probe and DB
+		// touches but mark as seen. Legacy rows without an identity probe once.
 		pathKey := makePathKey(directory.ID, relativePath)
 		if existingLoc, ok := state.existingLocationByPath[pathKey]; ok {
 			existingVideo := state.existingByID[existingLoc.VideoID]
-			if existingVideo != nil && existingVideo.Size == info.Size() && existingLoc.ModifiedAt.Equal(modTime) {
+			if canReuseScannedLocation(existingLoc, existingVideo, info.Size(), modTime, fileIdentity) {
 				state.processedLocationIDs[existingLoc.ID] = struct{}{}
 				if existingLoc.IsDelete {
 					saved, err := db.UpsertVideoLocation(ctx, existingLoc.VideoID, directory.ID, relativePath, modTime)
@@ -315,6 +318,17 @@ func walkAndReconcileVideoFiles(ctx context.Context, directory models.Directory,
 					state.javLinks.Enqueue(existingLoc.ID)
 				}
 				return nil
+			}
+			// The path still exists, but its persisted stat identity changed. Do
+			// not let the new file inherit the old work link while it is being
+			// reprobed. The linker will attach the replacement only after its
+			// filename/provider checks succeed.
+			if existingLoc.FileIdentity != "" && fileIdentity != "" && existingLoc.FileIdentity != fileIdentity && existingLoc.JavID != nil {
+				if err := db.ClearVideoLocationJavIDForVideo(ctx, existingLoc.ID, existingLoc.VideoID, existingLoc.UpdatedAt); err != nil {
+					logging.Error("clear JAV link for replaced file failed, skip: path=%s err=%v", normalizedPath, err)
+					return nil
+				}
+				existingLoc.JavID = nil
 			}
 		}
 
@@ -339,12 +353,29 @@ func walkAndReconcileVideoFiles(ctx context.Context, directory models.Directory,
 			Filename:      info.Name(),
 			Size:          info.Size(),
 			ModifiedAt:    modTime,
+			FileIdentity:  fileIdentity,
 			Fingerprint:   fingerprint,
 			DurationSec:   durationSec,
 		}
 
 		return upsertVideo(ctx, fileEntry, state, summary)
 	})
+}
+
+func canReuseScannedLocation(
+	location *models.VideoLocation,
+	video *models.Video,
+	size int64,
+	modifiedAt time.Time,
+	fileIdentity string,
+) bool {
+	if location == nil || video == nil || video.Size != size || !location.ModifiedAt.Equal(modifiedAt) {
+		return false
+	}
+	// On platforms without a usable stat identity retain the historical
+	// size/mtime fallback. On supported platforms an empty persisted identity
+	// forces one probe so old rows are upgraded safely.
+	return fileIdentity == "" || (location.FileIdentity != "" && location.FileIdentity == fileIdentity)
 }
 
 // upsertVideo 根据文件指纹复用或创建视频，并写入当前目录中的文件位置。
@@ -410,7 +441,7 @@ func upsertVideo(ctx context.Context, entry *FileEntry, state *syncState, summar
 
 // upsertLocationForEntry 保存视频文件位置，并加入本次 JAV 关联队列。
 func upsertLocationForEntry(ctx context.Context, video *models.Video, entry *FileEntry, state *syncState) error {
-	loc, err := db.UpsertVideoLocation(ctx, video.ID, entry.DirectoryID, entry.RelativePath, entry.ModifiedAt)
+	loc, err := db.UpsertVideoLocationWithIdentity(ctx, video.ID, entry.DirectoryID, entry.RelativePath, entry.ModifiedAt, entry.FileIdentity)
 	if err != nil {
 		return err
 	}

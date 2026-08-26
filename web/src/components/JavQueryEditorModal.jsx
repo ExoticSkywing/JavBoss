@@ -95,6 +95,7 @@ export default function JavQueryEditorModal({
   favoriteRatingEnabled = false,
   favoriteRatingMin = 0.5,
   favoriteRatingMax = 5,
+  inventory = 'all',
 }) {
   const prefixInputRef = useRef(null)
   const idolInputRef = useRef(null)
@@ -216,6 +217,7 @@ export default function JavQueryEditorModal({
         favoriteRatingEnabled: selectedFavoriteRatingEnabled,
         favoriteRatingMin: selectedFavoriteRatingRange[0],
         favoriteRatingMax: selectedFavoriteRatingRange[1],
+        inventory,
         directoryIds,
         prefixSearch,
         idolSearch,
@@ -261,6 +263,7 @@ export default function JavQueryEditorModal({
     favoriteGroupId,
     idolOptions,
     idolSearch,
+    inventory,
     keyword,
     open,
     prefixSearch,

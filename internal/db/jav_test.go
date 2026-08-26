@@ -2,6 +2,7 @@ package db
 
 import (
 	"context"
+	"errors"
 	"fmt"
 	"path/filepath"
 	"reflect"
@@ -92,6 +93,131 @@ func TestListJavsForDirectoryProcessingLoadsMetadataAndLocations(t *testing.T) {
 	}
 	if len(item.Videos) != 1 || item.Videos[0].Path != "incoming/original.mp4" {
 		t.Fatalf("videos = %+v, want processing location", item.Videos)
+	}
+}
+
+func TestSearchJavInventoryUsesGlobalPresenceAndScopedDirectories(t *testing.T) {
+	gdb := openTestDB(t)
+	ctx := context.Background()
+	now := time.Unix(1710000000, 0).UTC()
+
+	directories := []models.Directory{{Path: "/media/inventory-a"}, {Path: "/media/inventory-b"}}
+	if err := gdb.Create(&directories).Error; err != nil {
+		t.Fatalf("create directories: %v", err)
+	}
+	javs := []models.Jav{
+		{Code: "INV-001", Title: "Pending"},
+		{Code: "INV-002", Title: "Imported A"},
+		{Code: "INV-003", Title: "Imported B"},
+	}
+	if err := gdb.Create(&javs).Error; err != nil {
+		t.Fatalf("create JAVs: %v", err)
+	}
+	if err := gdb.Create(&models.JavAcquisition{
+		JavID: javs[0].ID,
+		Stage: models.JavAcquisitionStageMetadataPending,
+	}).Error; err != nil {
+		t.Fatalf("create pending acquisition: %v", err)
+	}
+
+	for index, directoryIndex := range []int{0, 1} {
+		video := models.Video{Fingerprint: fmt.Sprintf("inventory-video-%d", index)}
+		if err := gdb.Create(&video).Error; err != nil {
+			t.Fatalf("create video %d: %v", index, err)
+		}
+		location, err := UpsertVideoLocation(
+			ctx,
+			video.ID,
+			directories[directoryIndex].ID,
+			fmt.Sprintf("inventory-%d.mp4", index),
+			now,
+		)
+		if err != nil {
+			t.Fatalf("create location %d: %v", index, err)
+		}
+		if err := gdb.Model(&models.VideoLocation{}).
+			Where("id = ?", location.ID).
+			Update("jav_id", javs[index+1].ID).Error; err != nil {
+			t.Fatalf("link location %d: %v", index, err)
+		}
+	}
+
+	search := func(inventory string, directoryIDs []int64) []models.Jav {
+		t.Helper()
+		items, total, err := SearchJavWithPrefixFilters(
+			ctx, nil, nil, "", "", "code", 20, 0, nil, directoryIDs,
+			JavSearchFilters{StudioID: -1, Inventory: inventory},
+		)
+		if err != nil {
+			t.Fatalf("search inventory %q: %v", inventory, err)
+		}
+		if total != int64(len(items)) {
+			t.Fatalf("inventory %q total = %d, items = %d", inventory, total, len(items))
+		}
+		return items
+	}
+	assertCodes := func(items []models.Jav, want ...string) {
+		t.Helper()
+		got := make([]string, 0, len(items))
+		for _, item := range items {
+			got = append(got, item.Code)
+		}
+		if !reflect.DeepEqual(got, want) {
+			t.Fatalf("codes = %v, want %v", got, want)
+		}
+	}
+
+	all := search(models.JavInventoryAll, nil)
+	assertCodes(all, "INV-001", "INV-002", "INV-003")
+	if all[0].InventoryState != models.JavInventoryPending ||
+		all[0].AcquisitionStage != models.JavAcquisitionStageMetadataPending {
+		t.Fatalf("pending lifecycle = inventory %q stage %q", all[0].InventoryState, all[0].AcquisitionStage)
+	}
+	if all[1].InventoryState != models.JavInventoryImported ||
+		all[1].AcquisitionStage != models.JavAcquisitionStageImported {
+		t.Fatalf("imported lifecycle = inventory %q stage %q", all[1].InventoryState, all[1].AcquisitionStage)
+	}
+
+	assertCodes(search(models.JavInventoryPending, []int64{directories[0].ID}), "INV-001")
+	assertCodes(search(models.JavInventoryImported, []int64{directories[0].ID}), "INV-002")
+	assertCodes(
+		search(models.JavInventoryAll, []int64{directories[0].ID}),
+		"INV-001", "INV-002",
+	)
+}
+
+func TestDeleteOrphanJavsPreservesPendingAcquisitions(t *testing.T) {
+	gdb := openTestDB(t)
+	ctx := context.Background()
+
+	pending := models.Jav{Code: "KEEP-001", Title: "Pending acquisition"}
+	legacyOrphan := models.Jav{Code: "DROP-001", Title: "Unreferenced legacy row"}
+	if err := gdb.Create(&pending).Error; err != nil {
+		t.Fatalf("create pending JAV: %v", err)
+	}
+	if err := gdb.Create(&legacyOrphan).Error; err != nil {
+		t.Fatalf("create legacy orphan JAV: %v", err)
+	}
+	if err := gdb.Create(&models.JavAcquisition{
+		JavID: pending.ID,
+		Stage: models.JavAcquisitionStageMetadataPending,
+	}).Error; err != nil {
+		t.Fatalf("create acquisition: %v", err)
+	}
+
+	if err := DeleteOrphanJavs(ctx); err != nil {
+		t.Fatalf("delete orphan JAVs: %v", err)
+	}
+	var kept models.Jav
+	if err := gdb.First(&kept, pending.ID).Error; err != nil {
+		t.Fatalf("pending acquisition was deleted: %v", err)
+	}
+	var droppedCount int64
+	if err := gdb.Model(&models.Jav{}).Where("id = ?", legacyOrphan.ID).Count(&droppedCount).Error; err != nil {
+		t.Fatalf("count legacy orphan: %v", err)
+	}
+	if droppedCount != 0 {
+		t.Fatalf("legacy orphan count = %d, want 0", droppedCount)
 	}
 }
 
@@ -311,7 +437,7 @@ func TestListJavCodesForDirectoryOnlyReturnsVisibleDistinctCodes(t *testing.T) {
 	}
 }
 
-func TestListJavIdolsOnlyIncludesIdolsWithVisibleSoloWorks(t *testing.T) {
+func TestListJavIdolsIncludesPendingSoloWorksAndVisibleImportedWorks(t *testing.T) {
 	db := openTestDB(t)
 	ctx := context.Background()
 	now := time.Unix(1710000000, 0).UTC()
@@ -394,20 +520,296 @@ func TestListJavIdolsOnlyIncludesIdolsWithVisibleSoloWorks(t *testing.T) {
 		t.Fatalf("ListJavIdols: %v", err)
 	}
 
-	if total != 1 {
-		t.Fatalf("unexpected total: got %d want 1", total)
+	if total != 2 {
+		t.Fatalf("unexpected total: got %d want 2", total)
 	}
-	if len(items) != 1 {
-		t.Fatalf("unexpected item count: got %d want 1", len(items))
+	if len(items) != 2 {
+		t.Fatalf("unexpected item count: got %d want 2", len(items))
 	}
-	if items[0].ID != soloIdol.ID {
-		t.Fatalf("unexpected idol id: got %d want %d", items[0].ID, soloIdol.ID)
+	byID := make(map[int64]JavIdolSummary, len(items))
+	for _, item := range items {
+		byID[item.ID] = item
 	}
-	if items[0].WorkCount != 2 {
-		t.Fatalf("unexpected work count: got %d want 2", items[0].WorkCount)
+	if byID[soloIdol.ID].WorkCount != 2 || byID[groupOnlyIdol.ID].WorkCount != 2 {
+		t.Fatalf("unexpected work counts: %#v", byID)
 	}
-	if items[0].CoverCode != soloJav.Code {
-		t.Fatalf("unexpected cover code: got %q want %q", items[0].CoverCode, soloJav.Code)
+	if got := byID[soloIdol.ID]; got.PendingCount != 0 || got.ImportedCount != 2 {
+		t.Fatalf("solo idol inventory counts = %#v, want pending/imported 0/2", got)
+	}
+	if got := byID[groupOnlyIdol.ID]; got.PendingCount != 1 || got.ImportedCount != 1 {
+		t.Fatalf("mixed idol inventory counts = %#v, want pending/imported 1/1", got)
+	}
+	if byID[soloIdol.ID].CoverCode != soloJav.Code {
+		t.Fatalf("unexpected solo cover code: got %q want %q", byID[soloIdol.ID].CoverCode, soloJav.Code)
+	}
+	if byID[groupOnlyIdol.ID].CoverCode != unavailableSoloJav.Code {
+		t.Fatalf("unexpected pending cover code: got %q want %q", byID[groupOnlyIdol.ID].CoverCode, unavailableSoloJav.Code)
+	}
+}
+
+func TestListIdolsMissingProfileIncludesPendingSoloIdol(t *testing.T) {
+	db := openTestDB(t)
+	ctx := context.Background()
+
+	idol := models.JavIdol{Name: "Pending Profile Idol"}
+	if err := db.Create(&idol).Error; err != nil {
+		t.Fatalf("create idol: %v", err)
+	}
+	javRec := models.Jav{Code: "PENDING-001", Title: "Pending Work"}
+	if err := db.Create(&javRec).Error; err != nil {
+		t.Fatalf("create pending JAV: %v", err)
+	}
+	if err := db.Create(&models.JavIdolMap{JavID: javRec.ID, JavIdolID: idol.ID}).Error; err != nil {
+		t.Fatalf("create idol map: %v", err)
+	}
+
+	missing, err := ListIdolsMissingProfile(ctx)
+	if err != nil {
+		t.Fatalf("ListIdolsMissingProfile: %v", err)
+	}
+	if len(missing) != 1 || missing[0].ID != idol.ID {
+		t.Fatalf("missing profile idols = %#v, want pending idol %d", missing, idol.ID)
+	}
+
+	code, err := FindIdolSoloCode(ctx, idol.ID)
+	if err != nil {
+		t.Fatalf("FindIdolSoloCode: %v", err)
+	}
+	if code != javRec.Code {
+		t.Fatalf("pending solo code = %q, want %q", code, javRec.Code)
+	}
+}
+
+func TestListJavIdolsIncludesPendingGroupOnlyIdol(t *testing.T) {
+	db := openTestDB(t)
+	ctx := context.Background()
+
+	groupIdol := models.JavIdol{Name: "Group Only Pending Idol"}
+	coStar := models.JavIdol{Name: "Group Co-Star"}
+	if err := db.Create(&groupIdol).Error; err != nil {
+		t.Fatalf("create group-only idol: %v", err)
+	}
+	if err := db.Create(&coStar).Error; err != nil {
+		t.Fatalf("create group co-star: %v", err)
+	}
+	work := models.Jav{Code: "GROUP-ONLY-001", Title: "Pending group work"}
+	if err := db.Create(&work).Error; err != nil {
+		t.Fatalf("create work: %v", err)
+	}
+	if err := db.Create(&[]models.JavIdolMap{
+		{JavID: work.ID, JavIdolID: groupIdol.ID},
+		{JavID: work.ID, JavIdolID: coStar.ID},
+	}).Error; err != nil {
+		t.Fatalf("create idol maps: %v", err)
+	}
+
+	items, total, err := ListJavIdols(ctx, "", "", 20, 0, nil, 0)
+	if err != nil {
+		t.Fatalf("ListJavIdols: %v", err)
+	}
+	if total != 2 || len(items) != 2 {
+		t.Fatalf("group-only idols total/items = %d/%d, want 2/2", total, len(items))
+	}
+	byID := make(map[int64]JavIdolSummary, len(items))
+	for _, item := range items {
+		byID[item.ID] = item
+	}
+	for _, idol := range []models.JavIdol{groupIdol, coStar} {
+		item, ok := byID[idol.ID]
+		if !ok {
+			t.Fatalf("idol %d is missing from the main list", idol.ID)
+		}
+		if item.WorkCount != 1 || item.CoverCode != work.Code {
+			t.Fatalf("idol %d summary = %#v, want one group work and cover %q", idol.ID, item, work.Code)
+		}
+	}
+
+	detail, err := GetJavIdolSummary(ctx, groupIdol.ID, nil)
+	if err != nil {
+		t.Fatalf("GetJavIdolSummary: %v", err)
+	}
+	if detail.WorkCount != 1 || detail.PendingCount != 1 || detail.ImportedCount != 0 || detail.CoverCode != work.Code {
+		t.Fatalf("group-only detail = %#v, want one work and cover %q", detail, work.Code)
+	}
+
+	// A group-only idol must remain discoverable even though code-based profile
+	// providers require a solo work. The scanner falls back to the idol name
+	// when this deliberately returns no solo code.
+	soloCode, err := FindIdolSoloCode(ctx, groupIdol.ID)
+	if err != nil {
+		t.Fatalf("FindIdolSoloCode: %v", err)
+	}
+	if soloCode != "" {
+		t.Fatalf("group-only idol solo code = %q, want empty", soloCode)
+	}
+
+	missing, err := ListIdolsMissingProfile(ctx)
+	if err != nil {
+		t.Fatalf("ListIdolsMissingProfile: %v", err)
+	}
+	missingIDs := make(map[int64]bool, len(missing))
+	for _, idol := range missing {
+		missingIDs[idol.ID] = true
+	}
+	if !missingIDs[groupIdol.ID] || !missingIDs[coStar.ID] {
+		t.Fatalf("group-only idols missing from profile scan: %#v", missing)
+	}
+}
+
+func TestJavEntityListsKeepPendingWhenDirectoryFilterScopesImported(t *testing.T) {
+	db := openTestDB(t)
+	ctx := context.Background()
+	now := time.Unix(1710000000, 0).UTC()
+
+	directories := []models.Directory{{Path: "/media/entity-a"}, {Path: "/media/entity-b"}}
+	if err := db.Create(&directories).Error; err != nil {
+		t.Fatalf("create directories: %v", err)
+	}
+	studioPending := models.JavStudio{Name: "Pending Studio"}
+	studioA := models.JavStudio{Name: "Imported A Studio"}
+	studioB := models.JavStudio{Name: "Imported B Studio"}
+	for name, studio := range map[string]*models.JavStudio{
+		"pending": &studioPending,
+		"a":       &studioA,
+		"b":       &studioB,
+	} {
+		if err := db.Create(studio).Error; err != nil {
+			t.Fatalf("create studio %s: %v", name, err)
+		}
+	}
+	seriesPending := models.JavSeries{Name: "Pending Series", StudioID: &studioPending.ID}
+	seriesA := models.JavSeries{Name: "Imported A Series", StudioID: &studioA.ID}
+	seriesB := models.JavSeries{Name: "Imported B Series", StudioID: &studioB.ID}
+	for name, series := range map[string]*models.JavSeries{
+		"pending": &seriesPending,
+		"a":       &seriesA,
+		"b":       &seriesB,
+	} {
+		if err := db.Create(series).Error; err != nil {
+			t.Fatalf("create series %s: %v", name, err)
+		}
+	}
+
+	idolPending := models.JavIdol{Name: "Pending Idol"}
+	idolA := models.JavIdol{Name: "Imported A Idol"}
+	idolB := models.JavIdol{Name: "Imported B Idol"}
+	for name, idol := range map[string]*models.JavIdol{
+		"pending": &idolPending,
+		"a":       &idolA,
+		"b":       &idolB,
+	} {
+		if err := db.Create(idol).Error; err != nil {
+			t.Fatalf("create idol %s: %v", name, err)
+		}
+	}
+	// Each work is a solo work so every idol has a deterministic card cover.
+	javs := []models.Jav{
+		{Code: "PEND-001", StudioID: &studioPending.ID, SeriesID: &seriesPending.ID, FetchedAt: now},
+		{Code: "ENTA-001", StudioID: &studioA.ID, SeriesID: &seriesA.ID, FetchedAt: now},
+		{Code: "ENTB-001", StudioID: &studioB.ID, SeriesID: &seriesB.ID, FetchedAt: now},
+	}
+	if err := db.Create(&javs).Error; err != nil {
+		t.Fatalf("create JAVs: %v", err)
+	}
+	if err := db.Create(&[]models.JavIdolMap{
+		{JavID: javs[0].ID, JavIdolID: idolPending.ID},
+		{JavID: javs[1].ID, JavIdolID: idolA.ID},
+		{JavID: javs[2].ID, JavIdolID: idolB.ID},
+	}).Error; err != nil {
+		t.Fatalf("create idol maps: %v", err)
+	}
+
+	for index, directory := range directories {
+		video := models.Video{
+			DirectoryID: directory.ID,
+			Path:        fmt.Sprintf("entity-%d.mp4", index),
+			Filename:    fmt.Sprintf("entity-%d.mp4", index),
+			Fingerprint: fmt.Sprintf("entity-fingerprint-%d", index),
+			JavID:       int64Ptr(javs[index+1].ID),
+			ModifiedAt:  now,
+		}
+		if err := db.Create(&video).Error; err != nil {
+			t.Fatalf("create video %d: %v", index, err)
+		}
+		createVideoLocationsForVideos(t, db, video)
+	}
+
+	assertIDs := func(name string, got []int64, want ...int64) {
+		t.Helper()
+		gotSet := make(map[int64]bool, len(got))
+		for _, id := range got {
+			gotSet[id] = true
+		}
+		wantSet := make(map[int64]bool, len(want))
+		for _, id := range want {
+			wantSet[id] = true
+		}
+		if !reflect.DeepEqual(gotSet, wantSet) {
+			t.Fatalf("%s ids = %v, want %v", name, gotSet, wantSet)
+		}
+	}
+
+	studios, total, err := ListJavStudios(ctx, "", 20, 0, []int64{directories[0].ID})
+	if err != nil {
+		t.Fatalf("ListJavStudios scoped: %v", err)
+	}
+	if total != 2 || len(studios) != 2 {
+		t.Fatalf("scoped studios total/items = %d/%d, want 2/2", total, len(studios))
+	}
+	studioIDs := make([]int64, 0, len(studios))
+	studioByID := make(map[int64]JavStudioSummary, len(studios))
+	for _, item := range studios {
+		studioIDs = append(studioIDs, item.ID)
+		studioByID[item.ID] = item
+	}
+	assertIDs("scoped studios", studioIDs, studioPending.ID, studioA.ID)
+	if got := studioByID[studioPending.ID]; got.WorkCount != 1 || got.PendingCount != 1 || got.ImportedCount != 0 {
+		t.Fatalf("pending studio counts = %#v, want total/pending/imported 1/1/0", got)
+	}
+	if got := studioByID[studioA.ID]; got.WorkCount != 1 || got.PendingCount != 0 || got.ImportedCount != 1 {
+		t.Fatalf("imported studio counts = %#v, want total/pending/imported 1/0/1", got)
+	}
+
+	series, total, err := ListJavSeries(ctx, "", 20, 0, []int64{directories[0].ID})
+	if err != nil {
+		t.Fatalf("ListJavSeries scoped: %v", err)
+	}
+	if total != 2 || len(series) != 2 {
+		t.Fatalf("scoped series total/items = %d/%d, want 2/2", total, len(series))
+	}
+	seriesIDs := make([]int64, 0, len(series))
+	seriesByID := make(map[int64]JavSeriesSummary, len(series))
+	for _, item := range series {
+		seriesIDs = append(seriesIDs, item.ID)
+		seriesByID[item.ID] = item
+	}
+	assertIDs("scoped series", seriesIDs, seriesPending.ID, seriesA.ID)
+	if got := seriesByID[seriesPending.ID]; got.WorkCount != 1 || got.PendingCount != 1 || got.ImportedCount != 0 {
+		t.Fatalf("pending series counts = %#v, want total/pending/imported 1/1/0", got)
+	}
+	if got := seriesByID[seriesA.ID]; got.WorkCount != 1 || got.PendingCount != 0 || got.ImportedCount != 1 {
+		t.Fatalf("imported series counts = %#v, want total/pending/imported 1/0/1", got)
+	}
+
+	idols, total, err := ListJavIdols(ctx, "", "", 20, 0, []int64{directories[0].ID}, 0)
+	if err != nil {
+		t.Fatalf("ListJavIdols scoped: %v", err)
+	}
+	if total != 2 || len(idols) != 2 {
+		t.Fatalf("scoped idols total/items = %d/%d, want 2/2", total, len(idols))
+	}
+	idolIDs := make([]int64, 0, len(idols))
+	idolByID := make(map[int64]JavIdolSummary, len(idols))
+	for _, item := range idols {
+		idolIDs = append(idolIDs, item.ID)
+		idolByID[item.ID] = item
+	}
+	assertIDs("scoped idols", idolIDs, idolPending.ID, idolA.ID)
+	if got := idolByID[idolPending.ID]; got.WorkCount != 1 || got.PendingCount != 1 || got.ImportedCount != 0 {
+		t.Fatalf("pending idol counts = %#v, want total/pending/imported 1/1/0", got)
+	}
+	if got := idolByID[idolA.ID]; got.WorkCount != 1 || got.PendingCount != 0 || got.ImportedCount != 1 {
+		t.Fatalf("imported idol counts = %#v, want total/pending/imported 1/0/1", got)
 	}
 }
 
@@ -626,7 +1028,7 @@ func TestDeleteJavFavoriteGroupCascadesMapsOnNewConnection(t *testing.T) {
 	}
 }
 
-func TestListJavFavoriteGroupsCountsOnlyVisibleItems(t *testing.T) {
+func TestListJavFavoriteGroupsCountsPendingAndImportedItems(t *testing.T) {
 	db := openTestDB(t)
 	ctx := context.Background()
 	now := time.Unix(1710000000, 0).UTC()
@@ -757,8 +1159,8 @@ func TestListJavFavoriteGroupsCountsOnlyVisibleItems(t *testing.T) {
 		return items
 	}
 
-	assertFavoriteGroupCount(JavFavoriteEntityJav, 1)
-	idolItems := assertFavoriteGroupCount(JavFavoriteEntityIdol, 1)
+	assertFavoriteGroupCount(JavFavoriteEntityJav, 2)
+	idolItems := assertFavoriteGroupCount(JavFavoriteEntityIdol, 2)
 	if idolItems[0].RomanName != "Visible Roman" || idolItems[0].JapaneseName != "可視女优" || idolItems[0].ChineseName != "可见女优" {
 		t.Fatalf("ListJavFavoriteGroupItems(%s) names = roman %q japanese %q chinese %q", JavFavoriteEntityIdol, idolItems[0].RomanName, idolItems[0].JapaneseName, idolItems[0].ChineseName)
 	}
@@ -1124,6 +1526,62 @@ func TestUpdateJavEditsTitle(t *testing.T) {
 	assertJavTitle(t, db, javRec.Code, zhTitle)
 }
 
+func TestUpdateJavMetadataAdvancesBareAcquisition(t *testing.T) {
+	db := openTestDB(t)
+	ctx := context.Background()
+	now := time.Now().UTC()
+
+	javRec := models.Jav{Code: "TITLE-BARE-001"}
+	if err := db.Create(&javRec).Error; err != nil {
+		t.Fatalf("create bare jav: %v", err)
+	}
+	if err := db.Create(&models.JavAcquisition{
+		JavID: javRec.ID, Stage: models.JavAcquisitionStageMetadataPending, CreatedAt: now, UpdatedAt: now,
+	}).Error; err != nil {
+		t.Fatalf("create bare acquisition: %v", err)
+	}
+
+	title := "手工补全标题"
+	if _, err := UpdateJav(ctx, javRec.ID, JavUpdateInput{Title: &title}, nil); err != nil {
+		t.Fatalf("UpdateJav title: %v", err)
+	}
+	var acquisition models.JavAcquisition
+	if err := db.First(&acquisition, javRec.ID).Error; err != nil {
+		t.Fatalf("load bare acquisition: %v", err)
+	}
+	if acquisition.Stage != models.JavAcquisitionStageMagnetCollecting {
+		t.Fatalf("bare acquisition stage = %q, want magnet_collecting", acquisition.Stage)
+	}
+}
+
+func TestUpdateJavNonMetadataEditDoesNotAdvanceBareAcquisition(t *testing.T) {
+	db := openTestDB(t)
+	ctx := context.Background()
+	now := time.Now().UTC()
+
+	javRec := models.Jav{Code: "RATING-BARE-001"}
+	if err := db.Create(&javRec).Error; err != nil {
+		t.Fatalf("create bare jav: %v", err)
+	}
+	if err := db.Create(&models.JavAcquisition{
+		JavID: javRec.ID, Stage: models.JavAcquisitionStageMetadataPending, CreatedAt: now, UpdatedAt: now,
+	}).Error; err != nil {
+		t.Fatalf("create bare acquisition: %v", err)
+	}
+
+	rating := 4.5
+	if _, err := UpdateJav(ctx, javRec.ID, JavUpdateInput{FavoriteRating: &rating}, nil); err != nil {
+		t.Fatalf("UpdateJav rating: %v", err)
+	}
+	var acquisition models.JavAcquisition
+	if err := db.First(&acquisition, javRec.ID).Error; err != nil {
+		t.Fatalf("load bare acquisition: %v", err)
+	}
+	if acquisition.Stage != models.JavAcquisitionStageMetadataPending {
+		t.Fatalf("bare acquisition stage after rating edit = %q, want metadata_pending", acquisition.Stage)
+	}
+}
+
 func TestUpdateJavFavoriteRating(t *testing.T) {
 	db := openTestDB(t)
 	ctx := context.Background()
@@ -1433,6 +1891,143 @@ func TestSaveJavInfoAppendsIdolsOnlyWhenMappingMissing(t *testing.T) {
 		"岬ななみ": false,
 	})
 
+}
+
+func TestSaveJavInfoPartialRetryPreservesExistingMetadata(t *testing.T) {
+	openTestDB(t)
+	ctx := context.Background()
+
+	initial, err := SaveJavInfo(ctx, &jav.JavInfo{
+		Code:        "PARTIAL-001",
+		Title:       "Existing title",
+		Studio:      "Existing studio",
+		Series:      "Existing series",
+		ReleaseUnix: 1710000000,
+		DurationMin: 135,
+		Tags:        []string{"Existing tag"},
+		Provider:    jav.ProviderJavBus,
+	})
+	if err != nil {
+		t.Fatalf("save initial metadata: %v", err)
+	}
+	if _, err := SaveJavInfo(ctx, &jav.JavInfo{
+		Code:     "PARTIAL-001",
+		Actors:   []string{"补全女优"},
+		Provider: jav.ProviderJavBus,
+	}); err != nil {
+		t.Fatalf("save partial retry: %v", err)
+	}
+
+	stored, err := GetJav(ctx, initial.ID, nil)
+	if err != nil {
+		t.Fatalf("load retried metadata: %v", err)
+	}
+	if stored.Title != "Existing title" || stored.ReleaseUnix != 1710000000 || stored.DurationMin != 135 {
+		t.Fatalf("scalar metadata was erased: %#v", stored)
+	}
+	if stored.Studio == nil || stored.Studio.Name != "Existing studio" ||
+		stored.Series == nil || stored.Series.Name != "Existing series" {
+		t.Fatalf("entity metadata was erased: studio=%#v series=%#v", stored.Studio, stored.Series)
+	}
+	if len(stored.Idols) != 1 || stored.Idols[0].Name != "补全女优" {
+		t.Fatalf("idol was not appended: %#v", stored.Idols)
+	}
+	if len(stored.Tags) != 1 || stored.Tags[0].Name != "Existing tag" {
+		t.Fatalf("tags were erased: %#v", stored.Tags)
+	}
+}
+
+func TestSaveJavPrimaryMetadataIfMissingDoesNotOverwriteConcurrentValues(t *testing.T) {
+	openTestDB(t)
+	ctx := context.Background()
+	uncensored := false
+
+	initial, err := SaveJavInfo(ctx, &jav.JavInfo{
+		Code:         "PRIMARY-MERGE-001",
+		Title:        "Manual title",
+		Studio:       "Manual studio",
+		Series:       "Manual series",
+		ReleaseUnix:  1710000000,
+		DurationMin:  120,
+		Tags:         []string{"Manual metadata tag"},
+		IsUncensored: &uncensored,
+		Provider:     jav.ProviderJavBus,
+	})
+	if err != nil {
+		t.Fatalf("save initial metadata: %v", err)
+	}
+	providerUncensored := true
+	if _, err := SaveJavPrimaryMetadataIfMissing(ctx, initial.ID, initial.Code, &jav.JavInfo{
+		Code:         initial.Code,
+		Title:        "Stale provider title",
+		Studio:       "Stale provider studio",
+		Series:       "Stale provider series",
+		ReleaseUnix:  1720000000,
+		DurationMin:  180,
+		Tags:         []string{"Replacement provider tag"},
+		Actors:       []string{"Newly filled idol"},
+		IsUncensored: &providerUncensored,
+		Provider:     jav.ProviderJavBus,
+	}); err != nil {
+		t.Fatalf("merge primary metadata: %v", err)
+	}
+
+	stored, err := GetJav(ctx, initial.ID, nil)
+	if err != nil {
+		t.Fatalf("load merged primary metadata: %v", err)
+	}
+	if stored.Title != "Manual title" || stored.ReleaseUnix != 1710000000 || stored.DurationMin != 120 {
+		t.Fatalf("concurrent scalar values were overwritten: %#v", stored)
+	}
+	if stored.Studio == nil || stored.Studio.Name != "Manual studio" ||
+		stored.Series == nil || stored.Series.Name != "Manual series" {
+		t.Fatalf("concurrent entities were overwritten: studio=%#v series=%#v", stored.Studio, stored.Series)
+	}
+	if stored.IsUncensored == nil || *stored.IsUncensored {
+		t.Fatalf("censored classification was overwritten: %#v", stored.IsUncensored)
+	}
+	if len(stored.Tags) != 1 || stored.Tags[0].Name != "Manual metadata tag" {
+		t.Fatalf("provider tags were overwritten: %#v", stored.Tags)
+	}
+	if len(stored.Idols) != 1 || stored.Idols[0].Name != "Newly filled idol" {
+		t.Fatalf("missing idol was not filled: %#v", stored.Idols)
+	}
+}
+
+func TestSaveJavInfoCreatesAcquisitionForDirectMetadataScrape(t *testing.T) {
+	gdb := openTestDB(t)
+	ctx := context.Background()
+
+	saved, err := SaveJavInfo(ctx, &jav.JavInfo{
+		Code:     "DIRECT-001",
+		Title:    "Metadata arrived before input history",
+		Provider: jav.ProviderJavBus,
+	})
+	if err != nil {
+		t.Fatalf("SaveJavInfo: %v", err)
+	}
+	if saved == nil || saved.ID <= 0 {
+		t.Fatalf("saved JAV = %#v", saved)
+	}
+
+	var acquisition models.JavAcquisition
+	if err := gdb.First(&acquisition, saved.ID).Error; err != nil {
+		t.Fatalf("load direct-scrape acquisition: %v", err)
+	}
+	if acquisition.Stage != models.JavAcquisitionStageMagnetCollecting {
+		t.Fatalf("direct-scrape acquisition stage = %q, want magnet_collecting", acquisition.Stage)
+	}
+
+	if err := DeleteOrphanJavs(ctx); err != nil {
+		t.Fatalf("DeleteOrphanJavs: %v", err)
+	}
+	var count int64
+	if err := gdb.Model(&models.Jav{}).Where("id = ?", saved.ID).Count(&count).Error; err != nil {
+		t.Fatalf("count direct-scrape JAV: %v", err)
+	}
+	if count != 1 {
+		t.Fatalf("direct-scrape JAV count after orphan cleanup = %d, want 1", count)
+	}
 }
 
 func TestAppendJavIdolsIfMissingForProvider(t *testing.T) {
@@ -2293,7 +2888,6 @@ func TestListJavsMissingTitle(t *testing.T) {
 		{Code: "MISS-001", FetchedAt: now, CreatedAt: now},
 		{Code: "MISS-002", Title: "  ", FetchedAt: now.Add(time.Second), CreatedAt: now.Add(time.Second)},
 		{Code: "HAVE-001", Title: "中文标题", FetchedAt: now.Add(2 * time.Second), CreatedAt: now.Add(2 * time.Second)},
-		{Code: "", FetchedAt: now.Add(3 * time.Second), CreatedAt: now.Add(3 * time.Second)},
 	}
 	if err := gdb.Create(&rows).Error; err != nil {
 		t.Fatalf("create jav rows: %v", err)
@@ -2308,6 +2902,49 @@ func TestListJavsMissingTitle(t *testing.T) {
 	}
 	if items[0].Code != "MISS-001" || items[1].Code != "MISS-002" {
 		t.Fatalf("unexpected codes: got %q, %q", items[0].Code, items[1].Code)
+	}
+}
+
+func TestListJavsMissingPrimaryMetadataIncludesTitleOnlyWork(t *testing.T) {
+	gdb := openTestDB(t)
+	ctx := context.Background()
+	now := time.Unix(1710000000, 0).UTC()
+
+	studio := models.JavStudio{Name: "Primary Metadata Studio"}
+	idol := models.JavIdol{Name: "Primary Metadata Idol"}
+	if err := gdb.Create(&studio).Error; err != nil {
+		t.Fatalf("create studio: %v", err)
+	}
+	if err := gdb.Create(&idol).Error; err != nil {
+		t.Fatalf("create idol: %v", err)
+	}
+	rows := []models.Jav{
+		{Code: "MISS-TITLE-001", StudioID: &studio.ID, CreatedAt: now},
+		{Code: "MISS-IDOL-001", Title: "Already has a title", StudioID: &studio.ID, CreatedAt: now.Add(time.Second)},
+		{Code: "COMPLETE-001", Title: "Complete metadata", StudioID: &studio.ID, CreatedAt: now.Add(2 * time.Second)},
+	}
+	if err := gdb.Create(&rows).Error; err != nil {
+		t.Fatalf("create jav rows: %v", err)
+	}
+	for _, javID := range []int64{rows[0].ID, rows[2].ID} {
+		if err := gdb.Create(&models.JavIdolMap{JavID: javID, JavIdolID: idol.ID}).Error; err != nil {
+			t.Fatalf("create idol map for jav %d: %v", javID, err)
+		}
+	}
+
+	items, err := ListJavsMissingPrimaryMetadata(ctx)
+	if err != nil {
+		t.Fatalf("ListJavsMissingPrimaryMetadata: %v", err)
+	}
+	if len(items) != 2 {
+		t.Fatalf("unexpected candidates: %#v", items)
+	}
+	if items[0].Code != "MISS-TITLE-001" || items[1].Code != "MISS-IDOL-001" {
+		t.Fatalf("unexpected candidate order: %#v", items)
+	}
+	if items[0].Title != "" || items[0].IdolCount != 1 ||
+		items[1].Title != "Already has a title" || items[1].IdolCount != 0 {
+		t.Fatalf("candidate completeness flags are wrong: %#v", items)
 	}
 }
 
@@ -2384,7 +3021,6 @@ func TestListJavsMissingUncensored(t *testing.T) {
 		{Code: "MISS-002", FetchedAt: now.Add(time.Second), CreatedAt: now.Add(time.Second)},
 		{Code: "UNC-001", IsUncensored: &uncensored, FetchedAt: now.Add(2 * time.Second), CreatedAt: now.Add(2 * time.Second)},
 		{Code: "CEN-001", IsUncensored: &censored, FetchedAt: now.Add(3 * time.Second), CreatedAt: now.Add(3 * time.Second)},
-		{Code: "", FetchedAt: now.Add(4 * time.Second), CreatedAt: now.Add(4 * time.Second)},
 	}
 	if err := gdb.Create(&rows).Error; err != nil {
 		t.Fatalf("create jav rows: %v", err)
@@ -2426,7 +3062,6 @@ func TestListUncensoredJavsMissingAvsoxMetadata(t *testing.T) {
 		{Code: "HAVE-ALL", IsUncensored: &uncensored, StudioID: &studio.ID, SeriesID: &series.ID, FetchedAt: now.Add(4 * time.Second), CreatedAt: now.Add(4 * time.Second)},
 		{Code: "CEN-MISS", IsUncensored: &censored, FetchedAt: now.Add(4 * time.Second), CreatedAt: now.Add(4 * time.Second)},
 		{Code: "UNK-MISS", FetchedAt: now.Add(5 * time.Second), CreatedAt: now.Add(5 * time.Second)},
-		{Code: "", IsUncensored: &uncensored, FetchedAt: now.Add(6 * time.Second), CreatedAt: now.Add(6 * time.Second)},
 	}
 	if err := gdb.Create(&rows).Error; err != nil {
 		t.Fatalf("create jav rows: %v", err)
@@ -2635,6 +3270,124 @@ func TestSetVideoLocationJavIDForVideoAllowsStaleTimestampWhenUnlinked(t *testin
 	}
 	if got.JavID == nil || *got.JavID != javRec.ID {
 		t.Fatalf("jav id not linked: %#v", got.JavID)
+	}
+}
+
+func TestSetVideoLocationJavIDRejectsDifferentActiveMediaForSameWork(t *testing.T) {
+	gdb := openTestDB(t)
+	ctx := context.Background()
+	now := time.Unix(1710000000, 0).UTC()
+
+	directories := []models.Directory{{Path: "/tmp/conflict-a"}, {Path: "/tmp/conflict-b"}}
+	if err := gdb.Create(&directories).Error; err != nil {
+		t.Fatalf("create directories: %v", err)
+	}
+	javRec := models.Jav{Code: "ONE-001", Title: "One canonical work"}
+	if err := gdb.Create(&javRec).Error; err != nil {
+		t.Fatalf("create jav: %v", err)
+	}
+	videos := []models.Video{
+		{Fingerprint: "one-media-first", DurationSec: 7200},
+		{Fingerprint: "one-media-different", DurationSec: 7200},
+	}
+	if err := gdb.Create(&videos).Error; err != nil {
+		t.Fatalf("create videos: %v", err)
+	}
+
+	first, err := UpsertVideoLocation(ctx, videos[0].ID, directories[0].ID, "ONE-001.mp4", now)
+	if err != nil {
+		t.Fatalf("create first location: %v", err)
+	}
+	if err := SetVideoLocationJavIDForVideo(ctx, first.ID, videos[0].ID, javRec.ID, first.UpdatedAt); err != nil {
+		t.Fatalf("link first media: %v", err)
+	}
+
+	// A mirror location for the same fingerprint resolves to the same Video and
+	// remains valid for the canonical work.
+	mirror, err := UpsertVideoLocation(ctx, videos[0].ID, directories[1].ID, "mirror/ONE-001.mp4", now)
+	if err != nil {
+		t.Fatalf("create mirror location: %v", err)
+	}
+	if err := SetVideoLocationJavIDForVideo(ctx, mirror.ID, videos[0].ID, javRec.ID, mirror.UpdatedAt); err != nil {
+		t.Fatalf("link same-media mirror: %v", err)
+	}
+
+	different, err := UpsertVideoLocation(ctx, videos[1].ID, directories[1].ID, "replacement/ONE-001.mp4", now)
+	if err != nil {
+		t.Fatalf("create different media location: %v", err)
+	}
+	err = SetVideoLocationJavIDForVideo(ctx, different.ID, videos[1].ID, javRec.ID, different.UpdatedAt)
+	if !errors.Is(err, ErrJavMediaConflict) {
+		t.Fatalf("different media error = %v, want ErrJavMediaConflict", err)
+	}
+	var stored models.VideoLocation
+	if err := gdb.First(&stored, different.ID).Error; err != nil {
+		t.Fatalf("reload different media location: %v", err)
+	}
+	if stored.JavID != nil {
+		t.Fatalf("conflicting media was linked to jav_id=%d", *stored.JavID)
+	}
+}
+
+func TestSetVideoLocationJavIDRollsBackWhenImportedStageUpdateFails(t *testing.T) {
+	gdb := openTestDB(t)
+	ctx := context.Background()
+	now := time.Unix(1710000000, 0).UTC()
+
+	dir := models.Directory{Path: "/tmp/imported-stage-rollback"}
+	if err := gdb.Create(&dir).Error; err != nil {
+		t.Fatalf("create directory: %v", err)
+	}
+	video := models.Video{Fingerprint: "imported-stage-rollback", DurationSec: 7200}
+	if err := gdb.Create(&video).Error; err != nil {
+		t.Fatalf("create video: %v", err)
+	}
+	javRec := models.Jav{Code: "ROLL-001", NormalizedCode: "ROLL001", Title: "Rollback work"}
+	if err := gdb.Create(&javRec).Error; err != nil {
+		t.Fatalf("create jav: %v", err)
+	}
+	acquisition := models.JavAcquisition{
+		JavID:     javRec.ID,
+		Stage:     models.JavAcquisitionStageMagnetCollecting,
+		CreatedAt: now,
+		UpdatedAt: now,
+	}
+	if err := gdb.Create(&acquisition).Error; err != nil {
+		t.Fatalf("create acquisition: %v", err)
+	}
+	location, err := UpsertVideoLocation(ctx, video.ID, dir.ID, "ROLL-001.mp4", now)
+	if err != nil {
+		t.Fatalf("create video location: %v", err)
+	}
+	if err := gdb.Exec(`
+		CREATE TRIGGER fail_imported_stage_update
+		BEFORE UPDATE OF stage ON jav_acquisition
+		WHEN NEW.stage = 'imported'
+		BEGIN
+			SELECT RAISE(ABORT, 'forced imported stage failure');
+		END
+	`).Error; err != nil {
+		t.Fatalf("create imported stage failure trigger: %v", err)
+	}
+
+	err = SetVideoLocationJavIDForVideo(ctx, location.ID, video.ID, javRec.ID, location.UpdatedAt)
+	if err == nil {
+		t.Fatal("expected imported stage update failure")
+	}
+
+	var storedLocation models.VideoLocation
+	if err := gdb.First(&storedLocation, location.ID).Error; err != nil {
+		t.Fatalf("reload video location: %v", err)
+	}
+	if storedLocation.JavID != nil {
+		t.Fatalf("jav link survived imported stage rollback: %#v", storedLocation.JavID)
+	}
+	var storedAcquisition models.JavAcquisition
+	if err := gdb.First(&storedAcquisition, javRec.ID).Error; err != nil {
+		t.Fatalf("reload acquisition: %v", err)
+	}
+	if storedAcquisition.Stage != models.JavAcquisitionStageMagnetCollecting {
+		t.Fatalf("acquisition stage = %q, want magnet_collecting", storedAcquisition.Stage)
 	}
 }
 

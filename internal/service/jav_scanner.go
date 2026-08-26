@@ -13,18 +13,47 @@ import (
 	"javboss/internal/common/logging"
 	"javboss/internal/db"
 	"javboss/internal/jav"
+	"javboss/internal/models"
+	"javboss/internal/util"
 )
 
 const javUncensoredBackfillDoneConfigKey = "jav_uncensored_backfill_done"
 
 var javSeriesAvmooNoUpdateRounds atomic.Uint32
+var javMetadataScanRequests = make(chan struct{}, 1)
+var lookupJavMetadataByCode = jav.LookupJavByCode
+var lookupJavUncensoredByCode = jav.LookupJavByCode
+var enqueueJavMetadataCover = enqueueCover
 
 type periodicScanFunc func(context.Context) error
 type localSeriesScanFunc func(context.Context) (int64, error)
 
 // StartJavMetadataScanner periodically fills missing JAV metadata using the fast providers.
 func StartJavMetadataScanner(ctx context.Context, interval time.Duration) {
-	startPeriodicScanner(ctx, interval, "jav metadata", ScanJavMetadata)
+	go func() {
+		ticker := time.NewTicker(interval)
+		defer ticker.Stop()
+		for {
+			if err := ScanJavMetadata(ctx); err != nil {
+				logging.Error("jav metadata scan failed: %v", err)
+			}
+			select {
+			case <-ctx.Done():
+				return
+			case <-ticker.C:
+			case <-javMetadataScanRequests:
+			}
+		}
+	}()
+}
+
+// RequestJavMetadataScan coalesces input bursts into an immediate background
+// metadata pass. It never blocks the local transaction that creates Jav rows.
+func RequestJavMetadataScan() {
+	select {
+	case javMetadataScanRequests <- struct{}{}:
+	default:
+	}
 }
 
 // StartUncensoredJavMetadataScanner periodically fills uncensored metadata through AVSOX.
@@ -140,6 +169,17 @@ func ScanJavSeriesMetadata(ctx context.Context) error {
 	if common.DB == nil {
 		return errors.New("nil db")
 	}
+	// Rows without an internal English-series hint are not candidates for the
+	// Avmoo pass.  Run the JavMenu pass for those rows on ordinary rounds so
+	// they cannot be starved forever by unrelated Avmoo updates.  When the
+	// normal Avmoo fallback is due, let that pass handle the full set once;
+	// otherwise the no-hint rows would be queried twice in one round.
+	fallbackDue := javSeriesAvmooNoUpdateRounds.Load() >= 2
+	if !fallbackDue {
+		if _, err := scanMissingJavLocalSeriesWithoutEnglishHintWithJavMenu(ctx); err != nil {
+			return err
+		}
+	}
 	if err := scanJavSeriesMetadataProviderRound(
 		ctx,
 		&javSeriesAvmooNoUpdateRounds,
@@ -229,22 +269,83 @@ func scanMissingJavLocalSeriesWithJavMenu(ctx context.Context) (int64, error) {
 	return updatedCount, nil
 }
 
+// scanMissingJavLocalSeriesWithoutEnglishHintWithJavMenu handles works that
+// have no JavDatabase English-series hint.  Such rows are intentionally not
+// sent to Avmoo, so they must have an independent JavMenu path instead of
+// waiting for the Avmoo no-update fallback (which can be starved by updates to
+// other rows).
+func scanMissingJavLocalSeriesWithoutEnglishHintWithJavMenu(ctx context.Context) (int64, error) {
+	items, err := db.ListJavsMissingLocalSeries(ctx)
+	if err != nil {
+		return 0, err
+	}
+	var updatedCount int64
+	logging.Info("found %d javs missing local series without english hint", countJavSeriesWithoutEnglishHint(items))
+	shuffleJavMetadataScanItems(items)
+	for _, item := range items {
+		if item.SeriesEnID != nil {
+			continue
+		}
+		if err := ctx.Err(); err != nil {
+			return updatedCount, err
+		}
+		code := strings.TrimSpace(item.Code)
+		if code == "" {
+			continue
+		}
+		info, err := jav.LookupJavByCode(code, jav.ProviderJavMenu)
+		if err != nil {
+			if !errors.Is(err, jav.ResourceNotFonud) {
+				logging.Error("lookup javmenu series without english hint failed id=%d code=%s err=%v", item.ID, code, err)
+			}
+			continue
+		}
+		series := ""
+		if info != nil {
+			series = strings.TrimSpace(info.Series)
+		}
+		if series == "" {
+			continue
+		}
+		if updated, err := db.UpdateJavSeriesIfMissing(ctx, item.ID, series); err != nil {
+			logging.Error("update javmenu local series without english hint failed id=%d code=%s err=%v", item.ID, code, err)
+		} else if updated {
+			updatedCount++
+			logging.Info("jav local series updated provider=%s id=%d code=%s series=%s", jav.ProviderJavMenu.String(), item.ID, code, series)
+		}
+	}
+	return updatedCount, nil
+}
+
+func countJavSeriesWithoutEnglishHint(items []db.JavMetadataScanItem) int {
+	count := 0
+	for _, item := range items {
+		if item.SeriesEnID == nil {
+			count++
+		}
+	}
+	return count
+}
+
 func scanMissingJavUncensoredBackfillOnce(ctx context.Context) error {
 	done, err := javUncensoredBackfillDone(ctx)
 	if err != nil {
 		return err
 	}
-	if done {
+	if !done {
+		// The one-time flag only describes the historical backfill. New works
+		// can still arrive with an unknown classification, so the incremental
+		// unknown-row pass must continue on every metadata cycle below.
+		if err := scanMissingJavUncensored(ctx); err != nil {
+			return err
+		}
+		if err := db.UpsertConfig(ctx, map[string]string{javUncensoredBackfillDoneConfigKey: "1"}); err != nil {
+			return fmt.Errorf("mark jav uncensored backfill done: %w", err)
+		}
+		logging.Info("jav uncensored backfill marked done")
 		return nil
 	}
-	if err := scanMissingJavUncensored(ctx); err != nil {
-		return err
-	}
-	if err := db.UpsertConfig(ctx, map[string]string{javUncensoredBackfillDoneConfigKey: "1"}); err != nil {
-		return fmt.Errorf("mark jav uncensored backfill done: %w", err)
-	}
-	logging.Info("jav uncensored backfill marked done")
-	return nil
+	return scanMissingJavUncensored(ctx)
 }
 
 // ScanUncensoredJavMetadata fills missing uncensored metadata through AVSOX.
@@ -282,7 +383,7 @@ func scanMissingJavUncensored(ctx context.Context) error {
 		}
 
 		for _, provider := range []jav.Provider{jav.ProviderJavBus} {
-			info, err := jav.LookupJavByCode(code, provider)
+			info, err := lookupJavUncensoredByCode(code, provider)
 			if err != nil {
 				if !errors.Is(err, jav.ResourceNotFonud) {
 					logging.Error("lookup %s uncensored state failed id=%d code=%s err=%v", provider.String(), item.ID, code, err)
@@ -290,6 +391,10 @@ func scanMissingJavUncensored(ctx context.Context) error {
 				continue
 			}
 			if info == nil || info.IsUncensored == nil {
+				continue
+			}
+			if responseCode := models.NormalizeJavCode(info.Code); responseCode != "" && responseCode != models.NormalizeJavCode(code) {
+				logging.Error("ignore mismatched jav uncensored metadata provider=%s id=%d requested=%s response=%s", provider.String(), item.ID, code, strings.TrimSpace(info.Code))
 				continue
 			}
 			if err := db.UpdateJavIsUncensoredIfUnknown(ctx, item.ID, *info.IsUncensored); err != nil {
@@ -411,8 +516,10 @@ func shuffleJavMetadataScanItems(items []db.JavMetadataScanItem) {
 }
 
 // 某些信息可能是通过英文数据源javdatabase获取的，缺少中日文元数据信息，这个函数专门用来补齐。
+// 已有标题但仍没有任何女优关联的作品也必须继续进入此扫描；否则
+// 女优资料扫描器没有实体可补全，该缺项会永久保留。
 func scanMissingJavZhInfo(ctx context.Context, providers []jav.Provider) error {
-	items, err := db.ListJavsMissingTitle(ctx)
+	items, err := db.ListJavsMissingPrimaryMetadata(ctx)
 	if err != nil {
 		return err
 	}
@@ -425,25 +532,112 @@ func scanMissingJavZhInfo(ctx context.Context, providers []jav.Provider) error {
 		if code == "" {
 			continue
 		}
+		needsTitle := strings.TrimSpace(item.Title) == ""
+		needsIdols := item.IdolCount == 0
 
-		for _, provider := range providers {
-			info, err := jav.LookupJavByCode(code, provider)
+		for _, provider := range javMetadataProvidersForCode(code, providers) {
+			info, err := lookupJavMetadataByCode(code, provider)
 			if err != nil {
 				if !errors.Is(err, jav.ResourceNotFonud) {
 					logging.Error("lookup %s metadata failed id=%d code=%s err=%v", provider.String(), item.ID, code, err)
 				}
 				continue
 			}
-			if info == nil || strings.TrimSpace(info.Title) == "" {
+			if info == nil {
 				continue
 			}
-			if _, err := db.SaveJavInfo(ctx, info); err != nil {
-				logging.Error("update jav title metadata failed provider=%s id=%d code=%s err=%v", provider.String(), item.ID, code, err)
+			if responseCode := models.NormalizeJavCode(info.Code); responseCode != "" && responseCode != models.NormalizeJavCode(code) {
+				logging.Error("ignore mismatched jav metadata provider=%s id=%d requested=%s response=%s", provider.String(), item.ID, code, strings.TrimSpace(info.Code))
 				continue
 			}
-			logging.Info("jav title metadata updated provider=%s id=%d code=%s title=%s", provider.String(), item.ID, code, strings.TrimSpace(info.Title))
-			break
+
+			providerValue := jav.ParseProvider(int(info.Provider))
+			if providerValue == jav.ProviderUnknown {
+				providerValue = provider
+			}
+			updated := false
+			if needsTitle && strings.TrimSpace(info.Title) != "" {
+				metadata := *info
+				metadata.Code = code
+				metadata.Provider = providerValue
+				// AVSOX is a useful metadata fallback, but its parser marks
+				// every result as uncensored.  Classification belongs to the
+				// dedicated JavBus/uncensored scanner; never let this generic
+				// pass overwrite an unknown state with AVSOX's assumption.
+				if provider == jav.ProviderAvsox || providerValue == jav.ProviderAvsox {
+					metadata.IsUncensored = nil
+				}
+				if _, err := db.SaveJavPrimaryMetadataIfMissing(ctx, item.ID, code, &metadata); err != nil {
+					logging.Error("update jav primary metadata failed provider=%s id=%d code=%s err=%v", provider.String(), item.ID, code, err)
+					continue
+				}
+				needsTitle = false
+				updated = true
+			} else if needsIdols && hasNonEmptyJavMetadataValue(info.Actors) {
+				appended, err := db.AppendJavIdolsIfMissingForProvider(ctx, item.ID, info.Actors, providerValue)
+				if err != nil {
+					logging.Error("update jav idol metadata failed provider=%s id=%d code=%s err=%v", provider.String(), item.ID, code, err)
+					continue
+				}
+				// A stale scan item may race with another writer that already
+				// attached idols.  Only report an update when this call actually
+				// appended a mapping; callers use this signal to enqueue cover work.
+				updated = appended
+			}
+			if needsIdols {
+				hasIdols, err := db.JavHasIdols(ctx, item.ID)
+				if err != nil {
+					logging.Error("verify jav idol metadata id=%d code=%s err=%v", item.ID, code, err)
+				} else if hasIdols {
+					needsIdols = false
+				}
+			}
+			if updated {
+				enqueueJavMetadataCover(code)
+				logging.Info("jav primary metadata updated provider=%s id=%d code=%s needs_title=%t needs_idols=%t", provider.String(), item.ID, code, needsTitle, needsIdols)
+			}
+			if !needsTitle && !needsIdols {
+				break
+			}
 		}
 	}
 	return nil
+}
+
+func hasNonEmptyJavMetadataValue(values []string) bool {
+	for _, value := range values {
+		if strings.TrimSpace(value) != "" {
+			return true
+		}
+	}
+	return false
+}
+
+func javMetadataProvidersForCode(code string, fallback []jav.Provider) []jav.Provider {
+	providers := javLinkProvidersForCode(code)
+	if len(providers) == 0 {
+		providers = fallback
+	}
+	// AVSOX remains a metadata fallback for codes that match the uncensored
+	// filename heuristics.  Its classification field is stripped in
+	// scanMissingJavZhInfo above; the dedicated uncensored scanner owns that
+	// decision so a loose regex cannot mislabel ordinary codes.
+	if len(util.ExtractUncensoredCodesFromName(code)) > 0 {
+		providers = append(providers, jav.ProviderAvsox)
+	}
+	providers = append(providers, jav.ProviderJavDBApp)
+
+	result := make([]jav.Provider, 0, len(providers))
+	seen := make(map[jav.Provider]struct{}, len(providers))
+	for _, provider := range providers {
+		if provider == jav.ProviderUnknown {
+			continue
+		}
+		if _, exists := seen[provider]; exists {
+			continue
+		}
+		seen[provider] = struct{}{}
+		result = append(result, provider)
+	}
+	return result
 }

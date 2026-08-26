@@ -16,6 +16,12 @@ type JavSampleImage struct {
 
 const JavSampleImageNotFound = ":not_found"
 
+const (
+	JavInventoryAll      = "all"
+	JavInventoryPending  = "pending"
+	JavInventoryImported = "imported"
+)
+
 // JavSampleImages persists a JAV sample image list as JSON.
 type JavSampleImages []JavSampleImage
 
@@ -80,29 +86,34 @@ func (images JavSampleImages) MarshalJSON() ([]byte, error) {
 	return json.Marshal(sampleImagesAlias(images))
 }
 
-// Jav stores metadata fetched for a given code (may map to multiple videos).
+// Jav is the canonical work identity for one normalized code. Multiple active
+// locations may mirror the same Video; linking a different media asset is
+// rejected by the database service layer.
 type Jav struct {
-	ID             int64           `json:"id" gorm:"primaryKey"`
-	Code           string          `json:"code" gorm:"uniqueIndex"`
-	Title          string          `json:"title"`
-	StudioID       *int64          `json:"studio_id" gorm:"index"`
-	Studio         *JavStudio      `json:"studio,omitempty" gorm:"foreignKey:StudioID;references:ID;constraint:OnUpdate:CASCADE,OnDelete:SET NULL"`
-	SeriesID       *int64          `json:"series_id" gorm:"index"`
-	Series         *JavSeries      `json:"series,omitempty" gorm:"foreignKey:SeriesID;references:ID;constraint:OnUpdate:CASCADE,OnDelete:SET NULL"`
-	SeriesEnID     *int64          `json:"-" gorm:"index"`
-	SeriesEn       *JavSeries      `json:"-" gorm:"foreignKey:SeriesEnID;references:ID;constraint:OnUpdate:CASCADE,OnDelete:SET NULL"`
-	ReleaseUnix    int64           `json:"release_unix"`
-	DurationMin    int             `json:"duration_min"`
-	FetchedAt      time.Time       `json:"fetched_at"`
-	CreatedAt      time.Time       `json:"created_at"`
-	UpdatedAt      time.Time       `json:"updated_at"`
-	IsUncensored   *bool           `json:"is_uncensored"`
-	SampleImages   JavSampleImages `json:"sample_images" gorm:"type:text;not null;default:'[]'"`
-	FavoriteRating float64         `json:"favorite_rating" gorm:"not null;default:0"`
-	Tags           []JavTag        `json:"tags,omitempty" gorm:"-"`
-	Idols          []JavIdol       `json:"idols,omitempty" gorm:"many2many:jav_idol_map"`
-	Videos         []Video         `json:"videos,omitempty" gorm:"-"`
-	FavoriteCount  int64           `json:"favorite_count" gorm:"-"`
+	ID               int64           `json:"id" gorm:"primaryKey"`
+	Code             string          `json:"code" gorm:"uniqueIndex"`
+	NormalizedCode   string          `json:"normalized_code" gorm:"not null;uniqueIndex"`
+	Title            string          `json:"title"`
+	StudioID         *int64          `json:"studio_id" gorm:"index"`
+	Studio           *JavStudio      `json:"studio,omitempty" gorm:"foreignKey:StudioID;references:ID;constraint:OnUpdate:CASCADE,OnDelete:SET NULL"`
+	SeriesID         *int64          `json:"series_id" gorm:"index"`
+	Series           *JavSeries      `json:"series,omitempty" gorm:"foreignKey:SeriesID;references:ID;constraint:OnUpdate:CASCADE,OnDelete:SET NULL"`
+	SeriesEnID       *int64          `json:"-" gorm:"index"`
+	SeriesEn         *JavSeries      `json:"-" gorm:"foreignKey:SeriesEnID;references:ID;constraint:OnUpdate:CASCADE,OnDelete:SET NULL"`
+	ReleaseUnix      int64           `json:"release_unix"`
+	DurationMin      int             `json:"duration_min"`
+	FetchedAt        time.Time       `json:"fetched_at"`
+	CreatedAt        time.Time       `json:"created_at"`
+	UpdatedAt        time.Time       `json:"updated_at"`
+	IsUncensored     *bool           `json:"is_uncensored"`
+	SampleImages     JavSampleImages `json:"sample_images" gorm:"type:text;not null;default:'[]'"`
+	FavoriteRating   float64         `json:"favorite_rating" gorm:"not null;default:0"`
+	Tags             []JavTag        `json:"tags,omitempty" gorm:"-"`
+	Idols            []JavIdol       `json:"idols,omitempty" gorm:"many2many:jav_idol_map"`
+	Videos           []Video         `json:"videos,omitempty" gorm:"-"`
+	FavoriteCount    int64           `json:"favorite_count" gorm:"-"`
+	InventoryState   string          `json:"inventory_state" gorm:"-"`
+	AcquisitionStage string          `json:"acquisition_stage,omitempty" gorm:"-"`
 }
 
 type JavStudio struct {

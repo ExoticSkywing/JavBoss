@@ -5,6 +5,9 @@ import VideocamOutlinedIcon from '@mui/icons-material/VideocamOutlined'
 
 import Pagination from '@/components/Pagination'
 import WaterfallLoader from '@/components/WaterfallLoader'
+import JavEntityEmptyState from '@/components/JavEntityEmptyState'
+import JavEntityInventoryBadges from '@/components/JavEntityInventoryBadges'
+import JavEntityScopeNotice from '@/components/JavEntityScopeNotice'
 import { zh } from '@/utils/i18n'
 import { openJavDBWithAssist } from '@/utils/javdb'
 
@@ -34,24 +37,27 @@ export default function JavSeriesView({
 }) {
   return (
     <>
-      <div className="sticky-pagination mb-4 flex justify-center">
-        <Pagination
-          page={page}
-          lastPage={lastPage}
-          totalItems={totalItems}
-          hasPrev={hasPrev}
-          hasNext={hasNext}
-          loading={loading}
-          buildPageUrl={buildPageUrl}
-          onFirst={onFirst}
-          onPrev={onPrev}
-          onGoToPage={onGoToPage}
-          onNext={onNext}
-          onLast={onLast}
-          waterfallMode={waterfallMode}
-          onWaterfallModeChange={onWaterfallModeChange}
-        />
-      </div>
+      <JavEntityScopeNotice entity="series" />
+      {loading || Number(totalItems) > 0 ? (
+        <div className="sticky-pagination mb-4 flex justify-center">
+          <Pagination
+            page={page}
+            lastPage={lastPage}
+            totalItems={totalItems}
+            hasPrev={hasPrev}
+            hasNext={hasNext}
+            loading={loading}
+            buildPageUrl={buildPageUrl}
+            onFirst={onFirst}
+            onPrev={onPrev}
+            onGoToPage={onGoToPage}
+            onNext={onNext}
+            onLast={onLast}
+            waterfallMode={waterfallMode}
+            onWaterfallModeChange={onWaterfallModeChange}
+          />
+        </div>
+      ) : null}
       {loading ? (
         <div className="mt-4 flex min-h-[200px] items-center justify-center rounded border border-dashed border-gray-200 text-gray-500">
           {zh('加载中…', 'Loading...')}
@@ -78,11 +84,7 @@ export default function JavSeriesView({
 function JavSeriesGrid({ items, onSelectSeries, onSelectStudio, onOpenFavorites, buildSeriesUrl }) {
   const hasItems = Array.isArray(items) && items.length > 0
   if (!hasItems) {
-    return (
-      <div className="flex min-h-[200px] items-center justify-center rounded border border-dashed border-gray-200 text-gray-500">
-        {zh('暂无系列数据', 'No series data')}
-      </div>
-    )
+    return <JavEntityEmptyState entity="series" />
   }
 
   return (
@@ -112,8 +114,6 @@ export function SeriesCard({ item, href, onSelectSeries, onSelectStudio, onOpenF
   const studioId = Number(item?.studio_id)
   const canFilterStudio =
     studioName && Number.isFinite(studioId) && studioId > 0 && typeof onSelectStudio === 'function'
-  const workCount = Number(item?.work_count)
-  const showWorkCount = Number.isFinite(workCount) && workCount > 0
   const favoriteCount = Number(item?.favorite_count) || 0
   const searchName = String(item?.name || '').trim()
   const javDBSearchURL = searchName
@@ -183,11 +183,7 @@ export function SeriesCard({ item, href, onSelectSeries, onSelectStudio, onOpenF
             {name}
           </div>
         )}
-        {showWorkCount ? (
-          <div className="absolute left-2 top-2 rounded bg-black/70 px-2 py-1 text-xs text-white">
-            {zh(`作品 ${workCount}`, `${workCount} works`)}
-          </div>
-        ) : null}
+        <JavEntityInventoryBadges item={item} />
         <button
           type="button"
           className={`card-hover-focus-visible absolute right-2 top-2 flex h-8 w-8 items-center justify-center rounded-full shadow-lg shadow-black/40 transition ${
@@ -220,7 +216,11 @@ export function SeriesCard({ item, href, onSelectSeries, onSelectStudio, onOpenF
       </div>
       <div className="flex flex-1 flex-col gap-1 p-3">
         <div className="line-clamp-2 text-sm font-semibold leading-tight">{name}</div>
-        <div className="flex min-w-0 items-center gap-2 text-xs text-gray-500">
+        <div
+          className={`flex min-w-0 items-center gap-2 text-xs ${
+            studioName ? 'text-gray-500' : 'text-amber-700'
+          }`}
+        >
           {studioName ? (
             <span className="inline-flex min-w-0 items-center gap-1">
               <Tooltip title={zh('片商', 'Studio')} arrow>
@@ -239,7 +239,9 @@ export function SeriesCard({ item, href, onSelectSeries, onSelectStudio, onOpenF
                 {studioName}
               </button>
             </span>
-          ) : null}
+          ) : (
+            <span className="font-medium">{zh('片商待补全', 'Studio pending')}</span>
+          )}
         </div>
       </div>
     </a>

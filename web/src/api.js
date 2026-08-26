@@ -1,5 +1,6 @@
 import { zh } from '@/utils/i18n'
 import { getErrorMessage } from '@/utils/errors'
+import { normalizeJavInventory } from '@/constants/jav'
 
 const jsonHeaders = { 'Content-Type': 'application/json' }
 const javIdolResolveInFlight = new Map()
@@ -542,6 +543,7 @@ export async function fetchJavs({
   seed = null,
   directoryIds = [],
   favoriteGroupId = null,
+  inventory = 'all',
 } = {}) {
   const params = new URLSearchParams()
   params.set('limit', String(limit))
@@ -561,6 +563,7 @@ export async function fetchJavs({
   if (seed != null) params.set('seed', String(seed))
   if (directoryIds.length) params.set('directory_ids', directoryIds.join(','))
   if (favoriteGroupId) params.set('favorite_group_id', String(favoriteGroupId))
+  params.set('inventory', normalizeJavInventory(inventory))
   const res = await apiFetch(`/jav?${params.toString()}`)
   if (!res.ok) {
     throw await apiError(res)
@@ -587,6 +590,7 @@ export async function fetchJavFilterOptions({
   studioSearch = '',
   seriesSearch = '',
   optionLimit = 120,
+  inventory = 'all',
   signal,
 } = {}) {
   const params = new URLSearchParams()
@@ -608,6 +612,7 @@ export async function fetchJavFilterOptions({
   if (tagSearch) params.set('tag_search', tagSearch)
   if (studioSearch) params.set('studio_search', studioSearch)
   if (seriesSearch) params.set('series_search', seriesSearch)
+  params.set('inventory', normalizeJavInventory(inventory))
   params.set('option_limit', String(optionLimit))
   const res = await apiFetch(`/jav/filter-options?${params.toString()}`, { signal })
   if (!res.ok) {

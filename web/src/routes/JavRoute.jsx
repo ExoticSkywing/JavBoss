@@ -237,6 +237,7 @@ function JavListRoute({
   javGridColumns,
   javHasNext,
   javHasPrev,
+  javInventory,
   javIdolTagMaxRows,
   javItems,
   javLastPage,
@@ -284,6 +285,7 @@ function JavListRoute({
       javHasPrev={javHasPrev}
       javHasNext={javHasNext}
       javLoading={activeJavLoading}
+      javInventory={javInventory}
       javRandomMode={javRandomMode}
       javResolvedSort={javResolvedSort}
       javSortSource={javSortSource}

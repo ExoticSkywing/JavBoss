@@ -10,7 +10,7 @@ func TestJavSchemaOmitsFrontendEnglishMetadataColumns(t *testing.T) {
 	db := openTestDB(t)
 
 	assertTableColumns(t, db, "jav", []string{
-		"id", "code", "title", "studio_id", "series_id", "series_en_id", "release_unix",
+		"id", "code", "normalized_code", "title", "studio_id", "series_id", "series_en_id", "release_unix",
 		"duration_min", "fetched_at", "created_at", "updated_at", "is_uncensored",
 		"sample_images", "favorite_rating",
 	})

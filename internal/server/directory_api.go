@@ -149,6 +149,10 @@ func updateDirectory(c *gin.Context) {
 	}
 	if err != nil {
 		logging.Error("update directory error: %v", err)
+		if errors.Is(err, dbpkg.ErrJavMediaConflict) {
+			respondLocalizedError(c, http.StatusConflict, "恢复目录会让同一番号出现多个不同媒体，请先处理媒体冲突", "Restoring this directory would expose multiple different media assets for one JAV code; resolve the media conflict first")
+			return
+		}
 		respondLocalizedError(c, http.StatusBadRequest, "修改目录失败，请检查路径是否有效或已存在", "Failed to update directory; check whether the path is valid or already exists")
 		return
 	}

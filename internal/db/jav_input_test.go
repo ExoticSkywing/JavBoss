@@ -2,6 +2,7 @@ package db
 
 import (
 	"context"
+	"errors"
 	"path/filepath"
 	"strings"
 	"testing"
@@ -54,10 +55,10 @@ func TestCreateJavInputBatchPreservesOriginalLinesAndExplainsBothDedupStages(t *
 	if batch.InputCount != 6 || batch.ParsedCount != 5 || batch.BatchUniqueCount != 4 {
 		t.Fatalf("unexpected input counts: %#v", batch)
 	}
-	if batch.BatchDuplicateCount != 1 || batch.LibraryDuplicateCount != 1 || batch.HistoryDuplicateCount != 1 {
+	if batch.BatchDuplicateCount != 1 || batch.LibraryDuplicateCount != 1 || batch.HistoryDuplicateCount != 2 {
 		t.Fatalf("unexpected duplicate counts: %#v", batch)
 	}
-	if batch.AcceptedCount != 2 || batch.InvalidCount != 1 {
+	if batch.AcceptedCount != 1 || batch.InvalidCount != 1 {
 		t.Fatalf("unexpected final counts: %#v", batch)
 	}
 	if len(batch.Items) != 6 {
@@ -69,6 +70,9 @@ func TestCreateJavInputBatchPreservesOriginalLinesAndExplainsBothDedupStages(t *
 	if batch.Items[1].DuplicateOfLine != 1 {
 		t.Fatalf("batch duplicate line = %d, want 1", batch.Items[1].DuplicateOfLine)
 	}
+	if batch.Items[0].JavID == nil || batch.Items[1].JavID == nil || *batch.Items[1].JavID != *batch.Items[0].JavID {
+		t.Fatalf("batch duplicate canonical JAV link = %v, want accepted item JAV %v", batch.Items[1].JavID, batch.Items[0].JavID)
+	}
 	assertJavInputItem(t, batch.Items[2], 3, "OLD-001 昨天已经输入", "OLD-001", models.JavInputStatusDuplicateHistory)
 	if batch.Items[2].ExistingBatchID == nil || *batch.Items[2].ExistingBatchID != historical.ID {
 		t.Fatalf("historical duplicate batch = %v, want %d", batch.Items[2].ExistingBatchID, historical.ID)
@@ -77,8 +81,26 @@ func TestCreateJavInputBatchPreservesOriginalLinesAndExplainsBothDedupStages(t *
 	if batch.Items[3].ExistingJavID == nil || *batch.Items[3].ExistingJavID != libraryJavID {
 		t.Fatalf("library duplicate JAV = %v, want %d", batch.Items[3].ExistingJavID, libraryJavID)
 	}
-	assertJavInputItem(t, batch.Items[4], 5, "ORPHAN-001 只有元数据不算最终作品", "ORPHAN-001", models.JavInputStatusAccepted)
+	assertJavInputItem(t, batch.Items[4], 5, "ORPHAN-001 只有元数据不算最终作品", "ORPHAN-001", models.JavInputStatusDuplicateHistory)
 	assertJavInputItem(t, batch.Items[5], 6, "这行只有中文说明，记录于 2026-08-25", "", models.JavInputStatusInvalid)
+	var libraryAcquisition models.JavAcquisition
+	if err := database.First(&libraryAcquisition, libraryJavID).Error; err != nil {
+		t.Fatalf("load legacy library acquisition: %v", err)
+	}
+	if libraryAcquisition.Stage != models.JavAcquisitionStageImported {
+		t.Fatalf("legacy library acquisition stage = %q, want imported", libraryAcquisition.Stage)
+	}
+	var orphan models.Jav
+	if err := database.Where("normalized_code = ?", models.NormalizeJavCode("ORPHAN-001")).First(&orphan).Error; err != nil {
+		t.Fatalf("load orphan metadata JAV: %v", err)
+	}
+	var orphanAcquisition models.JavAcquisition
+	if err := database.First(&orphanAcquisition, orphan.ID).Error; err != nil {
+		t.Fatalf("load orphan metadata acquisition: %v", err)
+	}
+	if orphanAcquisition.Stage != models.JavAcquisitionStageMagnetCollecting {
+		t.Fatalf("orphan metadata acquisition stage = %q, want magnet_collecting", orphanAcquisition.Stage)
+	}
 
 	repeated, err := CreateJavInputBatch(ctx, "NEW-001 又输入了一次")
 	if err != nil {
@@ -111,9 +133,12 @@ func TestCreateJavInputBatchPreservesOriginalLinesAndExplainsBothDedupStages(t *
 	if len(detail.Items) != 6 || detail.Items[0].RawLine != batch.Items[0].RawLine {
 		t.Fatalf("history detail did not preserve ordered original lines: %#v", detail.Items)
 	}
+	if detail.Items[0].JavID == nil || detail.Items[1].JavID == nil || *detail.Items[1].JavID != *detail.Items[0].JavID {
+		t.Fatalf("persisted batch duplicate lost canonical JAV link: first=%v duplicate=%v", detail.Items[0].JavID, detail.Items[1].JavID)
+	}
 }
 
-func TestDeleteJavInputBatchesReleasesAcceptedCodes(t *testing.T) {
+func TestDeleteJavInputBatchesPreservesCanonicalWorks(t *testing.T) {
 	database, err := Open(filepath.Join(t.TempDir(), "jav-input-delete.db"))
 	if err != nil {
 		t.Fatalf("open database: %v", err)
@@ -157,8 +182,8 @@ func TestDeleteJavInputBatchesReleasesAcceptedCodes(t *testing.T) {
 	if err != nil {
 		t.Fatalf("reaccept released code: %v", err)
 	}
-	if reaccepted.AcceptedCount != 1 {
-		t.Fatalf("reaccepted count = %d, want 1", reaccepted.AcceptedCount)
+	if reaccepted.AcceptedCount != 0 || reaccepted.HistoryDuplicateCount != 1 {
+		t.Fatalf("canonical work was released by history deletion: %#v", reaccepted)
 	}
 
 	if err := DeleteAllJavInputBatches(ctx); err != nil {
@@ -175,8 +200,8 @@ func TestDeleteJavInputBatchesReleasesAcceptedCodes(t *testing.T) {
 	if err != nil {
 		t.Fatalf("list cleared preprocessed items: %v", err)
 	}
-	if total != 0 || len(items) != 0 {
-		t.Fatalf("preprocessed works were not cleared: total=%d items=%#v", total, items)
+	if total != 1 || len(items) != 1 || items[0].Code != "DEL-001" {
+		t.Fatalf("canonical work did not survive history deletion: total=%d items=%#v", total, items)
 	}
 
 	restarted, err := CreateJavInputBatch(ctx, "RESET-001 after clear")
@@ -220,7 +245,7 @@ func TestListJavInputPreprocessedExcludesCodesWithActiveRealFiles(t *testing.T) 
 		t.Fatalf("preprocessed item did not retain source: %#v", items[0])
 	}
 
-	seedFinalJavForInputTest(t, database, "pre_001")
+	linkFinalJavForInputTest(t, database, batch.Items[0].JavID, "pre_001")
 	items, total, err = ListJavInputPreprocessed(ctx, 1, 20, "")
 	if err != nil {
 		t.Fatalf("list after final file appeared: %v", err)
@@ -238,7 +263,7 @@ func TestListJavInputPreprocessedExcludesCodesWithActiveRealFiles(t *testing.T) 
 	}
 }
 
-func TestClearJavInputPreprocessedPreservesHistoryAndReleasesCodes(t *testing.T) {
+func TestClearJavInputPreprocessedIsCompatibilityNoop(t *testing.T) {
 	database, err := Open(filepath.Join(t.TempDir(), "jav-input-clear-preprocessed.db"))
 	if err != nil {
 		t.Fatalf("open database: %v", err)
@@ -260,30 +285,136 @@ func TestClearJavInputPreprocessedPreservesHistoryAndReleasesCodes(t *testing.T)
 	if err != nil {
 		t.Fatalf("clear preprocessed works: %v", err)
 	}
-	if cleared != 2 {
-		t.Fatalf("cleared count = %d, want 2", cleared)
+	if cleared != 0 {
+		t.Fatalf("cleared count = %d, want 0", cleared)
 	}
 	items, total, err := ListJavInputPreprocessed(ctx, 1, 20, "")
 	if err != nil {
 		t.Fatalf("list cleared preprocessed works: %v", err)
 	}
-	if total != 0 || len(items) != 0 {
-		t.Fatalf("preprocessed pool was not cleared: total=%d items=%#v", total, items)
+	if total != 2 || len(items) != 2 {
+		t.Fatalf("compatibility clear removed acquisitions: total=%d items=%#v", total, items)
 	}
 	detail, err := GetJavInputBatch(ctx, batch.ID)
 	if err != nil {
 		t.Fatalf("load preserved batch history: %v", err)
 	}
-	if len(detail.Items) != 2 || detail.Items[0].Status != models.JavInputStatusCleared || detail.Items[1].Status != models.JavInputStatusCleared {
-		t.Fatalf("cleared history was not preserved: %#v", detail.Items)
+	if len(detail.Items) != 2 || detail.Items[0].Status != models.JavInputStatusAccepted || detail.Items[1].Status != models.JavInputStatusAccepted {
+		t.Fatalf("compatibility clear mutated history: %#v", detail.Items)
 	}
 
 	reaccepted, err := CreateJavInputBatch(ctx, "CLEAR-001 再次输入")
 	if err != nil {
 		t.Fatalf("submit released code again: %v", err)
 	}
-	if reaccepted.AcceptedCount != 1 || reaccepted.HistoryDuplicateCount != 0 {
-		t.Fatalf("released code was not accepted again: %#v", reaccepted)
+	if reaccepted.AcceptedCount != 0 || reaccepted.HistoryDuplicateCount != 1 {
+		t.Fatalf("compatibility clear released canonical code: %#v", reaccepted)
+	}
+}
+
+func TestCreateJavInputBatchRejectsInputWithoutRecognizableCodes(t *testing.T) {
+	database := openTestDB(t)
+	ctx := context.Background()
+
+	if _, err := CreateJavInputBatch(ctx, "这里只是说明文字\n2026-08-25"); !errors.Is(err, ErrJavInputNoCodes) {
+		t.Fatalf("CreateJavInputBatch error = %v, want ErrJavInputNoCodes", err)
+	}
+	var batches int64
+	if err := database.Model(&models.JavInputBatch{}).Count(&batches).Error; err != nil {
+		t.Fatalf("count input batches: %v", err)
+	}
+	if batches != 0 {
+		t.Fatalf("unrecognized input created %d audit batches", batches)
+	}
+}
+
+func TestCreateJavInputBatchRetriesWholeTransactionAfterSnapshotBecomesStale(t *testing.T) {
+	database, err := Open(filepath.Join(t.TempDir(), "jav-input-stale-snapshot.db"))
+	if err != nil {
+		t.Fatalf("open database: %v", err)
+	}
+	previousDB := common.DB
+	common.DB = database
+	t.Cleanup(func() {
+		common.DB = previousDB
+		sqlDB, _ := database.DB()
+		_ = sqlDB.Close()
+	})
+
+	flipJavID := seedFinalJavForInputTest(t, database, "FLIP-001")
+
+	attempts := 0
+	competingWriteCommitted := false
+	afterSnapshot := func(_ *gorm.DB) error {
+		attempts++
+		if competingWriteCommitted {
+			return nil
+		}
+		if err := database.Transaction(func(writer *gorm.DB) error {
+			if err := writer.Model(&models.VideoLocation{}).
+				Where("jav_id = ?", flipJavID).
+				Update("is_delete", true).Error; err != nil {
+				return err
+			}
+			return writer.Create(&models.Jav{Code: "RACE-001"}).Error
+		}); err != nil {
+			return err
+		}
+		competingWriteCommitted = true
+		return nil
+	}
+
+	batch, err := createJavInputBatch(
+		context.Background(),
+		"FLIP-001 was in library\nflip_001 duplicate in batch\nRACE-001 competing insert",
+		afterSnapshot,
+	)
+	if err != nil {
+		t.Fatalf("create batch after competing commit: %v", err)
+	}
+	if attempts != 2 {
+		t.Fatalf("transaction attempts = %d, want 2", attempts)
+	}
+	if batch.AcceptedCount != 0 || batch.LibraryDuplicateCount != 0 ||
+		batch.HistoryDuplicateCount != 2 || batch.BatchDuplicateCount != 1 {
+		t.Fatalf("retry leaked first-attempt counts: %#v", batch)
+	}
+	if len(batch.Items) != 3 {
+		t.Fatalf("item count = %d, want 3", len(batch.Items))
+	}
+	if batch.Items[0].Status != models.JavInputStatusDuplicateHistory ||
+		batch.Items[1].Status != models.JavInputStatusDuplicateBatch ||
+		batch.Items[2].Status != models.JavInputStatusDuplicateHistory {
+		t.Fatalf("unexpected retry statuses: %#v", batch.Items)
+	}
+	if batch.Items[0].JavID == nil || batch.Items[1].JavID == nil ||
+		*batch.Items[0].JavID != *batch.Items[1].JavID {
+		t.Fatalf("FLIP batch items do not share canonical JAV: %#v", batch.Items)
+	}
+	if batch.Items[0].ExistingJavID != nil {
+		t.Fatalf("failed attempt leaked library match: %#v", batch.Items[0])
+	}
+
+	var javCount, batchCount, itemCount, acquisitionCount int64
+	if err := database.Model(&models.Jav{}).
+		Where("normalized_code IN ?", []string{models.NormalizeJavCode("FLIP-001"), models.NormalizeJavCode("RACE-001")}).
+		Count(&javCount).Error; err != nil {
+		t.Fatalf("count canonical JAVs: %v", err)
+	}
+	if err := database.Model(&models.JavInputBatch{}).Count(&batchCount).Error; err != nil {
+		t.Fatalf("count input batches: %v", err)
+	}
+	if err := database.Model(&models.JavInputItem{}).Count(&itemCount).Error; err != nil {
+		t.Fatalf("count input items: %v", err)
+	}
+	if err := database.Model(&models.JavAcquisition{}).Count(&acquisitionCount).Error; err != nil {
+		t.Fatalf("count acquisitions: %v", err)
+	}
+	if javCount != 2 || batchCount != 1 || itemCount != 3 || acquisitionCount != 2 {
+		t.Fatalf(
+			"persisted counts: jav=%d batch=%d item=%d acquisition=%d, want 2/1/3/2",
+			javCount, batchCount, itemCount, acquisitionCount,
+		)
 	}
 }
 
@@ -334,6 +465,10 @@ func TestCreateJavInputBatchSupportsGroupNotesAndMultipleCodesOnOneLine(t *testi
 	if duplicate.Status != models.JavInputStatusDuplicateBatch || duplicate.DuplicateOfLine != 2 {
 		t.Fatalf("same-line JUFD duplicate = %#v", duplicate)
 	}
+	first := batch.Items[5]
+	if first.JavID == nil || duplicate.JavID == nil || *duplicate.JavID != *first.JavID {
+		t.Fatalf("same-line JUFD duplicate canonical link = %v, want %v", duplicate.JavID, first.JavID)
+	}
 }
 
 func assertJavInputItem(t *testing.T, item models.JavInputItem, line int, rawLine, code, status string) {
@@ -368,4 +503,29 @@ func seedFinalJavForInputTest(t *testing.T, database *gorm.DB, code string) int6
 		t.Fatalf("create video location: %v", err)
 	}
 	return javRecord.ID
+}
+
+func linkFinalJavForInputTest(t *testing.T, database *gorm.DB, javID *int64, code string) {
+	t.Helper()
+	if javID == nil || *javID <= 0 {
+		t.Fatal("missing canonical JAV id")
+	}
+	directory := models.Directory{Path: "/media/jav-input-final-linked"}
+	if err := database.Create(&directory).Error; err != nil {
+		t.Fatalf("create directory: %v", err)
+	}
+	video := models.Video{Fingerprint: "jav-input-final-linked-video"}
+	if err := database.Create(&video).Error; err != nil {
+		t.Fatalf("create video: %v", err)
+	}
+	location := models.VideoLocation{
+		VideoID:      video.ID,
+		DirectoryID:  directory.ID,
+		RelativePath: code + ".mp4",
+		Filename:     code + ".mp4",
+		JavID:        javID,
+	}
+	if err := database.Create(&location).Error; err != nil {
+		t.Fatalf("create video location: %v", err)
+	}
 }

@@ -2,6 +2,7 @@ import SwapVertIcon from '@mui/icons-material/SwapVert'
 import { Popover } from '@mui/material'
 import { useState } from 'react'
 import JavIdolGrid from '@/components/JavIdolGrid'
+import JavEntityScopeNotice from '@/components/JavEntityScopeNotice'
 import Pagination from '@/components/Pagination'
 import WaterfallLoader from '@/components/WaterfallLoader'
 import {
@@ -73,6 +74,7 @@ export default function JavIdolView({
 
   return (
     <>
+      <JavEntityScopeNotice entity="idol" />
       <div className="sticky-pagination pagination-toolbar-grid relative mb-2.5 grid md:grid-cols-[1fr_auto_1fr] md:items-center">
         <div />
         <div className="flex justify-center overflow-x-auto">

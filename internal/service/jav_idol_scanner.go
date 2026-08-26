@@ -11,8 +11,26 @@ import (
 	"javboss/internal/common/logging"
 	"javboss/internal/db"
 	"javboss/internal/jav"
+	"javboss/internal/models"
 	"javboss/internal/util"
 )
+
+// A profile that is complete except for ChineseName is a common, legitimate
+// state: the available providers often simply do not publish a Chinese
+// translation.  Keep the row out of the minute-level scanner loop for a
+// bounded period instead of issuing the same three lookups forever.  This is
+// intentionally process-local so it needs no schema migration; a restart
+// naturally gives the row another chance.
+const idolChineseNameRetryTTL = 24 * time.Hour
+
+var idolProfileRetryState = struct {
+	sync.Mutex
+	nextAttempt map[int64]time.Time
+}{
+	nextAttempt: make(map[int64]time.Time),
+}
+
+var idolProfileNow = time.Now
 
 // StartIdolProfileScanner periodically scans JAV idols with incomplete profile data.
 // It runs ScanIdolProfiles immediately and then on every interval until ctx is done, filling
@@ -51,6 +69,9 @@ func ScanIdolProfiles(ctx context.Context) error {
 	for _, idol := range idols {
 		if err := ctx.Err(); err != nil {
 			return err
+		}
+		if shouldSkipIdolProfileAttempt(idol, idolProfileNow()) {
+			continue
 		}
 		lookupName := strings.TrimSpace(idol.JapaneseName)
 		if lookupName == "" {
@@ -112,9 +133,59 @@ func ScanIdolProfiles(ctx context.Context) error {
 		}
 		if updated {
 			logging.Info("idol profile updated idol=%d name=%s code=%s", idol.ID, idol.Name, code)
+			if strings.TrimSpace(info.ChineseName) != "" {
+				clearIdolProfileRetry(idol.ID)
+			}
 		}
 	}
 	return nil
+}
+
+// idolMissingOnlyChineseName reports the narrow partial-profile state for
+// which retry suppression is useful.  Other incomplete profiles continue to
+// be retried normally because measurements/names can often be filled on the
+// next pass.
+func idolMissingOnlyChineseName(idol models.JavIdol) bool {
+	return strings.TrimSpace(idol.ChineseName) == "" &&
+		strings.TrimSpace(idol.JapaneseName) != "" &&
+		strings.TrimSpace(idol.RomanName) != "" &&
+		idol.HeightCM != nil &&
+		idol.BirthDate != nil &&
+		idol.Bust != nil &&
+		idol.Waist != nil &&
+		idol.Hips != nil &&
+		idol.Cup != nil
+}
+
+// shouldSkipIdolProfileAttempt claims the next retry slot for a Chinese-name
+// only profile.  It returns false for all other profile states.
+func shouldSkipIdolProfileAttempt(idol models.JavIdol, now time.Time) bool {
+	if !idolMissingOnlyChineseName(idol) {
+		return false
+	}
+	idolProfileRetryState.Lock()
+	defer idolProfileRetryState.Unlock()
+	if next, ok := idolProfileRetryState.nextAttempt[idol.ID]; ok && now.Before(next) {
+		return true
+	}
+	idolProfileRetryState.nextAttempt[idol.ID] = now.Add(idolChineseNameRetryTTL)
+	return false
+}
+
+func clearIdolProfileRetry(idolID int64) {
+	if idolID <= 0 {
+		return
+	}
+	idolProfileRetryState.Lock()
+	delete(idolProfileRetryState.nextAttempt, idolID)
+	idolProfileRetryState.Unlock()
+}
+
+// resetIdolProfileRetryState is kept package-private for deterministic tests.
+func resetIdolProfileRetryState() {
+	idolProfileRetryState.Lock()
+	idolProfileRetryState.nextAttempt = make(map[int64]time.Time)
+	idolProfileRetryState.Unlock()
 }
 
 type idolActressLookup func() (*jav.ActressInfo, error)

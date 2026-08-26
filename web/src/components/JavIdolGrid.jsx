@@ -12,6 +12,8 @@ import JavIdolCoverModal, {
   IDOL_COVER_VISIBLE_RATIO,
   normalizeIdolCoverCropLeft,
 } from '@/components/JavIdolCoverModal'
+import JavEntityEmptyState from '@/components/JavEntityEmptyState'
+import JavEntityInventoryBadges from '@/components/JavEntityInventoryBadges'
 import { getIdolDisplayNames } from '@/utils/javIdol'
 import { openJavDBWithAssist } from '@/utils/javdb'
 import { zh } from '@/utils/i18n'
@@ -56,11 +58,7 @@ export default function JavIdolGrid({
 
   const hasItems = displayItems.length > 0
   if (!hasItems) {
-    return (
-      <div className="flex min-h-[200px] items-center justify-center rounded border border-dashed border-gray-200 text-gray-500">
-        {zh('暂无女优数据', 'No idol data')}
-      </div>
-    )
+    return <JavEntityEmptyState entity="idol" />
   }
 
   return (
@@ -145,7 +143,6 @@ export function IdolCard({
   const coverFrameRef = useRef(null)
   const [coverFrame, setCoverFrame] = useState({ width: 0, height: 0 })
   const [coverImageSize, setCoverImageSize] = useState(null)
-  const workCount = item?.work_count || 0
   const favoriteCount = Number(item?.favorite_count) || 0
   const aliases = Array.isArray(item?.aliases) ? item.aliases : []
   const birthDate = formatBirthDateWithAge(item?.birth_date)
@@ -295,11 +292,7 @@ export function IdolCard({
             {primaryName}
           </div>
         )}
-        {showWorkCount && (
-          <div className="absolute left-2 top-2 rounded bg-black/70 px-2 py-1 text-xs text-white">
-            {zh(`作品 ${workCount}`, `${workCount} javs`)}
-          </div>
-        )}
+        {showWorkCount ? <JavEntityInventoryBadges item={item} /> : null}
         <button
           type="button"
           className={`card-hover-focus-visible absolute right-2 top-2 flex h-8 w-8 items-center justify-center rounded-full shadow-lg shadow-black/40 transition ${

@@ -15,9 +15,11 @@ import (
 	"javboss/internal/util"
 
 	"gorm.io/gorm"
+	"gorm.io/gorm/clause"
 )
 
 var ErrJavInputEmpty = errors.New("JAV input is empty")
+var ErrJavInputNoCodes = errors.New("JAV input contains no recognizable codes")
 
 var javInputCreateMu sync.Mutex
 
@@ -25,31 +27,43 @@ var leadingNumericJavInputCodePattern = regexp.MustCompile(`^\s*\d{4,}[-_]\d{2,}
 var dateLikeJavInputTokenPattern = regexp.MustCompile(`^\s*\d{4}[-_/]\d{1,2}[-_/]\d{1,2}(?:\D|$)`)
 
 type javInputLibraryMatch struct {
-	ID   int64
-	Code string
+	ID             int64
+	Code           string
+	NormalizedCode string `gorm:"column:normalized_code"`
 }
 
-type javInputHistoryMatch struct {
-	JavInputBatchID int64
-	NormalizedCode  string
-}
-
-// CreateJavInputBatch persists the original input and both de-duplication stages atomically.
+// CreateJavInputBatch atomically merges parsed codes into the canonical JAV
+// collection. Batch rows retain the original input only as an audit receipt.
 func CreateJavInputBatch(ctx context.Context, rawInput string) (*models.JavInputBatch, error) {
-	items, batch := prepareJavInputBatch(rawInput)
-	if batch.InputCount == 0 {
+	return createJavInputBatch(ctx, rawInput, nil)
+}
+
+func createJavInputBatch(ctx context.Context, rawInput string, afterSnapshot func(*gorm.DB) error) (*models.JavInputBatch, error) {
+	_, validationBatch := prepareJavInputBatch(rawInput)
+	if validationBatch.InputCount == 0 {
 		return nil, ErrJavInputEmpty
+	}
+	if validationBatch.ParsedCount == 0 {
+		return nil, ErrJavInputNoCodes
 	}
 	if common.DB == nil {
 		return nil, errors.New("database is not initialized")
 	}
 
-	// The partial unique index is the durable invariant; this process-level lock also
-	// makes concurrent submissions deterministic instead of surfacing a uniqueness error.
+	// The canonical JAV unique index is the durable invariant; this process-level
+	// lock keeps batch outcome counts deterministic within one server process.
 	javInputCreateMu.Lock()
 	defer javInputCreateMu.Unlock()
 
-	err := common.DB.WithContext(ctx).Transaction(func(tx *gorm.DB) error {
+	var committedItems []models.JavInputItem
+	var committedBatch models.JavInputBatch
+	err := withSQLiteTransactionRetry(ctx, common.DB, func(tx *gorm.DB) error {
+		// A failed SQLite snapshot must not leak statuses, counters, or IDs into
+		// the next attempt. Rebuild all mutable attempt state from the raw input.
+		items, batch := prepareJavInputBatch(rawInput)
+		committedItems = nil
+		committedBatch = models.JavInputBatch{}
+
 		uniqueCodes := make([]string, 0, batch.BatchUniqueCount)
 		for i := range items {
 			if items[i].Status == "" {
@@ -57,13 +71,18 @@ func CreateJavInputBatch(ctx context.Context, rawInput string) (*models.JavInput
 			}
 		}
 
+		works, err := listJavInputWorks(tx, uniqueCodes)
+		if err != nil {
+			return err
+		}
 		libraryMatches, err := listJavInputLibraryMatches(tx, uniqueCodes)
 		if err != nil {
 			return err
 		}
-		historyMatches, err := listJavInputHistoryMatches(tx, uniqueCodes)
-		if err != nil {
-			return err
+		if afterSnapshot != nil {
+			if err := afterSnapshot(tx); err != nil {
+				return err
+			}
 		}
 
 		for i := range items {
@@ -71,20 +90,77 @@ func CreateJavInputBatch(ctx context.Context, rawInput string) (*models.JavInput
 			if item.Status != "" {
 				continue
 			}
-			if match, ok := libraryMatches[item.NormalizedCode]; ok {
-				item.Status = models.JavInputStatusDuplicateLibrary
-				item.ExistingJavID = &match.ID
-				batch.LibraryDuplicateCount++
-				continue
-			}
-			if match, ok := historyMatches[item.NormalizedCode]; ok {
+			if match, ok := works[item.NormalizedCode]; ok {
+				item.JavID = &match.ID
+				createdAt := nowForJavInputItem(item)
+				// A legacy imported work may predate jav_acquisition.  Every
+				// duplicate input still points at the canonical lifecycle row so
+				// later unlink/replacement operations can reconcile it correctly.
+				if err := ensureJavAcquisitionTx(tx, match.ID, createdAt); err != nil {
+					return err
+				}
+				if err := advanceJavAcquisitionAfterMetadataTx(tx, match.ID, createdAt); err != nil {
+					return err
+				}
+				if err := reconcileJavAcquisitionStagesTx(tx, []int64{match.ID}); err != nil {
+					return err
+				}
+				if libraryMatch, imported := libraryMatches[item.NormalizedCode]; imported {
+					item.Status = models.JavInputStatusDuplicateLibrary
+					item.ExistingJavID = &libraryMatch.ID
+					batch.LibraryDuplicateCount++
+					continue
+				}
 				item.Status = models.JavInputStatusDuplicateHistory
-				item.ExistingBatchID = &match.JavInputBatchID
+				if match.JavInputBatchID != nil {
+					item.ExistingBatchID = match.JavInputBatchID
+				}
 				batch.HistoryDuplicateCount++
 				continue
 			}
+
+			created, err := createCanonicalJavForInputTx(tx, item.Code, item.NormalizedCode, item.CreatedAt)
+			if err != nil {
+				return err
+			}
+			// A concurrent writer can win the normalized-code insert. Reclassify
+			// deterministically instead of surfacing a uniqueness error.
+			if !created.Created {
+				item.JavID = &created.Jav.ID
+				if err := ensureJavAcquisitionTx(tx, created.Jav.ID, item.CreatedAt); err != nil {
+					return err
+				}
+				if err := advanceJavAcquisitionAfterMetadataTx(tx, created.Jav.ID, item.CreatedAt); err != nil {
+					return err
+				}
+				if err := reconcileJavAcquisitionStagesTx(tx, []int64{created.Jav.ID}); err != nil {
+					return err
+				}
+				item.Status = models.JavInputStatusDuplicateHistory
+				batch.HistoryDuplicateCount++
+				continue
+			}
+			item.JavID = &created.Jav.ID
+			if err := ensureJavAcquisitionTx(tx, created.Jav.ID, item.CreatedAt); err != nil {
+				return err
+			}
 			item.Status = models.JavInputStatusAccepted
 			batch.AcceptedCount++
+		}
+		javIDByCode := make(map[string]int64, batch.BatchUniqueCount)
+		for i := range items {
+			if items[i].JavID != nil {
+				javIDByCode[items[i].NormalizedCode] = *items[i].JavID
+			}
+		}
+		for i := range items {
+			if items[i].Status == models.JavInputStatusDuplicateBatch {
+				javID, ok := javIDByCode[items[i].NormalizedCode]
+				if !ok || javID <= 0 {
+					return fmt.Errorf("resolve canonical JAV for batch duplicate %q", items[i].NormalizedCode)
+				}
+				items[i].JavID = &javID
+			}
 		}
 
 		if err := tx.Create(&batch).Error; err != nil {
@@ -96,13 +172,109 @@ func CreateJavInputBatch(ctx context.Context, rawInput string) (*models.JavInput
 		if err := tx.Create(&items).Error; err != nil {
 			return fmt.Errorf("create JAV input items: %w", err)
 		}
+		committedBatch = batch
+		committedItems = items
 		return nil
 	})
 	if err != nil {
 		return nil, err
 	}
-	batch.Items = items
-	return &batch, nil
+	committedBatch.Items = committedItems
+	return &committedBatch, nil
+}
+
+type javInputWorkMatch struct {
+	ID              int64  `gorm:"column:id"`
+	NormalizedCode  string `gorm:"column:normalized_code"`
+	JavInputBatchID *int64 `gorm:"column:jav_input_batch_id"`
+}
+
+type createCanonicalJavResult struct {
+	Jav     models.Jav
+	Created bool
+}
+
+func listJavInputWorks(tx *gorm.DB, normalizedCodes []string) (map[string]javInputWorkMatch, error) {
+	result := make(map[string]javInputWorkMatch, len(normalizedCodes))
+	if len(normalizedCodes) == 0 {
+		return result, nil
+	}
+	var rows []javInputWorkMatch
+	if err := tx.
+		Table("jav j").
+		Select(`j.id, j.normalized_code, (
+			SELECT MIN(jii.jav_input_batch_id)
+			FROM jav_input_item jii
+			WHERE jii.jav_id = j.id
+		) AS jav_input_batch_id`).
+		Where("j.normalized_code IN ?", normalizedCodes).
+		Find(&rows).Error; err != nil {
+		return nil, fmt.Errorf("list canonical JAV works for input: %w", err)
+	}
+	for _, row := range rows {
+		result[row.NormalizedCode] = row
+	}
+	return result, nil
+}
+
+func createCanonicalJavForInputTx(tx *gorm.DB, code, normalizedCode string, createdAt time.Time) (*createCanonicalJavResult, error) {
+	if tx == nil {
+		return nil, errors.New("tx is nil")
+	}
+	code = strings.ToUpper(strings.TrimSpace(code))
+	normalizedCode = models.NormalizeJavCode(normalizedCode)
+	if normalizedCode == "" {
+		return nil, models.ErrInvalidJavCode
+	}
+	item := models.Jav{
+		Code:           code,
+		NormalizedCode: normalizedCode,
+		CreatedAt:      createdAt,
+		UpdatedAt:      createdAt,
+	}
+	insert := tx.Clauses(clause.OnConflict{
+		Columns:   []clause.Column{{Name: "normalized_code"}},
+		DoNothing: true,
+	}).Create(&item)
+	if insert.Error != nil {
+		return nil, fmt.Errorf("create canonical JAV work from input: %w", insert.Error)
+	}
+	if insert.RowsAffected > 0 {
+		return &createCanonicalJavResult{Jav: item, Created: true}, nil
+	}
+	if err := tx.Where("normalized_code = ?", normalizedCode).First(&item).Error; err != nil {
+		return nil, fmt.Errorf("load concurrently created canonical JAV work: %w", err)
+	}
+	return &createCanonicalJavResult{Jav: item}, nil
+}
+
+func ensureJavAcquisitionTx(tx *gorm.DB, javID int64, createdAt time.Time) error {
+	if tx == nil {
+		return errors.New("tx is nil")
+	}
+	if javID <= 0 {
+		return errors.New("jav id must be positive")
+	}
+	if createdAt.IsZero() {
+		createdAt = time.Now().UTC()
+	}
+	item := models.JavAcquisition{
+		JavID:     javID,
+		Stage:     models.JavAcquisitionStageMetadataPending,
+		CreatedAt: createdAt,
+		UpdatedAt: createdAt,
+	}
+	if err := tx.Clauses(clause.OnConflict{DoNothing: true}).Create(&item).Error; err != nil {
+		return fmt.Errorf("ensure JAV acquisition: %w", err)
+	}
+	return nil
+}
+
+func nowForJavInputItem(item *models.JavInputItem) time.Time {
+	if item == nil || item.CreatedAt.IsZero() {
+		return time.Now().UTC()
+	}
+	return item.CreatedAt
 }
 
 func prepareJavInputBatch(rawInput string) ([]models.JavInputItem, models.JavInputBatch) {
@@ -232,13 +404,7 @@ func normalizeJavInputCode(value string) string {
 	if codes := util.ExtractCodeFromName(value); len(codes) > 0 {
 		value = codes[0]
 	}
-	var builder strings.Builder
-	for _, char := range strings.ToUpper(strings.TrimSpace(value)) {
-		if unicode.IsLetter(char) || unicode.IsDigit(char) {
-			builder.WriteRune(char)
-		}
-	}
-	return builder.String()
+	return models.NormalizeJavCode(value)
 }
 
 func listJavInputLibraryMatches(tx *gorm.DB, normalizedCodes []string) (map[string]javInputLibraryMatch, error) {
@@ -249,46 +415,16 @@ func listJavInputLibraryMatches(tx *gorm.DB, normalizedCodes []string) (map[stri
 	var rows []javInputLibraryMatch
 	if err := tx.
 		Table("jav j").
-		Select("DISTINCT j.id, j.code").
+		Select("DISTINCT j.id, j.code, j.normalized_code").
 		Joins("JOIN video_location vl ON vl.jav_id = j.id").
 		Joins("JOIN directory d ON d.id = vl.directory_id").
 		Where(activeLocationWhereSQL("vl", "d")).
-		Where("COALESCE(j.code, '') <> ''").
+		Where("j.normalized_code IN ?", normalizedCodes).
 		Scan(&rows).Error; err != nil {
 		return nil, fmt.Errorf("list final JAV codes for input de-duplication: %w", err)
 	}
-	wanted := make(map[string]struct{}, len(normalizedCodes))
-	for _, code := range normalizedCodes {
-		wanted[code] = struct{}{}
-	}
 	for _, row := range rows {
-		key := normalizeJavInputCode(row.Code)
-		if _, ok := wanted[key]; ok {
-			result[key] = row
-		}
-	}
-	return result, nil
-}
-
-func listJavInputHistoryMatches(tx *gorm.DB, normalizedCodes []string) (map[string]javInputHistoryMatch, error) {
-	result := make(map[string]javInputHistoryMatch)
-	if len(normalizedCodes) == 0 {
-		return result, nil
-	}
-	var rows []javInputHistoryMatch
-	if err := tx.
-		Model(&models.JavInputItem{}).
-		Select("jav_input_batch_id, normalized_code").
-		Where("status = ?", models.JavInputStatusAccepted).
-		Where("normalized_code IN ?", normalizedCodes).
-		Order("id ASC").
-		Find(&rows).Error; err != nil {
-		return nil, fmt.Errorf("list historical JAV input codes: %w", err)
-	}
-	for _, row := range rows {
-		if _, exists := result[row.NormalizedCode]; !exists {
-			result[row.NormalizedCode] = row
-		}
+		result[row.NormalizedCode] = row
 	}
 	return result, nil
 }
@@ -340,9 +476,8 @@ func GetJavInputBatch(ctx context.Context, id int64) (*models.JavInputBatch, err
 	return &batch, nil
 }
 
-// DeleteJavInputBatch removes one complete input snapshot and releases any
-// accepted-code reservations owned by it. Historical duplicates stay as
-// snapshots, but no longer point at a batch that has been removed.
+// DeleteJavInputBatch removes one input audit snapshot. Canonical JAV works and
+// their acquisition rows deliberately survive history deletion.
 func DeleteJavInputBatch(ctx context.Context, id int64) error {
 	if common.DB == nil {
 		return errors.New("database is not initialized")
@@ -374,8 +509,8 @@ func DeleteJavInputBatch(ctx context.Context, id int64) error {
 	})
 }
 
-// DeleteAllJavInputBatches clears the raw-input workspace without touching the
-// final JAV library or any real files.
+// DeleteAllJavInputBatches clears raw-input audit history without touching the
+// canonical JAV collection, acquisitions, or real files.
 func DeleteAllJavInputBatches(ctx context.Context) error {
 	if common.DB == nil {
 		return errors.New("database is not initialized")
@@ -404,30 +539,22 @@ func DeleteAllJavInputBatches(ctx context.Context) error {
 	})
 }
 
-// ClearJavInputPreprocessed globally empties the preprocessing pool while
-// preserving batch history. Cleared codes no longer occupy the accepted-code
-// unique index and can therefore be submitted again.
+// ClearJavInputPreprocessed is a compatibility no-op. Pending acquisitions are
+// canonical works, not disposable workspace rows, so clearing them would
+// violate the global collection invariant.
 func ClearJavInputPreprocessed(ctx context.Context) (int64, error) {
 	if common.DB == nil {
 		return 0, errors.New("database is not initialized")
 	}
-
-	javInputCreateMu.Lock()
-	defer javInputCreateMu.Unlock()
-
-	result := common.DB.WithContext(ctx).
-		Model(&models.JavInputItem{}).
-		Where("status = ?", models.JavInputStatusAccepted).
-		Update("status", models.JavInputStatusCleared)
-	if result.Error != nil {
-		return 0, fmt.Errorf("clear preprocessed JAV input items: %w", result.Error)
+	if err := ctx.Err(); err != nil {
+		return 0, err
 	}
-	return result.RowsAffected, nil
+	return 0, nil
 }
 
-// ListJavInputPreprocessed returns the final output of both de-duplication
-// stages. Accepted codes are hidden as soon as a matching final library work
-// gains an active real-file location.
+// ListJavInputPreprocessed returns acquisition works that do not yet have an
+// active real-file location. Input history is optional provenance, not the
+// source of truth, so deleting receipts does not remove works from this list.
 func ListJavInputPreprocessed(ctx context.Context, page, pageSize int, search string) ([]models.JavInputPreprocessedItem, int64, error) {
 	if common.DB == nil {
 		return nil, 0, errors.New("database is not initialized")
@@ -439,52 +566,42 @@ func ListJavInputPreprocessed(ctx context.Context, page, pageSize int, search st
 		pageSize = 20
 	}
 
+	activeLocation := common.DB.WithContext(ctx).
+		Table("video_location vl").
+		Select("1").
+		Joins("JOIN directory d ON d.id = vl.directory_id").
+		Where("vl.jav_id = j.id").
+		Where(activeLocationWhereSQL("vl", "d"))
 	query := common.DB.WithContext(ctx).
-		Model(&models.JavInputItem{}).
-		Where("status = ?", models.JavInputStatusAccepted)
+		Table("jav_acquisition ja").
+		Joins("JOIN jav j ON j.id = ja.jav_id").
+		Where("NOT EXISTS (?)", activeLocation)
 	search = strings.TrimSpace(search)
 	if search != "" {
 		pattern := "%" + search + "%"
-		query = query.Where("code LIKE ? COLLATE NOCASE", pattern)
+		query = query.Where("j.code LIKE ? COLLATE NOCASE OR j.title LIKE ? COLLATE NOCASE", pattern, pattern)
 	}
 
-	var candidates []models.JavInputItem
-	if err := query.Order("id DESC").Find(&candidates).Error; err != nil {
-		return nil, 0, fmt.Errorf("list accepted JAV input items: %w", err)
+	var total int64
+	if err := query.Count(&total).Error; err != nil {
+		return nil, 0, fmt.Errorf("count pending JAV acquisitions: %w", err)
 	}
-	normalizedCodes := make([]string, 0, len(candidates))
-	for _, item := range candidates {
-		normalizedCodes = append(normalizedCodes, item.NormalizedCode)
+	var items []models.JavInputPreprocessedItem
+	if err := query.
+		Select(`j.id AS id,
+			j.id AS jav_id,
+			COALESCE((SELECT MIN(src.jav_input_batch_id) FROM jav_input_item src WHERE src.jav_id = j.id), 0) AS jav_input_batch_id,
+			COALESCE((SELECT MIN(src.line_number) FROM jav_input_item src WHERE src.jav_id = j.id), 0) AS line_number,
+			COALESCE((SELECT src.raw_line FROM jav_input_item src WHERE src.jav_id = j.id ORDER BY src.id LIMIT 1), '') AS raw_line,
+			j.code,
+			j.normalized_code,
+			ja.stage,
+			ja.created_at`).
+		Order("ja.created_at DESC, ja.jav_id DESC").
+		Limit(pageSize).
+		Offset((page - 1) * pageSize).
+		Scan(&items).Error; err != nil {
+		return nil, 0, fmt.Errorf("list pending JAV acquisitions: %w", err)
 	}
-	libraryMatches, err := listJavInputLibraryMatches(common.DB.WithContext(ctx), normalizedCodes)
-	if err != nil {
-		return nil, 0, err
-	}
-
-	filtered := make([]models.JavInputPreprocessedItem, 0, len(candidates))
-	for _, item := range candidates {
-		if _, exists := libraryMatches[item.NormalizedCode]; exists {
-			continue
-		}
-		filtered = append(filtered, models.JavInputPreprocessedItem{
-			ID:              item.ID,
-			JavInputBatchID: item.JavInputBatchID,
-			LineNumber:      item.LineNumber,
-			RawLine:         item.RawLine,
-			Code:            item.Code,
-			NormalizedCode:  item.NormalizedCode,
-			CreatedAt:       item.CreatedAt,
-		})
-	}
-
-	total := int64(len(filtered))
-	start := (page - 1) * pageSize
-	if start >= len(filtered) {
-		return []models.JavInputPreprocessedItem{}, total, nil
-	}
-	end := start + pageSize
-	if end > len(filtered) {
-		end = len(filtered)
-	}
-	return filtered[start:end], total, nil
+	return items, total, nil
 }

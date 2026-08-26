@@ -36,6 +36,7 @@ type javFilterQuery struct {
 	FavoriteGroupID   int64
 	FavoriteRatingMin *float64
 	FavoriteRatingMax *float64
+	Inventory         string
 }
 
 func parseJavFilterQuery(c *gin.Context) (javFilterQuery, bool) {
@@ -47,6 +48,16 @@ func parseJavFilterQuery(c *gin.Context) (javFilterQuery, bool) {
 		Prefix:       strings.TrimSpace(c.Query("prefix")),
 		StudioID:     -1,
 		SoloOnly:     queryBool(c, "solo", false),
+		Inventory:    models.JavInventoryAll,
+	}
+	if inventoryParam := strings.ToLower(strings.TrimSpace(c.Query("inventory"))); inventoryParam != "" {
+		switch inventoryParam {
+		case models.JavInventoryAll, models.JavInventoryPending, models.JavInventoryImported:
+			query.Inventory = inventoryParam
+		default:
+			respondLocalizedError(c, http.StatusBadRequest, "库存状态无效", "Invalid inventory state")
+			return query, false
+		}
 	}
 	if studioParam := strings.TrimSpace(c.Query("studio_id")); studioParam != "" {
 		parsed, err := strconv.ParseInt(studioParam, 10, 64)
@@ -117,6 +128,7 @@ func searchJav(c *gin.Context) {
 		FavoriteGroupID:   filterQuery.FavoriteGroupID,
 		FavoriteRatingMin: filterQuery.FavoriteRatingMin,
 		FavoriteRatingMax: filterQuery.FavoriteRatingMax,
+		Inventory:         filterQuery.Inventory,
 	})
 	if err != nil {
 		logging.Error("SearchJav: %v", err)
@@ -148,6 +160,7 @@ func listJavFilterOptions(c *gin.Context) {
 			FavoriteGroupID:   filterQuery.FavoriteGroupID,
 			FavoriteRatingMin: filterQuery.FavoriteRatingMin,
 			FavoriteRatingMax: filterQuery.FavoriteRatingMax,
+			Inventory:         filterQuery.Inventory,
 		},
 		dbpkg.JavFilterOptionSearches{
 			Prefix: strings.TrimSpace(c.Query("prefix_search")),

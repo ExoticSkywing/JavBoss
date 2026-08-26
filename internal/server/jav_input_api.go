@@ -11,6 +11,7 @@ import (
 
 	"javboss/internal/db"
 	"javboss/internal/jav"
+	"javboss/internal/service"
 )
 
 const maxJavInputNumbers = 50
@@ -45,11 +46,18 @@ func createJavInputBatch(c *gin.Context) {
 			respondLocalizedError(c, http.StatusBadRequest, "至少输入一行番号", "Enter at least one line")
 			return
 		}
+		if errors.Is(err, db.ErrJavInputNoCodes) {
+			respondLocalizedError(c, http.StatusBadRequest, "没有识别到番号，请检查输入", "No JAV code was recognized; check the input")
+			return
+		}
 		respondLocalizedError(c, http.StatusInternalServerError, "保存番号输入批次失败", "Failed to save JAV input batch")
 		return
 	}
 	c.Header("Cache-Control", "no-store")
 	c.JSON(http.StatusCreated, batch)
+	if batch.AcceptedCount > 0 {
+		service.RequestJavMetadataScan()
+	}
 }
 
 func listJavInputBatches(c *gin.Context) {

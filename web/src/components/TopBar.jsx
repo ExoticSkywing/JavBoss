@@ -13,7 +13,11 @@ import { Button, IconButton, Popper, Slider } from '@mui/material'
 import {
   formatIdolProfileFilterRange,
   IDOL_PROFILE_FILTER_DEFINITIONS,
+  JAV_INVENTORY_ALL,
+  JAV_INVENTORY_IMPORTED,
+  JAV_INVENTORY_PENDING,
   normalizeIdolProfileFilters,
+  normalizeJavInventory,
 } from '@/constants/jav'
 import { zh } from '@/utils/i18n'
 
@@ -41,6 +45,42 @@ function FilterChip({ label, onRemove }) {
         </button>
       ) : null}
     </span>
+  )
+}
+
+function JavInventoryFilter({ value, onChange }) {
+  const selected = normalizeJavInventory(value)
+  const options = [
+    { value: JAV_INVENTORY_ALL, label: zh('全部', 'All') },
+    { value: JAV_INVENTORY_PENDING, label: zh('未入库', 'Pending') },
+    { value: JAV_INVENTORY_IMPORTED, label: zh('已入库', 'Imported') },
+  ]
+
+  return (
+    <div
+      className="inline-flex shrink-0 rounded-lg border border-slate-200 bg-slate-100 p-0.5"
+      role="group"
+      aria-label={zh('库存状态', 'Inventory state')}
+    >
+      {options.map((option) => {
+        const active = option.value === selected
+        return (
+          <button
+            key={option.value}
+            type="button"
+            className={`min-h-8 rounded-md px-3 text-xs font-semibold transition active:scale-[0.98] ${
+              active
+                ? 'bg-white text-indigo-700 shadow-sm'
+                : 'text-slate-500 hover:bg-white/70 hover:text-slate-800'
+            }`}
+            aria-pressed={active}
+            onClick={() => onChange?.(option.value)}
+          >
+            {option.label}
+          </button>
+        )
+      })}
+    </div>
   )
 }
 
@@ -317,12 +357,14 @@ export default function TopBar({
   isJavMode,
   javSearchHref,
   javSearchInput,
+  javInventory,
   javTab,
   onClearFilters,
   onFavoriteGroupSelect,
   onFavoriteRatingEnabledChange,
   onFavoriteRatingRangeChange,
   onIdolProfileFilterChange,
+  onJavInventoryChange,
   onHome,
   onRandomClick,
   onOpenFavoriteGroups,
@@ -464,6 +506,10 @@ export default function TopBar({
           </form>
 
           {isJavMode && javTab === 'list' ? (
+            <JavInventoryFilter value={javInventory} onChange={onJavInventoryChange} />
+          ) : null}
+
+          {isJavMode && javTab === 'list' ? (
             <FavoriteRatingFilter
               enabled={favoriteRatingEnabled}
               min={favoriteRatingMin}
@@ -589,11 +635,11 @@ export default function TopBar({
                 type="button"
                 className="filter-action-button"
                 onClick={onOpenJavInput}
-                title={zh('番号输入', 'JAV code input')}
-                aria-label={zh('番号输入', 'JAV code input')}
+                title={zh('加入作品库', 'Add works to library')}
+                aria-label={zh('加入作品库', 'Add works to library')}
               >
                 <PlaylistAddCheckRoundedIcon fontSize="small" />
-                <span>{zh('番号输入', 'JAV code input')}</span>
+                <span>{zh('加入作品', 'Add works')}</span>
               </button>
             ) : null}
           </div>

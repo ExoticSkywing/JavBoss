@@ -23,6 +23,7 @@ import {
   createDefaultIdolProfileFilters,
   IDOL_PROFILE_FILTER_DEFINITIONS,
   normalizeIdolSort,
+  normalizeJavInventory,
   normalizeIdolProfileFilters,
   normalizeJavSort,
   normalizeJavSortRules,
@@ -159,6 +160,7 @@ const javListRequestKey = (state, directoryIds = directoryQueryIds(state)) => {
       ? `${state.javFavoriteRatingMin}-${state.javFavoriteRatingMax}`
       : '',
     state.javFavoriteGroupId || '',
+    state.javInventory,
     effectiveSort,
     state.javRandomMode ? state.javRandomSeed || '' : '',
     directoryIds.join(','),
@@ -255,6 +257,7 @@ export const useStore = create((set, get) => ({
     })
   },
   javSearchTerm: '',
+  javInventory: 'all',
   javIdolIds: [],
   javTags: [],
   javStudioId: null,
@@ -339,6 +342,15 @@ export const useStore = create((set, get) => ({
     const parsed = Number(id)
     const next = Number.isFinite(parsed) && parsed > 0 ? parsed : null
     set({ javFavoriteGroupId: next, javPage: 1, javRandomMode: false, javRandomSeed: null })
+  },
+  setJavInventory: (inventory) => {
+    set({
+      javInventory: normalizeJavInventory(inventory),
+      javTempSort: '',
+      javRandomMode: false,
+      javRandomSeed: null,
+      javPage: 1,
+    })
   },
   setStudioFavoriteGroupId: (id) => {
     const parsed = Number(id)
@@ -873,6 +885,7 @@ export const useStore = create((set, get) => ({
       javFavoriteRatingMin,
       javFavoriteRatingMax,
       javFavoriteGroupId,
+      javInventory,
       javRandomMode,
       javRandomSeed,
     } = get()
@@ -901,6 +914,7 @@ export const useStore = create((set, get) => ({
         favoriteRatingMin: javFavoriteRatingMin,
         favoriteRatingMax: javFavoriteRatingMax,
         favoriteGroupId: javFavoriteGroupId,
+        inventory: javInventory,
         sort: effectiveSort,
         seed: javRandomMode ? javRandomSeed : null,
         directoryIds,
@@ -950,6 +964,7 @@ export const useStore = create((set, get) => ({
         favoriteRatingMin: state.javFavoriteRatingMin,
         favoriteRatingMax: state.javFavoriteRatingMax,
         favoriteGroupId: state.javFavoriteGroupId,
+        inventory: state.javInventory,
         sort: effectiveSort,
         directoryIds,
       })

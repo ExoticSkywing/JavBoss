@@ -551,6 +551,44 @@ body.has-page-scroll .sticky-pagination {
   gap: 6px;
 }
 
+@media (max-width: 720px) {
+  .filter-topbar__body {
+    align-items: flex-start;
+  }
+
+  .filter-topbar__brand {
+    width: 72px;
+    align-self: stretch;
+    align-items: flex-start;
+    padding-top: 19px;
+    padding-left: 10px;
+    font-size: 1rem;
+  }
+
+  .filter-topbar__controls {
+    flex-wrap: wrap;
+    gap: 6px;
+    padding: 8px 8px 8px 0;
+  }
+
+  .filter-search {
+    width: auto;
+    min-width: 8.5rem;
+    margin-left: 0;
+    flex: 1 1 8.5rem;
+  }
+
+  .favorite-rating-filter {
+    flex: 1 1 8rem;
+  }
+
+  .filter-topbar__filter-cluster {
+    max-width: 100%;
+    flex: 1 1 100%;
+    order: 2;
+  }
+}
+
 .filter-clear-button {
   height: 32px;
   border-radius: 8px;

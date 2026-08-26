@@ -6,6 +6,7 @@ import (
 	"time"
 
 	"javboss/internal/jav"
+	"javboss/internal/models"
 )
 
 func TestLookupActressProfilesConcurrently(t *testing.T) {
@@ -78,5 +79,45 @@ func TestMergeActressInfosUsesProviderPriority(t *testing.T) {
 	}
 	if info.Cup != 5 {
 		t.Fatalf("javmodel fallback field was not used: %#v", info)
+	}
+}
+
+func TestIdolChineseNameRetryUsesTTL(t *testing.T) {
+	resetIdolProfileRetryState()
+	t.Cleanup(resetIdolProfileRetryState)
+
+	base := time.Unix(1710000000, 0).UTC()
+	height, bust, waist, hips, cup := 160, 88, 60, 89, 5
+	birthDate := base.Add(-25 * 365 * 24 * time.Hour)
+	idol := models.JavIdol{
+		ID:           101,
+		Name:         "TTL Idol",
+		RomanName:    "TTL Idol",
+		JapaneseName: "TTL アイドル",
+		HeightCM:     &height,
+		BirthDate:    &birthDate,
+		Bust:         &bust,
+		Waist:        &waist,
+		Hips:         &hips,
+		Cup:          &cup,
+	}
+	if idolMissingOnlyChineseName(idol) != true {
+		t.Fatal("fixture should be missing only ChineseName")
+	}
+	if shouldSkipIdolProfileAttempt(idol, base) {
+		t.Fatal("first ChineseName attempt was unexpectedly skipped")
+	}
+	if !shouldSkipIdolProfileAttempt(idol, base.Add(time.Hour)) {
+		t.Fatal("retry inside TTL was not skipped")
+	}
+	if shouldSkipIdolProfileAttempt(idol, base.Add(idolChineseNameRetryTTL+time.Second)) {
+		t.Fatal("retry after TTL was skipped")
+	}
+
+	// A profile missing another field must remain eligible on every pass.
+	idol.ChineseName = ""
+	idol.HeightCM = nil
+	if shouldSkipIdolProfileAttempt(idol, base) {
+		t.Fatal("non-Chinese-only profile was throttled")
 	}
 }

@@ -107,3 +107,69 @@ func TestUpdateVideoLocationPathReusesHiddenPath(t *testing.T) {
 		t.Fatalf("target path should belong to the active location: %#v", locations[0])
 	}
 }
+
+func TestUpsertVideoLocationClearsJavWhenPathPointsToDifferentVideo(t *testing.T) {
+	gdb := openTestDB(t)
+	ctx := context.Background()
+	now := time.Unix(1710000000, 0).UTC()
+
+	dir := models.Directory{Path: "/tmp/media"}
+	if err := gdb.Create(&dir).Error; err != nil {
+		t.Fatalf("create directory: %v", err)
+	}
+	oldVideo := models.Video{Fingerprint: "old-path-content", DurationSec: 3600}
+	newVideo := models.Video{Fingerprint: "new-path-content", DurationSec: 3600}
+	if err := gdb.Create(&oldVideo).Error; err != nil {
+		t.Fatalf("create old video: %v", err)
+	}
+	if err := gdb.Create(&newVideo).Error; err != nil {
+		t.Fatalf("create new video: %v", err)
+	}
+	javRec := models.Jav{Code: "TEST-001", Title: "Original work"}
+	if err := gdb.Create(&javRec).Error; err != nil {
+		t.Fatalf("create jav: %v", err)
+	}
+
+	initial, err := UpsertVideoLocation(ctx, oldVideo.ID, dir.ID, "same/path.mp4", now)
+	if err != nil {
+		t.Fatalf("upsert initial location: %v", err)
+	}
+	if err := gdb.Model(&models.VideoLocation{}).
+		Where("id = ?", initial.ID).
+		Update("jav_id", javRec.ID).Error; err != nil {
+		t.Fatalf("link initial location to jav: %v", err)
+	}
+
+	sameVideo, err := UpsertVideoLocation(ctx, oldVideo.ID, dir.ID, "same/path.mp4", now.Add(time.Minute))
+	if err != nil {
+		t.Fatalf("upsert unchanged video location: %v", err)
+	}
+	if sameVideo.ID != initial.ID {
+		t.Fatalf("unchanged path created a new location: got id %d, want %d", sameVideo.ID, initial.ID)
+	}
+	if sameVideo.JavID == nil || *sameVideo.JavID != javRec.ID {
+		t.Fatalf("unchanged video should retain jav link: %#v", sameVideo.JavID)
+	}
+
+	replaced, err := UpsertVideoLocation(ctx, newVideo.ID, dir.ID, "same/path.mp4", now.Add(2*time.Minute))
+	if err != nil {
+		t.Fatalf("upsert replacement video location: %v", err)
+	}
+	if replaced.ID != initial.ID {
+		t.Fatalf("replacement path created a new location: got id %d, want %d", replaced.ID, initial.ID)
+	}
+	if replaced.VideoID != newVideo.ID {
+		t.Fatalf("replacement video id = %d, want %d", replaced.VideoID, newVideo.ID)
+	}
+	if replaced.JavID != nil {
+		t.Fatalf("replacement video retained stale jav link: %#v", replaced.JavID)
+	}
+
+	var reloaded models.VideoLocation
+	if err := gdb.First(&reloaded, initial.ID).Error; err != nil {
+		t.Fatalf("reload replacement location: %v", err)
+	}
+	if reloaded.VideoID != newVideo.ID || reloaded.JavID != nil {
+		t.Fatalf("unexpected persisted replacement location: %#v", reloaded)
+	}
+}

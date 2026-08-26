@@ -1,6 +1,12 @@
 import assert from 'node:assert/strict'
 import test from 'node:test'
-import { countJavInputLines, groupJavInputItems, JAV_INPUT_STATUS } from '../src/utils/javInput.js'
+import {
+  countJavInputLines,
+  getJavInputReceipt,
+  groupJavInputItems,
+  JAV_INPUT_RECEIPT_KIND,
+  JAV_INPUT_STATUS,
+} from '../src/utils/javInput.js'
 
 test('countJavInputLines ignores blank lines without changing source text', () => {
   assert.equal(countJavInputLines('  ABC-001 中文备注  \n\nDEF-002\r\n   '), 2)
@@ -47,4 +53,61 @@ test('groupJavInputItems exposes both de-duplication stages separately', () => {
     [6]
   )
   assert.equal(grouped.globalDuplicateCount, 2)
+})
+
+test('getJavInputReceipt reports the three user-facing incremental outcomes', () => {
+  const cases = [
+    {
+      batch: { batch_unique_count: 3, accepted_count: 0 },
+      expected: {
+        kind: JAV_INPUT_RECEIPT_KIND.none,
+        recognized: true,
+        uniqueCount: 3,
+        addedCount: 0,
+        existingCount: 3,
+        invalidItems: [],
+      },
+    },
+    {
+      batch: { batch_unique_count: 3, accepted_count: 1 },
+      expected: {
+        kind: JAV_INPUT_RECEIPT_KIND.partial,
+        recognized: true,
+        uniqueCount: 3,
+        addedCount: 1,
+        existingCount: 2,
+        invalidItems: [],
+      },
+    },
+    {
+      batch: { batch_unique_count: 3, accepted_count: 3 },
+      expected: {
+        kind: JAV_INPUT_RECEIPT_KIND.all,
+        recognized: true,
+        uniqueCount: 3,
+        addedCount: 3,
+        existingCount: 0,
+        invalidItems: [],
+      },
+    },
+  ]
+
+  for (const { batch, expected } of cases) {
+    assert.deepEqual(getJavInputReceipt(batch), expected)
+  }
+})
+
+test('getJavInputReceipt only exposes suspicious unrecognized input as warnings', () => {
+  const invalid = { id: 1, status: JAV_INPUT_STATUS.invalid, raw_line: '番号 123?' }
+  const receipt = getJavInputReceipt({
+    batch_unique_count: 1,
+    accepted_count: 1,
+    items: [
+      invalid,
+      { id: 2, status: JAV_INPUT_STATUS.note, raw_line: '收藏清单' },
+      { id: 3, status: JAV_INPUT_STATUS.duplicateBatch, code: 'ABC-001' },
+    ],
+  })
+
+  assert.deepEqual(receipt.invalidItems, [invalid])
 })

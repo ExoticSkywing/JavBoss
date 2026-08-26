@@ -29,3 +29,20 @@ func TestJavSampleImagesNotFoundSentinel(t *testing.T) {
 		t.Fatalf("unexpected sentinel JSON: %s", data)
 	}
 }
+
+func TestNormalizeJavCode(t *testing.T) {
+	tests := map[string]string{
+		" IPX-001 ":       "IPX001",
+		"ipx_001":         "IPX001",
+		"IPX 001":         "IPX001",
+		"FC2-PPV-1579280": "FC21579280",
+		"fc2_1579280":     "FC21579280",
+		"110316-005":      "110316005",
+		"---":             "",
+	}
+	for input, want := range tests {
+		if got := NormalizeJavCode(input); got != want {
+			t.Errorf("NormalizeJavCode(%q) = %q, want %q", input, got, want)
+		}
+	}
+}

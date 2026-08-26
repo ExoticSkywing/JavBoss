@@ -6,6 +6,11 @@ import {
   normalizeJavSort,
 } from '@/constants/jav'
 import { normalizeVideoSort } from '@/constants/video'
+import {
+  normalizeJavInventory,
+  parseJavInventoryParam,
+  writeJavInventoryParam,
+} from '@/utils/javInventory'
 
 const RANDOM_SEED_MAX = 2147483646
 
@@ -121,6 +126,7 @@ export const parseUrlState = (searchString = window.location.search, options = {
     tab: javTab,
     page: parseIntSafe(sp.get('page'), 1),
     search: (sp.get('search') || '').trim(),
+    inventory: parseJavInventoryParam(sp),
     idolIds: parseIds(sp.get('idol_ids')),
     tagIds: parseIds(sp.get('tag_ids')),
     studioId: sp.get('studio_unknown') === '1' ? 0 : parseNonNegativeInt(sp.get('studio_id')),
@@ -157,6 +163,7 @@ export const buildUrlFromState = (state, basePath = window.location.pathname) =>
       sp.set('tab', state.jav.tab)
     }
     if (state.jav.search) sp.set('search', state.jav.search)
+    writeJavInventoryParam(sp, state.jav.inventory, state.jav.tab === 'list')
     if (state.jav.tab === 'list' && state.jav.idolIds?.length) {
       sp.set('idol_ids', state.jav.idolIds.join(','))
     }
@@ -303,6 +310,7 @@ export const normalizeUrlStateFromStore = (store, tagsByName) => {
                 ? 1
                 : store.javPage,
       search: (store.javSearchTerm || '').trim(),
+      inventory: normalizeJavInventory(store.javInventory),
       idolIds: store.javIdolIds || [],
       tagIds: store.javTags || [],
       studioId: store.javStudioId ?? null,

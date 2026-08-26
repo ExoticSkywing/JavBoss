@@ -1,499 +1,205 @@
-import { useCallback, useEffect, useMemo, useState } from 'react'
+import { useEffect, useMemo, useRef, useState } from 'react'
 import AppModal from '@/components/AppModal'
-import {
-  clearJavInputPreprocessed,
-  createJavInputBatch,
-  deleteAllJavInputBatches,
-  deleteJavInputBatch,
-  fetchJavInputBatch,
-  fetchJavInputBatches,
-  fetchJavInputPreprocessed,
-} from '@/api'
+import { createJavInputBatch } from '@/api'
 import { getErrorMessage } from '@/utils/errors'
 import { zh } from '@/utils/i18n'
-import {
-  countJavInputLines,
-  groupJavInputItems,
-  JAV_INPUT_STATUS as STATUS,
-} from '@/utils/javInput'
+import { countJavInputLines, getJavInputReceipt, JAV_INPUT_RECEIPT_KIND } from '@/utils/javInput'
 
-function formatBatchTime(value) {
-  const date = new Date(value)
-  if (Number.isNaN(date.getTime())) return String(value || '')
-  return new Intl.DateTimeFormat(zh('zh-CN', 'en'), {
-    year: 'numeric',
-    month: '2-digit',
-    day: '2-digit',
-    hour: '2-digit',
-    minute: '2-digit',
-    second: '2-digit',
-  }).format(date)
-}
-
-function sourceKey(item) {
-  return `${item?.line_number || 0}\u0000${item?.raw_line || ''}`
-}
-
-function buildSourceMetadata(items) {
-  const sources = new Map()
-  for (const item of Array.isArray(items) ? items : []) {
-    if (!item?.code || item.status === STATUS.invalid || item.status === STATUS.note) continue
-    const key = sourceKey(item)
-    let source = sources.get(key)
-    if (!source) {
-      source = { firstPositionByCode: new Map(), itemPositions: new Map(), total: 0 }
-      sources.set(key, source)
-    }
-    source.total += 1
-    source.itemPositions.set(item, source.total)
-    const codeKey = item.normalized_code || item.code
-    if (!source.firstPositionByCode.has(codeKey)) {
-      source.firstPositionByCode.set(codeKey, source.total)
-    }
-  }
-  return sources
-}
-
-function statusLabel(item, source) {
-  switch (item?.status) {
-    case STATUS.duplicateBatch:
-      if (item.duplicate_of_line === item.line_number && source) {
-        const position = source.itemPositions.get(item)
-        const firstPosition = source.firstPositionByCode.get(item.normalized_code || item.code)
-        return zh(
-          `本行第 ${position} 个，与第 ${firstPosition} 个重复`,
-          `Item ${position} on this line duplicates item ${firstPosition}`
-        )
+function receiptCopy(receipt) {
+  switch (receipt.kind) {
+    case JAV_INPUT_RECEIPT_KIND.all:
+      return {
+        eyebrow: zh('全部新增', 'All new'),
+        title: zh(
+          `${receipt.addedCount} 部作品已加入作品库`,
+          `${receipt.addedCount} work(s) added to the library`
+        ),
+        description: zh(
+          '本次识别出的作品都是首次出现，现已标记为未入库并开始补全元数据。',
+          'Every recognized work was new. They are now marked as pending while metadata is collected.'
+        ),
+        tone: 'emerald',
       }
-      return item.duplicate_of_line === item.line_number
-        ? zh('与本行前面出现的相同番号重复', 'Duplicates the same code earlier on this line')
-        : zh(
-            `与本批第 ${item.duplicate_of_line} 行重复`,
-            `Duplicates line ${item.duplicate_of_line}`
-          )
-    case STATUS.duplicateLibrary:
-      return zh('作品库中已有真实文件', 'A real file already exists in the library')
-    case STATUS.duplicateHistory:
-      return item.existing_batch_id
-        ? zh(
-            `历史批次 #${item.existing_batch_id} 已经接收`,
-            `Already accepted by history batch #${item.existing_batch_id}`
-          )
-        : zh('原接收批次已删除', 'The original accepting batch was deleted')
-    case STATUS.invalid:
-      return zh('未识别到番号', 'No JAV code recognized')
-    case STATUS.note:
-      return zh('批次备注，不参与去重', 'Batch note; excluded from de-duplication')
-    case STATUS.cleared:
-      return zh('已从预处理作品全局清除', 'Globally cleared from preprocessed works')
+    case JAV_INPUT_RECEIPT_KIND.partial:
+      return {
+        eyebrow: zh('部分新增', 'Partly new'),
+        title: zh(
+          `${receipt.addedCount} 部新作品已加入作品库`,
+          `${receipt.addedCount} new work(s) added to the library`
+        ),
+        description: zh(
+          `另外 ${receipt.existingCount} 部已经存在，系统已自动合并，没有创建重复作品。`,
+          `${receipt.existingCount} other work(s) already existed and were merged automatically; no duplicates were created.`
+        ),
+        tone: 'blue',
+      }
     default:
-      return zh('保留', 'Kept')
+      return {
+        eyebrow: zh('无新增', 'Nothing new'),
+        title: zh('作品库没有发生变化', 'The library did not change'),
+        description: zh(
+          `本次识别出的 ${receipt.existingCount} 部作品都已经存在，无需再次处理。`,
+          `All ${receipt.existingCount} recognized work(s) already existed, so nothing needed to be added.`
+        ),
+        tone: 'slate',
+      }
   }
 }
 
-function ResultRows({ items, emptyText, sourceMetadata, tone = 'slate', showReason = true }) {
-  const toneClasses = {
-    emerald: 'border-emerald-100 bg-emerald-50/50',
-    amber: 'border-amber-100 bg-amber-50/50',
-    rose: 'border-rose-100 bg-rose-50/50',
-    indigo: 'border-indigo-100 bg-indigo-50/40',
-    slate: 'border-slate-100 bg-white',
-  }
-  if (!items.length) {
-    return <div className="px-4 py-5 text-sm text-slate-400">{emptyText}</div>
-  }
-
-  const rows = []
-  const rowsBySource = new Map()
-  for (const item of items) {
-    const key = sourceKey(item)
-    let row = rowsBySource.get(key)
-    if (!row) {
-      row = { items: [], key }
-      rowsBySource.set(key, row)
-      rows.push(row)
-    }
-    row.items.push(item)
-  }
-
+function ParseWarnings({ items }) {
+  if (!items.length) return null
   return (
-    <div className="divide-y divide-slate-100">
-      {rows.map((row) => {
-        const item = row.items[0]
-        const source = sourceMetadata?.get(row.key)
-        const groupedSource = Number(source?.total || 0) > 1
-        if (groupedSource) {
-          return (
-            <div
-              key={row.key}
-              className={`grid gap-3 border-l-4 px-4 py-4 sm:grid-cols-[5rem_minmax(0,1fr)] ${toneClasses[tone]}`}
+    <details className="rounded-xl border border-amber-200 bg-amber-50/70 text-sm text-amber-950">
+      <summary className="min-h-11 cursor-pointer select-none px-4 py-3 font-medium hover:bg-amber-100/60">
+        {zh(
+          `${items.length} 处内容可能包含未识别的番号`,
+          `${items.length} fragment(s) may contain an unrecognized code`
+        )}
+      </summary>
+      <div className="border-t border-amber-200 px-4 py-3">
+        <p className="text-xs leading-5 text-amber-800">
+          {zh(
+            '这些内容没有加入作品库；确认确实是番号后，可以修正格式再输入。纯文字备注已自动忽略。',
+            'These fragments were not added. If they contain a code, correct the format and enter it again. Plain-text notes were ignored automatically.'
+          )}
+        </p>
+        <ul className="mt-3 space-y-2">
+          {items.map((item, index) => (
+            <li
+              key={item?.id || `${item?.line_number || 0}-${index}`}
+              className="rounded-lg border border-amber-200 bg-white px-3 py-2"
             >
-              <span className="text-xs tabular-nums text-slate-400">
-                {zh(`第 ${item.line_number} 行`, `Line ${item.line_number}`)}
-              </span>
-              <div className="min-w-0">
-                <div className="flex flex-wrap gap-2">
-                  {row.items.map((rowItem) => (
-                    <span
-                      key={
-                        rowItem.id ||
-                        `${rowItem.line_number}-${rowItem.normalized_code}-${rowItem.status}`
-                      }
-                      className="rounded-md border border-slate-200 bg-white px-2.5 py-1 font-mono text-sm font-semibold text-slate-700 shadow-sm"
-                    >
-                      {rowItem.code}
-                    </span>
-                  ))}
-                </div>
-                {showReason
-                  ? row.items
-                      .filter((rowItem) => rowItem.status !== STATUS.accepted)
-                      .map((rowItem) => (
-                        <div key={`reason-${rowItem.id}`} className="mt-2 text-xs text-slate-500">
-                          <span className="font-semibold text-slate-700">{rowItem.code}</span>
-                          <span className="mx-1.5">·</span>
-                          {statusLabel(rowItem, source)}
-                        </div>
-                      ))
-                  : null}
-                <details className="mt-3 text-xs text-slate-500">
-                  <summary className="cursor-pointer select-none hover:text-slate-700">
-                    {zh(
-                      `查看原始输入（本行共 ${source.total} 个番号）`,
-                      `Show original input (${source.total} codes on this line)`
-                    )}
-                  </summary>
-                  <div className="mt-2 whitespace-pre-wrap break-words rounded-lg bg-white/80 px-3 py-2 font-mono leading-5 text-slate-600">
-                    {item.raw_line}
-                  </div>
-                </details>
+              <div className="text-xs tabular-nums text-amber-700">
+                {zh(`第 ${item?.line_number || '?'} 行`, `Line ${item?.line_number || '?'}`)}
               </div>
-            </div>
-          )
-        }
-        return (
-          <div
-            key={item.id || `${item.line_number}-${item.normalized_code}-${item.status}`}
-            className={`grid gap-2 border-l-4 px-4 py-3 sm:grid-cols-[4rem_8rem_minmax(0,1fr)] ${toneClasses[tone]}`}
-          >
-            <span className="text-xs tabular-nums text-slate-400">
-              {zh(`第 ${item.line_number} 行`, `Line ${item.line_number}`)}
-            </span>
-            <span className="text-xs font-semibold text-slate-700">{item.code || '—'}</span>
-            <div className="min-w-0">
-              <div className="whitespace-pre-wrap break-words font-mono text-sm text-slate-800">
-                {item.raw_line}
+              <div className="mt-1 whitespace-pre-wrap break-words font-mono text-xs leading-5 text-slate-700">
+                {item?.raw_line || '—'}
               </div>
-              {showReason && item.status !== STATUS.accepted ? (
-                <div className="mt-1 text-xs text-slate-500">{statusLabel(item, source)}</div>
-              ) : null}
-            </div>
-          </div>
-        )
-      })}
-    </div>
-  )
-}
-
-function ResultSection({
-  title,
-  description,
-  count,
-  items,
-  emptyText,
-  sourceMetadata,
-  tone,
-  showReason,
-}) {
-  return (
-    <section className="overflow-hidden rounded-xl border border-slate-200 bg-white shadow-sm">
-      <header className="flex flex-wrap items-start justify-between gap-3 border-b border-slate-100 px-4 py-3">
-        <div>
-          <h3 className="font-semibold text-slate-900">{title}</h3>
-          {description ? <p className="mt-1 text-xs text-slate-500">{description}</p> : null}
-        </div>
-        <span className="rounded-full bg-slate-100 px-2.5 py-1 text-xs font-semibold text-slate-600">
-          {count}
-        </span>
-      </header>
-      <ResultRows
-        items={items}
-        emptyText={emptyText}
-        sourceMetadata={sourceMetadata}
-        tone={tone}
-        showReason={showReason}
-      />
-    </section>
-  )
-}
-
-function BatchResult({ batch, deleting = false, onDelete }) {
-  const {
-    batchDuplicates,
-    firstStage,
-    accepted,
-    globalDuplicates,
-    invalid,
-    notes,
-    globalDuplicateCount,
-  } = groupJavInputItems(batch)
-  const sourceMetadata = useMemo(() => buildSourceMetadata(batch?.items), [batch?.items])
-
-  return (
-    <div className="space-y-5">
-      <div className="rounded-xl border border-indigo-100 bg-indigo-50 p-4">
-        <div className="flex flex-wrap items-center justify-between gap-2">
-          <div>
-            <span className="font-semibold text-indigo-950">
-              {zh(`输入批次 #${batch.id}`, `Input batch #${batch.id}`)}
-            </span>
-            <span className="ml-2 text-xs text-indigo-600">
-              {formatBatchTime(batch.created_at)}
-            </span>
-          </div>
-          <div className="flex items-center gap-3">
-            <span className="text-xs text-indigo-700">
-              {zh('完整输入快照', 'Complete input snapshot')}
-            </span>
-            {onDelete ? (
-              <button
-                type="button"
-                disabled={deleting}
-                onClick={() => onDelete(batch)}
-                className="rounded-md border border-rose-200 bg-white px-2.5 py-1.5 text-xs font-semibold text-rose-600 transition hover:bg-rose-50 disabled:cursor-not-allowed disabled:opacity-50"
-              >
-                {deleting ? zh('删除中…', 'Deleting…') : zh('删除本批次', 'Delete batch')}
-              </button>
-            ) : null}
-          </div>
-        </div>
-        <div className="mt-4 grid gap-3 sm:grid-cols-3">
-          <div className="rounded-lg bg-white px-4 py-3">
-            <div className="text-xs text-slate-500">
-              {zh('原始非空行', 'Non-empty input lines')}
-            </div>
-            <div className="mt-1 text-2xl font-semibold text-slate-900">{batch.input_count}</div>
-            <div className="mt-1 text-xs text-slate-500">
-              {zh(
-                `识别 ${batch.parsed_count} 个番号${notes.length ? ` · ${notes.length} 行备注` : ''}`,
-                `${batch.parsed_count} code(s) recognized${notes.length ? ` · ${notes.length} note line(s)` : ''}`
-              )}
-            </div>
-            {batch.invalid_count ? (
-              <div className="mt-1 text-xs text-rose-600">
-                {zh(`${batch.invalid_count} 行未识别`, `${batch.invalid_count} unrecognized`)}
-              </div>
-            ) : null}
-          </div>
-          <div className="rounded-lg bg-white px-4 py-3">
-            <div className="text-xs text-slate-500">
-              {zh('第一道 · 批内去重后', 'Stage 1 · Within-batch')}
-            </div>
-            <div className="mt-1 text-2xl font-semibold text-slate-900">
-              {batch.batch_unique_count}
-            </div>
-            <div className="mt-1 text-xs text-amber-600">
-              {zh(
-                `剔除 ${batch.batch_duplicate_count} 个重复`,
-                `Removed ${batch.batch_duplicate_count} duplicate(s)`
-              )}
-            </div>
-          </div>
-          <div className="rounded-lg bg-white px-4 py-3">
-            <div className="text-xs text-slate-500">
-              {zh('第二道 · 全局去重后', 'Stage 2 · Global')}
-            </div>
-            <div className="mt-1 text-2xl font-semibold text-emerald-700">
-              {batch.accepted_count}
-            </div>
-            <div className="mt-1 text-xs text-amber-600">
-              {zh(
-                `剔除 ${globalDuplicateCount} 个重复`,
-                `Removed ${globalDuplicateCount} duplicate(s)`
-              )}
-            </div>
-          </div>
-        </div>
+            </li>
+          ))}
+        </ul>
       </div>
+    </details>
+  )
+}
 
-      {notes.length ? (
-        <ResultSection
-          title={zh('批次备注', 'Batch notes')}
-          description={zh(
-            '纯文字标题或说明会完整保留，但不作为作品参与两道去重。',
-            'Plain-text titles and notes are retained but excluded from both stages.'
-          )}
-          count={notes.length}
-          items={notes}
-          emptyText=""
-          sourceMetadata={sourceMetadata}
-          tone="slate"
-          showReason={false}
-        />
-      ) : null}
-      <ResultSection
-        title={zh('第一道剔除：本批重复', 'Stage 1 removed: duplicates in this batch')}
-        description={zh(
-          '这里明确指出它与本批哪一行重复。',
-          'Each item points to the earlier line it duplicates.'
-        )}
-        count={batchDuplicates.length}
-        items={batchDuplicates}
-        emptyText={zh('本批没有重复番号', 'No within-batch duplicates')}
-        sourceMetadata={sourceMetadata}
-        tone="amber"
-      />
-      <ResultSection
-        title={zh('第一道结果：批内去重后', 'Stage 1 result: de-duplicated within this batch')}
-        description={zh(
-          '只保留每个番号第一次出现的原始行，暂未与全局比较。',
-          'Keeps the original first occurrence of each code before the global comparison.'
-        )}
-        count={firstStage.length}
-        items={firstStage}
-        emptyText={zh('没有可进入第二道的番号', 'No code can proceed to stage 2')}
-        sourceMetadata={sourceMetadata}
-        tone="indigo"
-        showReason={false}
-      />
-      <ResultSection
-        title={zh('第二道剔除：全局重复', 'Stage 2 removed: global duplicates')}
-        description={zh(
-          `作品库 ${batch.library_duplicate_count} 个，历史裸番号 ${batch.history_duplicate_count} 个。`,
-          `${batch.library_duplicate_count} in the library and ${batch.history_duplicate_count} in raw-code history.`
-        )}
-        count={globalDuplicates.length}
-        items={globalDuplicates}
-        emptyText={zh('没有发现全局重复', 'No global duplicates')}
-        sourceMetadata={sourceMetadata}
-        tone="rose"
-      />
-      <ResultSection
-        title={zh('第二道结果：全局去重后', 'Stage 2 result: globally unique raw codes')}
-        description={zh(
-          '这些番号既没有真实文件，也没有在以前的裸番号批次中出现，可供下一阶段继续处理。',
-          'These codes have neither a real file nor an earlier accepted raw-code record.'
-        )}
-        count={accepted.length}
-        items={accepted}
-        emptyText={zh('本批没有新增的全局唯一番号', 'No new globally unique code in this batch')}
-        sourceMetadata={sourceMetadata}
-        tone="emerald"
-      />
-      {invalid.length ? (
-        <ResultSection
-          title={zh('未识别行', 'Unrecognized lines')}
-          description={zh(
-            '原文仍保存在历史中，但没有参与两道去重。',
-            'Original text is retained in history but excluded from de-duplication.'
-          )}
-          count={invalid.length}
-          items={invalid}
-          emptyText=""
-          sourceMetadata={sourceMetadata}
-          tone="slate"
-        />
-      ) : null}
+function InputReceipt({ batch, onContinue, onViewPending }) {
+  const receipt = useMemo(() => getJavInputReceipt(batch), [batch])
+  const copy = receiptCopy(receipt)
+  const toneClasses = {
+    emerald: {
+      panel: 'border-emerald-200 bg-emerald-50/70',
+      eyebrow: 'text-emerald-700',
+      count: 'text-emerald-700',
+    },
+    blue: {
+      panel: 'border-blue-200 bg-blue-50/70',
+      eyebrow: 'text-blue-700',
+      count: 'text-blue-700',
+    },
+    slate: {
+      panel: 'border-slate-200 bg-slate-50',
+      eyebrow: 'text-slate-600',
+      count: 'text-slate-700',
+    },
+  }
+  const tone = toneClasses[copy.tone]
+
+  return (
+    <div className="space-y-4">
+      <section className={`rounded-2xl border p-5 sm:p-6 ${tone.panel}`} role="status">
+        <div className={`text-xs font-bold tracking-wide ${tone.eyebrow}`}>{copy.eyebrow}</div>
+        <h3 className="mt-1 text-xl font-bold leading-tight text-slate-950 sm:text-2xl">
+          {copy.title}
+        </h3>
+        <p className="mt-2 max-w-2xl text-sm leading-6 text-slate-600">{copy.description}</p>
+
+        <dl className="mt-5 grid grid-cols-3 overflow-hidden rounded-xl border border-white/80 bg-white/80 shadow-sm">
+          <div className="border-r border-slate-100 px-4 py-3">
+            <dt className="text-xs text-slate-500">{zh('识别作品', 'Recognized')}</dt>
+            <dd className="mt-1 text-2xl font-bold tabular-nums text-slate-900">
+              {receipt.uniqueCount}
+            </dd>
+          </div>
+          <div className="border-r border-slate-100 px-4 py-3">
+            <dt className="text-xs text-slate-500">{zh('本次新增', 'Newly added')}</dt>
+            <dd className={`mt-1 text-2xl font-bold tabular-nums ${tone.count}`}>
+              {receipt.addedCount}
+            </dd>
+          </div>
+          <div className="px-4 py-3">
+            <dt className="text-xs text-slate-500">{zh('已经存在', 'Already existed')}</dt>
+            <dd className="mt-1 text-2xl font-bold tabular-nums text-slate-600">
+              {receipt.existingCount}
+            </dd>
+          </div>
+        </dl>
+      </section>
+
+      <ParseWarnings items={receipt.invalidItems} />
+
+      <div className="flex flex-col-reverse gap-3 sm:flex-row sm:justify-end">
+        <button
+          type="button"
+          onClick={onContinue}
+          className="min-h-11 rounded-xl border border-slate-300 bg-white px-5 text-sm font-semibold text-slate-700 transition hover:bg-slate-50 active:scale-[0.98]"
+        >
+          {zh('继续输入', 'Enter more')}
+        </button>
+        <button
+          type="button"
+          onClick={onViewPending}
+          className="min-h-11 rounded-xl bg-indigo-600 px-5 text-sm font-semibold text-white transition hover:bg-indigo-700 active:scale-[0.98]"
+        >
+          {zh('查看未入库作品', 'View pending works')}
+        </button>
+      </div>
     </div>
   )
 }
 
-export default function JavInputModal({ open, onClose }) {
-  const [tab, setTab] = useState('new')
+export default function JavInputModal({ open, onClose, onCompleted, onViewPending }) {
+  const inputRef = useRef(null)
   const [input, setInput] = useState('')
   const [result, setResult] = useState(null)
   const [saving, setSaving] = useState(false)
   const [error, setError] = useState('')
-  const [history, setHistory] = useState({ items: [], total: 0, page: 1, page_size: 20 })
-  const [historyLoading, setHistoryLoading] = useState(false)
-  const [historyError, setHistoryError] = useState('')
-  const [selectedBatch, setSelectedBatch] = useState(null)
-  const [selectedBatchLoading, setSelectedBatchLoading] = useState(false)
-  const [deletingBatchID, setDeletingBatchID] = useState(null)
-  const [clearingHistory, setClearingHistory] = useState(false)
-  const [preprocessed, setPreprocessed] = useState({
-    items: [],
-    total: 0,
-    global_total: 0,
-    page: 1,
-    page_size: 20,
-  })
-  const [preprocessedLoading, setPreprocessedLoading] = useState(false)
-  const [clearingPreprocessed, setClearingPreprocessed] = useState(false)
-  const [preprocessedError, setPreprocessedError] = useState('')
-  const [preprocessedQuery, setPreprocessedQuery] = useState('')
-  const [appliedPreprocessedQuery, setAppliedPreprocessedQuery] = useState('')
-
   const inputLineCount = useMemo(() => countJavInputLines(input), [input])
-  const historyPages = Math.max(
-    1,
-    Math.ceil(Number(history.total || 0) / Number(history.page_size || 20))
-  )
-  const preprocessedPages = Math.max(
-    1,
-    Math.ceil(Number(preprocessed.total || 0) / Number(preprocessed.page_size || 20))
-  )
-
-  const loadBatch = useCallback(async (id) => {
-    setSelectedBatchLoading(true)
-    setHistoryError('')
-    try {
-      setSelectedBatch(await fetchJavInputBatch(id))
-    } catch (requestError) {
-      setHistoryError(getErrorMessage(requestError))
-    } finally {
-      setSelectedBatchLoading(false)
-    }
-  }, [])
-
-  const loadHistory = useCallback(
-    async (page = 1, { selectFirst = false } = {}) => {
-      setHistoryLoading(true)
-      setHistoryError('')
-      try {
-        const response = await fetchJavInputBatches({ page, pageSize: 20 })
-        setHistory(response)
-        const batches = Array.isArray(response?.items) ? response.items : []
-        if (selectFirst && batches.length) await loadBatch(batches[0].id)
-        if (!batches.length) setSelectedBatch(null)
-      } catch (requestError) {
-        setHistoryError(getErrorMessage(requestError))
-      } finally {
-        setHistoryLoading(false)
-      }
-    },
-    [loadBatch]
-  )
-
-  const loadPreprocessed = useCallback(async (page = 1, query = '') => {
-    setPreprocessedLoading(true)
-    setPreprocessedError('')
-    try {
-      const response = await fetchJavInputPreprocessed({ page, pageSize: 20, query })
-      setPreprocessed(response)
-      setAppliedPreprocessedQuery(query)
-    } catch (requestError) {
-      setPreprocessedError(getErrorMessage(requestError))
-    } finally {
-      setPreprocessedLoading(false)
-    }
-  }, [])
 
   useEffect(() => {
-    if (!open) return
-    void loadHistory(1)
-    void loadPreprocessed(1)
-  }, [loadHistory, loadPreprocessed, open])
+    if (open) return
+    setInput('')
+    setResult(null)
+    setSaving(false)
+    setError('')
+  }, [open])
+
+  useEffect(() => {
+    if (!open || result) return undefined
+    const frame = window.requestAnimationFrame(() => inputRef.current?.focus())
+    return () => window.cancelAnimationFrame(frame)
+  }, [open, result])
 
   const submit = async (event) => {
     event.preventDefault()
-    if (!inputLineCount || saving) return
+    if (!input.trim() || saving) return
     setSaving(true)
     setError('')
     try {
       const batch = await createJavInputBatch(input)
+      const receipt = getJavInputReceipt(batch)
+      if (!receipt.recognized) {
+        setError(
+          zh(
+            '没有识别到番号，请检查格式后再试。',
+            'No JAV code was recognized. Check the format and try again.'
+          )
+        )
+        return
+      }
+      setInput('')
       setResult(batch)
-      await Promise.all([loadHistory(1), loadPreprocessed(1, appliedPreprocessedQuery)])
+      onCompleted?.(batch)
     } catch (requestError) {
       setError(getErrorMessage(requestError))
     } finally {
@@ -501,464 +207,90 @@ export default function JavInputModal({ open, onClose }) {
     }
   }
 
-  const openHistory = async () => {
-    setTab('history')
-    const first = Array.isArray(history.items) ? history.items[0] : null
-    if (!selectedBatch && first) await loadBatch(first.id)
-  }
-
-  const openPreprocessed = async () => {
-    setTab('preprocessed')
-    await loadPreprocessed(1, appliedPreprocessedQuery)
-  }
-
-  const removeBatch = async (batch) => {
-    if (!batch?.id || deletingBatchID || clearingHistory) return
-    const preview = String(batch.preview || '').trim()
-    const label = preview ? `#${batch.id} · ${preview}` : `#${batch.id}`
-    if (
-      !window.confirm(
-        zh(
-          `确定删除批次 ${label}？该批历史和预处理结果会一并移除，其中接收的番号可以重新输入。`,
-          `Delete batch ${label}? Its history and preprocessed results will be removed, and accepted codes can be entered again.`
-        )
-      )
-    )
-      return
-    setDeletingBatchID(batch.id)
-    setHistoryError('')
-    try {
-      await deleteJavInputBatch(batch.id)
-      if (result?.id === batch.id) setResult(null)
-      if (selectedBatch?.id === batch.id) setSelectedBatch(null)
-      await Promise.all([
-        loadHistory(1, { selectFirst: true }),
-        loadPreprocessed(1, appliedPreprocessedQuery),
-      ])
-    } catch (requestError) {
-      setHistoryError(getErrorMessage(requestError))
-    } finally {
-      setDeletingBatchID(null)
-    }
-  }
-
-  const clearHistory = async () => {
-    if (!history.total || clearingHistory || deletingBatchID) return
-    if (
-      !window.confirm(
-        zh(
-          `确定清空全部 ${history.total} 个输入批次？这里只删除番号输入历史和预处理作品，不会删除正式作品或真实文件。`,
-          `Clear all ${history.total} input batches? This only removes input history and preprocessed works, never final works or real files.`
-        )
-      )
-    )
-      return
-    setClearingHistory(true)
-    setHistoryError('')
-    try {
-      await deleteAllJavInputBatches()
-      setResult(null)
-      setSelectedBatch(null)
-      await Promise.all([loadHistory(1), loadPreprocessed(1, appliedPreprocessedQuery)])
-    } catch (requestError) {
-      setHistoryError(getErrorMessage(requestError))
-    } finally {
-      setClearingHistory(false)
-    }
-  }
-
-  const searchPreprocessed = async (event) => {
-    event.preventDefault()
-    await loadPreprocessed(1, preprocessedQuery.trim())
-  }
-
-  const clearPreprocessed = async () => {
-    const globalTotal = Number(preprocessed.global_total ?? preprocessed.total ?? 0)
-    if (!globalTotal || clearingPreprocessed) return
-    if (
-      !window.confirm(
-        zh(
-          `确定全局清空全部 ${globalTotal} 部预处理作品？该操作不受当前检索和分页影响；历史批次仍会保留，但这些番号会释放并允许重新输入。正式作品和真实文件不会受到影响。`,
-          `Globally clear all ${globalTotal} preprocessed works? This ignores the current search and page. Batch history remains, but these codes are released for re-entry. Final works and real files are unaffected.`
-        )
-      )
-    )
-      return
-    setClearingPreprocessed(true)
-    setPreprocessedError('')
-    try {
-      await clearJavInputPreprocessed()
-      await Promise.all([
-        loadPreprocessed(1, ''),
-        loadHistory(1),
-        selectedBatch?.id ? loadBatch(selectedBatch.id) : Promise.resolve(),
-      ])
-      setPreprocessedQuery('')
-    } catch (requestError) {
-      setPreprocessedError(getErrorMessage(requestError))
-    } finally {
-      setClearingPreprocessed(false)
-    }
+  const continueInput = () => {
+    setResult(null)
+    setError('')
+    window.requestAnimationFrame(() => inputRef.current?.focus())
   }
 
   return (
     <AppModal
       open={open}
       onClose={onClose}
-      ariaLabel={zh('番号输入', 'JAV code input')}
-      contentClassName="max-h-[94vh] w-[min(1280px,calc(100vw-2rem))] overflow-hidden rounded-2xl bg-slate-50 shadow-2xl"
+      ariaLabel={zh('加入作品库', 'Add works to library')}
+      contentClassName="max-h-[94vh] w-[min(760px,calc(100vw-2rem))] overflow-hidden rounded-2xl bg-white shadow-2xl"
     >
       <div className="flex max-h-[94vh] flex-col">
-        <header className="border-b border-slate-200 bg-white px-6 pt-5">
-          <div className="flex items-start justify-between gap-4">
-            <div>
-              <h2 className="text-lg font-semibold text-slate-900">
-                {zh('裸番号 · 输入、去重与历史', 'Raw codes · input, de-duplication and history')}
-              </h2>
-              <p className="mt-1 max-w-3xl text-sm text-slate-500">
-                {zh(
-                  '作品库保存已经入库并完成刮削的最终作品；这里保存尚未拥有真实文件的裸番号。当前阶段只建立历史和两道去重，不查询磁链、不提交下载。',
-                  'The library contains final scraped works with real files. This area stores raw codes without files. This stage only records history and runs two de-duplication passes.'
-                )}
-              </p>
-            </div>
-            <button
-              type="button"
-              onClick={onClose}
-              className="text-sm text-slate-500 hover:text-slate-900"
-            >
-              {zh('关闭', 'Close')}
-            </button>
+        <header className="flex items-start justify-between gap-4 border-b border-slate-200 px-5 py-4 sm:px-6">
+          <div>
+            <h2 className="text-lg font-semibold text-slate-950">
+              {zh('加入作品库', 'Add works to library')}
+            </h2>
+            <p className="mt-1 max-w-2xl text-sm leading-6 text-slate-500">
+              {zh(
+                '直接粘贴原始内容。系统会识别番号、统一格式并与整个作品库合并，只加入从未出现过的作品。',
+                'Paste the source as-is. JavBoss recognizes codes, normalizes them, and merges them into one library, adding only works never seen before.'
+              )}
+            </p>
           </div>
-          <nav
-            className="mt-5 flex gap-5 text-sm"
-            aria-label={zh('番号输入页面', 'JAV input views')}
+          <button
+            type="button"
+            onClick={onClose}
+            className="min-h-9 shrink-0 rounded-lg px-2 text-sm text-slate-500 transition hover:bg-slate-100 hover:text-slate-900"
           >
-            <button
-              type="button"
-              onClick={() => setTab('new')}
-              className={`border-b-2 pb-3 font-medium ${tab === 'new' ? 'border-indigo-600 text-indigo-700' : 'border-transparent text-slate-500'}`}
-            >
-              {zh('新建批次', 'New batch')}
-            </button>
-            <button
-              type="button"
-              onClick={openHistory}
-              className={`border-b-2 pb-3 font-medium ${tab === 'history' ? 'border-indigo-600 text-indigo-700' : 'border-transparent text-slate-500'}`}
-            >
-              {zh(
-                `历史记录${history.total ? ` · ${history.total}` : ''}`,
-                `History${history.total ? ` · ${history.total}` : ''}`
-              )}
-            </button>
-            <button
-              type="button"
-              onClick={openPreprocessed}
-              className={`border-b-2 pb-3 font-medium ${tab === 'preprocessed' ? 'border-indigo-600 text-indigo-700' : 'border-transparent text-slate-500'}`}
-            >
-              {zh(
-                `预处理作品${preprocessed.total ? ` · ${preprocessed.total}` : ''}`,
-                `Preprocessed works${preprocessed.total ? ` · ${preprocessed.total}` : ''}`
-              )}
-            </button>
-          </nav>
+            {zh('关闭', 'Close')}
+          </button>
         </header>
 
-        <div className="overflow-y-auto px-6 py-5">
-          {tab === 'new' ? (
-            <div className="space-y-6">
-              <form
-                onSubmit={submit}
-                className="rounded-xl border border-slate-200 bg-white p-5 shadow-sm"
-              >
-                <label className="block">
-                  <span className="text-sm font-semibold text-slate-800">
-                    {zh('原始番号清单', 'Original raw-code list')}
-                  </span>
-                  <span className="mt-1 block text-xs text-slate-500">
-                    {zh(
-                      '支持每行一个番号，也支持在同一行用空格或逗号粘贴多个番号；纯文字标题会作为批次备注保留。',
-                      'Enter one code per line or paste multiple space/comma-separated codes on one line. Plain-text titles are retained as batch notes.'
-                    )}
-                  </span>
-                  <textarea
-                    value={input}
-                    onChange={(event) => setInput(event.target.value)}
-                    rows={10}
-                    placeholder={
-                      '极度美感\nVRTM-138 CORE-018 EBOD-502 JUFD-366 JUFD-366\n\nDPMX-004 朋友推荐，优先找无码'
-                    }
-                    className="mt-3 w-full resize-y rounded-xl border border-slate-300 bg-slate-50 px-4 py-3 font-mono text-sm leading-6 outline-none transition focus:border-indigo-500 focus:bg-white focus:ring-2 focus:ring-indigo-100"
-                  />
-                </label>
-                <div className="mt-4 flex flex-wrap items-center justify-between gap-3">
-                  <div className="text-xs text-slate-500">
-                    {zh(
-                      `${inputLineCount} 个非空输入行`,
-                      `${inputLineCount} non-empty input line(s)`
-                    )}
-                    <span className="mx-2">·</span>
-                    {zh('单批最多 5000 行', 'Up to 5,000 lines per batch')}
-                  </div>
-                  <button
-                    type="submit"
-                    disabled={saving || !inputLineCount}
-                    className="rounded-lg bg-indigo-600 px-5 py-2.5 text-sm font-semibold text-white transition hover:bg-indigo-700 disabled:cursor-not-allowed disabled:opacity-50"
-                  >
-                    {saving
-                      ? zh('保存并去重中…', 'Saving and de-duplicating…')
-                      : zh('保存批次并执行两道去重', 'Save batch and run both stages')}
-                  </button>
-                </div>
-                {error ? (
-                  <div className="mt-4 rounded-lg border border-rose-200 bg-rose-50 px-3 py-2 text-sm text-rose-700">
-                    {error}
-                  </div>
-                ) : null}
-              </form>
-              {result ? (
-                <BatchResult
-                  batch={result}
-                  deleting={deletingBatchID === result.id}
-                  onDelete={removeBatch}
-                />
-              ) : null}
-            </div>
-          ) : tab === 'history' ? (
-            <div className="grid min-h-[34rem] gap-5 lg:grid-cols-[20rem_minmax(0,1fr)]">
-              <aside className="overflow-hidden rounded-xl border border-slate-200 bg-white shadow-sm">
-                <div className="border-b border-slate-100 px-4 py-3">
-                  <div className="flex items-center justify-between gap-3">
-                    <h3 className="font-semibold text-slate-900">
-                      {zh('每次添加历史', 'Input history')}
-                    </h3>
-                    <button
-                      type="button"
-                      disabled={!history.total || clearingHistory || Boolean(deletingBatchID)}
-                      onClick={clearHistory}
-                      className="text-xs font-semibold text-rose-600 hover:text-rose-700 disabled:cursor-not-allowed disabled:text-slate-300"
-                    >
-                      {clearingHistory ? zh('清空中…', 'Clearing…') : zh('清空全部', 'Clear all')}
-                    </button>
-                  </div>
-                  <p className="mt-1 text-xs text-slate-500">
-                    {zh(
-                      '每一次提交都保留，包括全重复或无法识别的批次。',
-                      'Every submission is retained.'
-                    )}
-                  </p>
-                </div>
-                {historyLoading ? (
-                  <div className="px-4 py-6 text-sm text-slate-400">
-                    {zh('加载中…', 'Loading…')}
-                  </div>
-                ) : (
-                  <div className="divide-y divide-slate-100">
-                    {(Array.isArray(history.items) ? history.items : []).map((batch) => (
-                      <button
-                        key={batch.id}
-                        type="button"
-                        onClick={() => loadBatch(batch.id)}
-                        className={`block w-full px-4 py-3 text-left transition hover:bg-slate-50 ${selectedBatch?.id === batch.id ? 'bg-indigo-50' : ''}`}
-                      >
-                        <div className="flex min-w-0 items-center gap-2">
-                          <span className="shrink-0 text-sm font-semibold text-slate-800">
-                            #{batch.id}
-                          </span>
-                          <span
-                            title={batch.preview || ''}
-                            className="min-w-0 truncate text-sm text-slate-700"
-                          >
-                            {batch.preview || zh('无内容摘要', 'No preview')}
-                          </span>
-                        </div>
-                        <div className="mt-1 text-xs text-slate-400">
-                          {formatBatchTime(batch.created_at)}
-                        </div>
-                        <div className="mt-1 text-xs text-slate-500">
-                          {zh(
-                            `输入 ${batch.input_count} 行 · 识别 ${batch.parsed_count} 个 · 新增 ${batch.accepted_count} · 重复 ${Number(batch.batch_duplicate_count || 0) + Number(batch.library_duplicate_count || 0) + Number(batch.history_duplicate_count || 0)}`,
-                            `Input ${batch.input_count} line(s) · Recognized ${batch.parsed_count} · New ${batch.accepted_count} · Duplicates ${Number(batch.batch_duplicate_count || 0) + Number(batch.library_duplicate_count || 0) + Number(batch.history_duplicate_count || 0)}`
-                          )}
-                        </div>
-                      </button>
-                    ))}
-                    {!historyLoading && !history.items?.length ? (
-                      <div className="px-4 py-8 text-center text-sm text-slate-400">
-                        {zh('还没有输入历史', 'No input history yet')}
-                      </div>
-                    ) : null}
-                  </div>
-                )}
-                {history.total > history.page_size ? (
-                  <div className="flex items-center justify-between border-t border-slate-100 px-4 py-3 text-xs">
-                    <button
-                      type="button"
-                      disabled={history.page <= 1 || historyLoading}
-                      onClick={() => loadHistory(history.page - 1, { selectFirst: true })}
-                      className="text-indigo-600 disabled:text-slate-300"
-                    >
-                      {zh('上一页', 'Previous')}
-                    </button>
-                    <span className="text-slate-500">
-                      {history.page} / {historyPages}
-                    </span>
-                    <button
-                      type="button"
-                      disabled={history.page >= historyPages || historyLoading}
-                      onClick={() => loadHistory(history.page + 1, { selectFirst: true })}
-                      className="text-indigo-600 disabled:text-slate-300"
-                    >
-                      {zh('下一页', 'Next')}
-                    </button>
-                  </div>
-                ) : null}
-              </aside>
-              <main className="min-w-0">
-                {historyError ? (
-                  <div className="mb-4 rounded-lg border border-rose-200 bg-rose-50 px-3 py-2 text-sm text-rose-700">
-                    {historyError}
-                  </div>
-                ) : null}
-                {selectedBatchLoading ? (
-                  <div className="rounded-xl border border-slate-200 bg-white px-5 py-10 text-center text-sm text-slate-400">
-                    {zh('读取批次详情中…', 'Loading batch details…')}
-                  </div>
-                ) : selectedBatch ? (
-                  <BatchResult
-                    batch={selectedBatch}
-                    deleting={deletingBatchID === selectedBatch.id}
-                    onDelete={removeBatch}
-                  />
-                ) : (
-                  <div className="rounded-xl border border-dashed border-slate-300 bg-white px-5 py-16 text-center text-sm text-slate-400">
-                    {zh(
-                      '选择左侧历史批次查看两道去重结果',
-                      'Select a history batch to inspect both stages'
-                    )}
-                  </div>
-                )}
-              </main>
-            </div>
+        <div className="overflow-y-auto p-5 sm:p-6">
+          {result ? (
+            <InputReceipt batch={result} onContinue={continueInput} onViewPending={onViewPending} />
           ) : (
-            <section className="overflow-hidden rounded-xl border border-slate-200 bg-white shadow-sm">
-              <header className="border-b border-slate-100 px-5 py-4">
-                <div className="flex flex-wrap items-start justify-between gap-4">
-                  <div>
-                    <h3 className="font-semibold text-slate-900">
-                      {zh('预处理作品', 'Preprocessed works')}
-                    </h3>
-                    <p className="mt-1 max-w-3xl text-xs leading-5 text-slate-500">
-                      {zh(
-                        '这里集中展示经过批内去重和全局去重后保留下来的最终结果。若某个番号后来已有真实文件，它会自动从这里移出。',
-                        'This is the final output after both de-duplication stages. A code automatically leaves this list once a real file exists in the library.'
-                      )}
-                    </p>
-                  </div>
-                  <div className="flex items-center gap-3">
-                    <span className="rounded-full bg-emerald-50 px-3 py-1 text-sm font-semibold text-emerald-700">
-                      {zh(`${preprocessed.total} 部`, `${preprocessed.total} work(s)`)}
-                    </span>
-                    <button
-                      type="button"
-                      disabled={
-                        !Number(preprocessed.global_total ?? preprocessed.total ?? 0) ||
-                        clearingPreprocessed
-                      }
-                      onClick={clearPreprocessed}
-                      className="rounded-lg border border-rose-200 px-3 py-1.5 text-xs font-semibold text-rose-600 transition hover:bg-rose-50 disabled:cursor-not-allowed disabled:border-slate-200 disabled:text-slate-300"
-                    >
-                      {clearingPreprocessed
-                        ? zh('清空中…', 'Clearing…')
-                        : zh('全局清空', 'Clear globally')}
-                    </button>
-                  </div>
-                </div>
-                <form onSubmit={searchPreprocessed} className="mt-4 flex max-w-xl gap-2">
-                  <input
-                    type="search"
-                    value={preprocessedQuery}
-                    onChange={(event) => setPreprocessedQuery(event.target.value)}
-                    placeholder={zh('搜索番号', 'Search code')}
-                    className="min-w-0 flex-1 rounded-lg border border-slate-300 bg-slate-50 px-3 py-2 text-sm outline-none transition focus:border-indigo-500 focus:bg-white focus:ring-2 focus:ring-indigo-100"
-                  />
-                  <button
-                    type="submit"
-                    disabled={preprocessedLoading}
-                    className="rounded-lg bg-slate-800 px-4 py-2 text-sm font-semibold text-white transition hover:bg-slate-900 disabled:opacity-50"
-                  >
-                    {zh('检索', 'Search')}
-                  </button>
-                </form>
-              </header>
+            <form onSubmit={submit}>
+              <label className="block">
+                <span className="text-sm font-semibold text-slate-800">
+                  {zh('番号原始内容', 'Raw code input')}
+                </span>
+                <span className="mt-1 block text-xs leading-5 text-slate-500">
+                  {zh(
+                    '一行一个、同一行用空格或逗号分隔、夹杂标题和备注都可以，无需先整理或去重。',
+                    'One per line, several separated by spaces or commas, and surrounding titles or notes are all accepted. No cleanup or de-duplication is needed.'
+                  )}
+                </span>
+                <textarea
+                  ref={inputRef}
+                  value={input}
+                  onChange={(event) => setInput(event.target.value)}
+                  rows={12}
+                  placeholder={'VRTM-138 CORE-018\n收藏清单第二批\nEBOD-502，JUFD-366'}
+                  className="mt-3 w-full resize-y rounded-xl border border-slate-300 bg-slate-50 px-4 py-3 font-mono text-sm leading-6 outline-none transition focus:border-indigo-500 focus:bg-white focus:ring-2 focus:ring-indigo-100"
+                />
+              </label>
 
-              {preprocessedError ? (
-                <div className="m-4 rounded-lg border border-rose-200 bg-rose-50 px-3 py-2 text-sm text-rose-700">
-                  {preprocessedError}
+              <div className="mt-4 flex flex-wrap items-center justify-between gap-3">
+                <span className="text-xs tabular-nums text-slate-500">
+                  {inputLineCount
+                    ? zh(`${inputLineCount} 个非空行`, `${inputLineCount} non-empty line(s)`)
+                    : zh('等待输入', 'Waiting for input')}
+                </span>
+                <button
+                  type="submit"
+                  disabled={saving || !input.trim()}
+                  className="min-h-11 rounded-xl bg-indigo-600 px-6 text-sm font-semibold text-white transition hover:bg-indigo-700 active:scale-[0.98] disabled:cursor-not-allowed disabled:opacity-50"
+                >
+                  {saving ? zh('正在合并…', 'Merging…') : zh('加入作品库', 'Add to library')}
+                </button>
+              </div>
+
+              {error ? (
+                <div
+                  role="alert"
+                  className="mt-4 rounded-xl border border-rose-200 bg-rose-50 px-4 py-3 text-sm text-rose-700"
+                >
+                  {error}
                 </div>
               ) : null}
-              {preprocessedLoading ? (
-                <div className="px-5 py-14 text-center text-sm text-slate-400">
-                  {zh('读取预处理作品中…', 'Loading preprocessed works…')}
-                </div>
-              ) : preprocessed.items?.length ? (
-                <div className="grid gap-3 bg-slate-50/60 p-4 sm:grid-cols-2 xl:grid-cols-3">
-                  {preprocessed.items.map((item) => (
-                    <article
-                      key={item.id}
-                      className="rounded-xl border border-slate-200 bg-white px-4 py-3 shadow-sm"
-                    >
-                      <div className="font-mono text-base font-semibold text-emerald-700">
-                        {item.code}
-                      </div>
-                      <div className="mt-1.5 text-xs text-slate-400">
-                        {zh(
-                          `来源批次 #${item.batch_id} · 第 ${item.line_number} 行`,
-                          `Source batch #${item.batch_id} · line ${item.line_number}`
-                        )}
-                      </div>
-                    </article>
-                  ))}
-                </div>
-              ) : (
-                <div className="px-5 py-16 text-center text-sm text-slate-400">
-                  {appliedPreprocessedQuery
-                    ? zh('没有匹配的预处理作品', 'No matching preprocessed works')
-                    : zh(
-                        '两道去重后还没有待处理的最终结果',
-                        'No final result remains after both stages yet'
-                      )}
-                </div>
-              )}
-
-              {preprocessed.total > preprocessed.page_size ? (
-                <footer className="flex items-center justify-between border-t border-slate-100 px-5 py-3 text-xs">
-                  <button
-                    type="button"
-                    disabled={preprocessed.page <= 1 || preprocessedLoading}
-                    onClick={() =>
-                      loadPreprocessed(preprocessed.page - 1, appliedPreprocessedQuery)
-                    }
-                    className="text-indigo-600 disabled:text-slate-300"
-                  >
-                    {zh('上一页', 'Previous')}
-                  </button>
-                  <span className="text-slate-500">
-                    {preprocessed.page} / {preprocessedPages}
-                  </span>
-                  <button
-                    type="button"
-                    disabled={preprocessed.page >= preprocessedPages || preprocessedLoading}
-                    onClick={() =>
-                      loadPreprocessed(preprocessed.page + 1, appliedPreprocessedQuery)
-                    }
-                    className="text-indigo-600 disabled:text-slate-300"
-                  >
-                    {zh('下一页', 'Next')}
-                  </button>
-                </footer>
-              ) : null}
-            </section>
+            </form>
           )}
         </div>
       </div>

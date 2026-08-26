@@ -4,6 +4,13 @@ export const JAV_PROVIDER_JAVDATABASE = 2
 export const JAV_PROVIDER_USER = 3
 export const JAV_PROVIDER_MANUAL_SCRAPE = 11
 
+export {
+  JAV_INVENTORY_ALL,
+  JAV_INVENTORY_IMPORTED,
+  JAV_INVENTORY_PENDING,
+  normalizeJavInventory,
+} from '@/utils/javInventory'
+
 export const JAV_SORT_OPTIONS = [
   {
     base: 'recent',

@@ -210,7 +210,7 @@ func UpdateVideoJavScrapeOverride(ctx context.Context, videoID int64, override s
 	}
 	override = strings.TrimSpace(override)
 
-	if err := common.DB.WithContext(ctx).Transaction(func(tx *gorm.DB) error {
+	if err := withSQLiteTransactionRetry(ctx, common.DB, func(tx *gorm.DB) error {
 		return updateVideoJavScrapeOverrideTx(tx, videoID, override)
 	}); err != nil {
 		if errors.Is(err, gorm.ErrRecordNotFound) {
@@ -231,6 +231,7 @@ func updateVideoJavScrapeOverrideTx(tx *gorm.DB, videoID int64, override string)
 	}
 	override = strings.TrimSpace(override)
 	overrideCode := javScrapeOverrideCode(override)
+	normalizedOverrideCode := models.NormalizeJavCode(overrideCode)
 
 	res := tx.Model(&models.Video{}).
 		Where("id = ?", videoID).
@@ -244,21 +245,27 @@ func updateVideoJavScrapeOverrideTx(tx *gorm.DB, videoID int64, override string)
 	if override == "" {
 		return nil
 	}
-	clearLinks := tx.Model(&models.VideoLocation{}).
-		Where("video_id = ?", videoID)
-	if override != models.JavScrapeOverrideSkip {
-		clearLinks = clearLinks.
-			Where("jav_id IS NOT NULL").
-			Where(`NOT EXISTS (
+	clearLinksQuery := func() *gorm.DB {
+		query := tx.Model(&models.VideoLocation{}).
+			Where("video_id = ?", videoID).
+			Where("jav_id IS NOT NULL")
+		if override != models.JavScrapeOverrideSkip {
+			query = query.Where(`NOT EXISTS (
 				SELECT 1 FROM jav
 				WHERE jav.id = video_location.jav_id
-					AND UPPER(jav.code) = ?
-			)`, strings.ToUpper(overrideCode))
+					AND jav.normalized_code = ?
+			)`, normalizedOverrideCode)
+		}
+		return query
 	}
-	if err := clearLinks.UpdateColumn("jav_id", nil).Error; err != nil {
+	var affectedJavIDs []int64
+	if err := clearLinksQuery().Distinct().Pluck("jav_id", &affectedJavIDs).Error; err != nil {
+		return fmt.Errorf("list JAV links to clear: %w", err)
+	}
+	if err := clearLinksQuery().UpdateColumn("jav_id", nil).Error; err != nil {
 		return fmt.Errorf("clear video location jav links: %w", err)
 	}
-	return nil
+	return reconcileJavAcquisitionStagesTx(tx, affectedJavIDs)
 }
 
 // UpdateVideoCoverScreenshotName stores the screenshot filename used as a video's custom cover.
@@ -325,21 +332,40 @@ func ClearVideoLocationJavIDForVideo(ctx context.Context, locationID, videoID in
 	if locationID <= 0 || videoID <= 0 {
 		return errors.New("location id and video id are required")
 	}
-	q := common.DB.WithContext(ctx).
-		Model(&models.VideoLocation{}).
-		Where("id = ?", locationID).
-		Where("video_id = ?", videoID)
-	if !expectedUpdatedAt.IsZero() {
-		q = q.Where("updated_at = ?", expectedUpdatedAt)
-	}
-	res := q.UpdateColumn("jav_id", nil)
-	if res.Error != nil {
-		return fmt.Errorf("clear video location jav id: %w", res.Error)
-	}
-	if res.RowsAffected == 0 {
-		return fmt.Errorf("video location %d stale or missing", locationID)
-	}
-	return nil
+	return withSQLiteTransactionRetry(ctx, common.DB, func(tx *gorm.DB) error {
+		var before models.VideoLocation
+		read := tx.Model(&models.VideoLocation{}).
+			Select("id", "jav_id").
+			Where("id = ?", locationID).
+			Where("video_id = ?", videoID)
+		if !expectedUpdatedAt.IsZero() {
+			read = read.Where("updated_at = ?", expectedUpdatedAt)
+		}
+		if err := read.First(&before).Error; err != nil {
+			if errors.Is(err, gorm.ErrRecordNotFound) {
+				return fmt.Errorf("video location %d stale or missing", locationID)
+			}
+			return fmt.Errorf("load video location before clearing jav id: %w", err)
+		}
+
+		q := tx.Model(&models.VideoLocation{}).
+			Where("id = ?", locationID).
+			Where("video_id = ?", videoID)
+		if !expectedUpdatedAt.IsZero() {
+			q = q.Where("updated_at = ?", expectedUpdatedAt)
+		}
+		res := q.UpdateColumn("jav_id", nil)
+		if res.Error != nil {
+			return fmt.Errorf("clear video location jav id: %w", res.Error)
+		}
+		if res.RowsAffected == 0 {
+			return fmt.Errorf("video location %d stale or missing", locationID)
+		}
+		if before.JavID != nil {
+			return reconcileJavAcquisitionStagesTx(tx, []int64{*before.JavID})
+		}
+		return nil
+	})
 }
 
 func hydrateLocationJavs(ctx context.Context, locations []models.VideoLocation) error {
@@ -521,13 +547,20 @@ func CreateVideo(ctx context.Context, video *models.Video) error {
 
 // DeleteByIDs removes videos by their identifiers.
 func DeleteByIDs(ctx context.Context, ids []int64) error {
+	ids = uniqueInt64s(ids)
 	if len(ids) == 0 {
 		return nil
 	}
-	if err := common.DB.WithContext(ctx).Where("id IN ?", ids).Delete(&models.Video{}).Error; err != nil {
-		return fmt.Errorf("delete videos: %w", err)
-	}
-	return nil
+	return withSQLiteTransactionRetry(ctx, common.DB, func(tx *gorm.DB) error {
+		javIDs, err := javIDsForVideoLocationsTx(tx, "video_id IN ?", ids)
+		if err != nil {
+			return err
+		}
+		if err := tx.Where("id IN ?", ids).Delete(&models.Video{}).Error; err != nil {
+			return fmt.Errorf("delete videos: %w", err)
+		}
+		return reconcileJavAcquisitionStagesTx(tx, javIDs)
+	})
 }
 
 // IncrementVideoPlayCount increments the play count for a video if it has an active location.

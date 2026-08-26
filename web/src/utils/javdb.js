@@ -17,10 +17,18 @@ function newBridgeSessionId() {
 const bridgeSessionId = newBridgeSessionId()
 
 function postBridgeConnect() {
-  bridgeElement?.contentWindow?.postMessage(
-    { type: MESSAGE_CONNECT, sessionId: bridgeSessionId },
-    EXTENSION_ORIGIN
-  )
+  const bridgeWindow = bridgeElement?.contentWindow
+  if (!bridgeWindow) return
+  try {
+    bridgeWindow.postMessage(
+      { type: MESSAGE_CONNECT, sessionId: bridgeSessionId },
+      EXTENSION_ORIGIN
+    )
+  } catch {
+    // A regular browser rejects chrome-extension:// origins when the optional
+    // JavBoss Helper extension is not installed. Treat that as unavailable.
+    bridgeReady = false
+  }
 }
 
 function mountBridge() {

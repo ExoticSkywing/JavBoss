@@ -43,56 +43,110 @@ func VideoLocationsByDirectory(ctx context.Context, directoryID int64) ([]models
 }
 
 // UpsertVideoLocation records or updates the on-disk location for a video.
+// Callers that have a filesystem stat identity should use
+// UpsertVideoLocationWithIdentity so unchanged scans can avoid a full probe.
 func UpsertVideoLocation(ctx context.Context, videoID, directoryID int64, relativePath string, modifiedAt time.Time) (*models.VideoLocation, error) {
+	return UpsertVideoLocationWithIdentity(ctx, videoID, directoryID, relativePath, modifiedAt, "")
+}
+
+// UpsertVideoLocationWithIdentity is UpsertVideoLocation plus a cheap
+// filesystem identity captured by the directory scanner. An empty identity
+// preserves an existing identity when the same Video remains at the path, but
+// clears it when the path is replaced by another Video.
+func UpsertVideoLocationWithIdentity(ctx context.Context, videoID, directoryID int64, relativePath string, modifiedAt time.Time, fileIdentity string) (*models.VideoLocation, error) {
 	relativePath = cleanRelativePathForDB(relativePath)
 	filename := filepath.Base(filepath.FromSlash(relativePath))
+	fileIdentity = strings.TrimSpace(fileIdentity)
 	if videoID <= 0 || directoryID <= 0 || relativePath == "" {
 		return nil, errors.New("video_id, directory_id, and relative_path are required")
 	}
 
-	loc := models.VideoLocation{
-		VideoID:      videoID,
-		DirectoryID:  directoryID,
-		RelativePath: relativePath,
-		Filename:     filename,
-		ModifiedAt:   modifiedAt,
-		IsDelete:     false,
-	}
-	tx := common.DB.WithContext(ctx)
-	if err := tx.Clauses(clause.OnConflict{
-		Columns: []clause.Column{{Name: "directory_id"}, {Name: "relative_path"}},
-		DoUpdates: clause.Assignments(map[string]any{
-			"video_id":    videoID,
-			"filename":    filename,
-			"modified_at": modifiedAt,
-			"is_delete":   false,
-			"updated_at":  gorm.Expr("CURRENT_TIMESTAMP"),
-		}),
-	}).Create(&loc).Error; err != nil {
-		return nil, fmt.Errorf("upsert video location: %w", err)
-	}
+	var committed *models.VideoLocation
+	err := withSQLiteTransactionRetry(ctx, common.DB, func(tx *gorm.DB) error {
+		committed = nil
+		var affectedJavIDs []int64
+		var previous models.VideoLocation
+		if err := tx.
+			Select("id", "video_id", "jav_id").
+			Where("directory_id = ? AND relative_path = ?", directoryID, relativePath).
+			First(&previous).Error; err != nil {
+			if !errors.Is(err, gorm.ErrRecordNotFound) {
+				return fmt.Errorf("load previous video location: %w", err)
+			}
+		} else if previous.JavID != nil {
+			affectedJavIDs = append(affectedJavIDs, *previous.JavID)
+		}
 
-	var saved models.VideoLocation
-	if err := tx.
-		Where("directory_id = ? AND relative_path = ?", directoryID, relativePath).
-		First(&saved).Error; err != nil {
-		return nil, fmt.Errorf("load saved video location: %w", err)
+		loc := models.VideoLocation{
+			VideoID:      videoID,
+			DirectoryID:  directoryID,
+			RelativePath: relativePath,
+			Filename:     filename,
+			ModifiedAt:   modifiedAt,
+			FileIdentity: fileIdentity,
+			IsDelete:     false,
+		}
+		if err := tx.Clauses(clause.OnConflict{
+			Columns: []clause.Column{{Name: "directory_id"}, {Name: "relative_path"}},
+			DoUpdates: clause.Assignments(map[string]any{
+				"video_id": videoID,
+				"jav_id": gorm.Expr(
+					"CASE WHEN video_location.video_id = excluded.video_id THEN video_location.jav_id ELSE NULL END",
+				),
+				"file_identity": gorm.Expr(
+					"CASE WHEN video_location.video_id = excluded.video_id " +
+						"THEN CASE WHEN excluded.file_identity = '' THEN video_location.file_identity ELSE excluded.file_identity END " +
+						"ELSE excluded.file_identity END",
+				),
+				"filename":    filename,
+				"modified_at": modifiedAt,
+				"is_delete":   false,
+				"updated_at":  gorm.Expr("CURRENT_TIMESTAMP"),
+			}),
+		}).Create(&loc).Error; err != nil {
+			return fmt.Errorf("upsert video location: %w", err)
+		}
+
+		var saved models.VideoLocation
+		if err := tx.
+			Where("directory_id = ? AND relative_path = ?", directoryID, relativePath).
+			First(&saved).Error; err != nil {
+			return fmt.Errorf("load saved video location: %w", err)
+		}
+		if saved.JavID != nil {
+			affectedJavIDs = append(affectedJavIDs, *saved.JavID)
+		}
+		if err := reconcileJavAcquisitionStagesTx(tx, affectedJavIDs); err != nil {
+			return err
+		}
+		committed = &saved
+		return nil
+	})
+	if err != nil {
+		return nil, err
 	}
-	return &saved, nil
+	return committed, nil
 }
 
 // HideVideoLocationsByIDs marks file locations as deleted without deleting video metadata.
 func HideVideoLocationsByIDs(ctx context.Context, ids []int64) error {
+	ids = uniqueInt64s(ids)
 	if len(ids) == 0 {
 		return nil
 	}
-	if err := common.DB.WithContext(ctx).
-		Model(&models.VideoLocation{}).
-		Where("id IN ?", ids).
-		Update("is_delete", true).Error; err != nil {
-		return fmt.Errorf("hide video locations: %w", err)
-	}
-	return nil
+	return withSQLiteTransactionRetry(ctx, common.DB, func(tx *gorm.DB) error {
+		javIDs, err := javIDsForVideoLocationsTx(tx, "id IN ?", ids)
+		if err != nil {
+			return err
+		}
+		if err := tx.
+			Model(&models.VideoLocation{}).
+			Where("id IN ?", ids).
+			Update("is_delete", true).Error; err != nil {
+			return fmt.Errorf("hide video locations: %w", err)
+		}
+		return reconcileJavAcquisitionStagesTx(tx, javIDs)
+	})
 }
 
 // GetVideoIDByPath returns the video ID for an active directory path + relative path.
@@ -202,7 +256,8 @@ func UpdateVideoLocationPath(ctx context.Context, locationID int64, relativePath
 	}
 
 	var loc models.VideoLocation
-	err := common.DB.WithContext(ctx).Transaction(func(tx *gorm.DB) error {
+	err := withSQLiteTransactionRetry(ctx, common.DB, func(tx *gorm.DB) error {
+		loc = models.VideoLocation{}
 		var current models.VideoLocation
 		if err := tx.
 			Model(&models.VideoLocation{}).
@@ -221,6 +276,21 @@ func UpdateVideoLocationPath(ctx context.Context, locationID int64, relativePath
 		}
 		if activeConflicts > 0 {
 			return ErrVideoLocationPathConflict
+		}
+
+		// A hidden row at the destination may still be the last location of a
+		// canonical work.  Keep its JAV id in the affected set before deleting
+		// the row so the lifecycle stage is reconciled in this same transaction.
+		hiddenPathJavIDs, err := javIDsForVideoLocationsTx(tx,
+			"directory_id = ? AND relative_path = ? AND id <> ? AND COALESCE(is_delete, 0) <> 0",
+			current.DirectoryID, relativePath, locationID,
+		)
+		if err != nil {
+			return err
+		}
+		affectedJavIDs := append([]int64{}, hiddenPathJavIDs...)
+		if current.JavID != nil {
+			affectedJavIDs = append(affectedJavIDs, *current.JavID)
 		}
 
 		if err := tx.
@@ -245,6 +315,12 @@ func UpdateVideoLocationPath(ctx context.Context, locationID int64, relativePath
 			Preload("Video.Tags").
 			First(&loc).Error; err != nil {
 			return fmt.Errorf("load updated video location: %w", err)
+		}
+		if loc.JavID != nil {
+			affectedJavIDs = append(affectedJavIDs, *loc.JavID)
+		}
+		if err := reconcileJavAcquisitionStagesTx(tx, affectedJavIDs); err != nil {
+			return err
 		}
 		return nil
 	})
