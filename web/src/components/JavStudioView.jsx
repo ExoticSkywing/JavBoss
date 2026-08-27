@@ -546,8 +546,8 @@ export function StudioCard({
           </button>
         ) : null}
       </div>
-      <div className="flex flex-1 flex-col gap-1 p-3">
-        <div className="flex min-w-0 items-baseline gap-1.5 leading-tight">
+      <div className="relative flex flex-1 flex-col gap-1 p-3">
+        <div className="flex min-w-0 items-baseline gap-1.5 pr-14 leading-tight">
           <span
             className={`min-w-0 truncate text-sm font-semibold ${
               aliases.length > 0 ? 'max-w-[65%]' : 'flex-1'

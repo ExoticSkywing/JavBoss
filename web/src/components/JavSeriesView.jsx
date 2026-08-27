@@ -213,8 +213,8 @@ export function SeriesCard({ item, href, onSelectSeries, onSelectStudio, onOpenF
           <img src="/ico/javdb.png" alt="JavDB" className="h-4 w-4" loading="lazy" />
         </button>
       </div>
-      <div className="flex flex-1 flex-col gap-1 p-3">
-        <div className="line-clamp-2 text-sm font-semibold leading-tight">{name}</div>
+      <div className="relative flex flex-1 flex-col gap-1 p-3">
+        <div className="line-clamp-2 pr-14 text-sm font-semibold leading-tight">{name}</div>
         <JavEntityInventoryBadges item={item} />
         <div
           className={`flex min-w-0 items-center gap-2 text-xs ${

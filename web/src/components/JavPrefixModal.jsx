@@ -2,6 +2,7 @@ import { useEffect, useMemo, useState } from 'react'
 import CloseRoundedIcon from '@mui/icons-material/CloseRounded'
 import { Button } from '@mui/material'
 import AppModal from '@/components/AppModal'
+import JavEntityInventoryBadges from '@/components/JavEntityInventoryBadges'
 import {
   JAV_INVENTORY_ALL,
   JAV_INVENTORY_IMPORTED,
@@ -72,7 +73,7 @@ function inventoryCountForMode(counts, inventoryMode) {
 function inventoryLabel(inventoryMode) {
   switch (inventoryMode) {
     case JAV_INVENTORY_PENDING:
-      return zh('未入库', 'Pending')
+      return zh('待入库', 'Pending')
     case JAV_INVENTORY_IMPORTED:
       return zh('已入库', 'Imported')
     default:
@@ -246,13 +247,13 @@ export default function JavPrefixModal({
           </h2>
           <p className="mt-1 text-xs text-gray-500">
             {zh(
-              '点击番号查询对应影片；库存状态与有码/无码独立统计',
-              'Select a code to filter matching works; inventory is tracked separately from censor status'
+              '点击番号查询对应影片；作品状态与有码/无码独立统计',
+              'Select a code to filter matching works; work status is tracked separately from censor status'
             )}
             {inventorySummary.hasBreakdown ? (
               <span className="ml-2 text-gray-400">
                 {zh(
-                  `索引总计 ${inventorySummary.total} 部 · 未入库 ${inventorySummary.pending} · 已入库 ${inventorySummary.imported}`,
+                  `索引总计 ${inventorySummary.total} 部 · 待入库 ${inventorySummary.pending} · 已入库 ${inventorySummary.imported}`,
                   `Index total ${inventorySummary.total} · ${inventorySummary.pending} pending · ${inventorySummary.imported} imported`
                 )}
               </span>
@@ -279,12 +280,12 @@ export default function JavPrefixModal({
         />
         <div className="flex items-center gap-2">
           <span className="shrink-0 text-xs font-medium text-gray-500">
-            {zh('库存', 'Inventory')}
+            {zh('作品状态', 'Work status')}
           </span>
           <div
             className="inline-flex shrink-0 overflow-hidden rounded border border-gray-200 bg-white text-xs"
             role="group"
-            aria-label={zh('库存状态筛选', 'Inventory filter')}
+            aria-label={zh('作品状态筛选', 'Work status filter')}
           >
             {[JAV_INVENTORY_ALL, JAV_INVENTORY_PENDING, JAV_INVENTORY_IMPORTED].map(
               (mode, index) => (
@@ -303,7 +304,7 @@ export default function JavPrefixModal({
                   aria-pressed={inventoryMode === mode}
                   title={
                     mode !== JAV_INVENTORY_ALL && !inventoryBreakdownAvailable
-                      ? zh('服务端尚未返回库存统计', 'Inventory counters are unavailable')
+                      ? zh('服务端尚未返回作品状态统计', 'Work status counters are unavailable')
                       : undefined
                   }
                 >
@@ -415,7 +416,7 @@ export default function JavPrefixModal({
                 <th className="px-5 py-3 font-semibold">{zh('番号', 'Code')}</th>
                 <th className="px-5 py-3 font-semibold">{zh('片商', 'Studio')}</th>
                 <th className="px-5 py-3 font-semibold">{zh('类型', 'Type')}</th>
-                <th className="px-5 py-3 font-semibold">{zh('库存', 'Inventory')}</th>
+                <th className="px-5 py-3 font-semibold">{zh('作品状态', 'Work status')}</th>
                 <th className="px-5 py-3 text-right font-semibold">{zh('作品数', 'Works')}</th>
               </tr>
             </thead>
@@ -516,26 +517,7 @@ export default function JavPrefixModal({
                     <td className="px-5 py-3 text-gray-700">{censorLabel(item?.is_uncensored)}</td>
                     <td className="px-5 py-3">
                       {item?.inventory_breakdown_available ? (
-                        <div
-                          className="flex flex-wrap gap-1 text-xs tabular-nums"
-                          aria-label={zh(
-                            `未入库 ${item.pending_count} 部，已入库 ${item.imported_count} 部`,
-                            `${item.pending_count} pending, ${item.imported_count} imported`
-                          )}
-                        >
-                          <span className="rounded bg-amber-100 px-1.5 py-0.5 text-amber-900">
-                            {zh(
-                              `未入库 ${Number(item.pending_count || 0).toLocaleString()}`,
-                              `Pending ${Number(item.pending_count || 0).toLocaleString()}`
-                            )}
-                          </span>
-                          <span className="rounded bg-emerald-100 px-1.5 py-0.5 text-emerald-900">
-                            {zh(
-                              `已入库 ${Number(item.imported_count || 0).toLocaleString()}`,
-                              `Imported ${Number(item.imported_count || 0).toLocaleString()}`
-                            )}
-                          </span>
-                        </div>
+                        <JavEntityInventoryBadges item={item} showTotal={false} />
                       ) : (
                         <span className="text-gray-400">{zh('未知', 'Unknown')}</span>
                       )}

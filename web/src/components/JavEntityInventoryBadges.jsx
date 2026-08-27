@@ -12,30 +12,37 @@ function normalizeCount(value) {
  * Text labels intentionally accompany the colors so the states remain clear
  * without relying on color perception.
  */
-export default function JavEntityInventoryBadges({ item }) {
+export default function JavEntityInventoryBadges({ item, showTotal = true }) {
   const workCount = normalizeCount(item?.work_count)
   const pendingCount = normalizeCount(item?.pending_count)
   const importedCount = normalizeCount(item?.imported_count)
   const hasBreakdown = pendingCount !== null && importedCount !== null
 
-  if (workCount === null) return null
+  if (workCount === null || (!showTotal && !hasBreakdown)) return null
 
   const statusLabel = hasBreakdown
-    ? zh(
-        `共 ${workCount} 部，待入库 ${pendingCount} 部，已入库 ${importedCount} 部`,
-        `${workCount} works, ${pendingCount} pending, ${importedCount} imported`
-      )
+    ? showTotal
+      ? zh(
+          `共 ${workCount} 部，待入库 ${pendingCount} 部，已入库 ${importedCount} 部`,
+          `${workCount} works, ${pendingCount} pending, ${importedCount} imported`
+        )
+      : zh(
+          `待入库 ${pendingCount} 部，已入库 ${importedCount} 部`,
+          `${pendingCount} pending, ${importedCount} imported`
+        )
     : zh(`共 ${workCount} 部作品`, `${workCount} works`)
 
   return (
     <div
-      className="flex min-w-0 flex-nowrap items-center gap-0.5 overflow-hidden text-[9px] font-semibold tabular-nums leading-3"
+      className="flex min-w-0 flex-nowrap items-center gap-0.5 text-[9px] font-semibold tabular-nums leading-3"
       title={statusLabel}
       aria-label={statusLabel}
     >
-      <span className="inline-flex shrink-0 items-center whitespace-nowrap rounded-sm bg-slate-900 px-1 py-0.5 text-white">
-        {zh(`共${workCount}部`, `${workCount} works`)}
-      </span>
+      {showTotal ? (
+        <span className="absolute right-3 top-3 inline-flex shrink-0 items-center whitespace-nowrap rounded bg-slate-900 px-1.5 py-0.5 text-[11px] font-semibold leading-4 text-white shadow-sm">
+          {zh(`共${workCount}部`, `${workCount} works`)}
+        </span>
+      ) : null}
       {hasBreakdown ? (
         <>
           <span className="inline-flex shrink-0 items-center whitespace-nowrap rounded-sm border border-violet-200 bg-violet-100 px-1 py-0.5 text-violet-900">

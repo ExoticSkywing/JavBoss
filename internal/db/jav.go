@@ -4535,6 +4535,32 @@ func reconcileJavIdolNameTx(tx *gorm.DB, idol models.JavIdol, preferredJapaneseN
 	return addJavIdolAliasesTx(tx, idol, aliases)
 }
 
+// reconcileAuthoritativeJavDBIdolNameTx makes JavDB's current actress name the
+// canonical card label for a stable /actors/<id> identity. Other providers may
+// still fill profile details, but an older name must not continue to override
+// the identity authority. Previous canonical names remain searchable aliases.
+func reconcileAuthoritativeJavDBIdolNameTx(tx *gorm.DB, idol models.JavIdol, preferredJapaneseName string, aliases []string) error {
+	preferredJapaneseName = strings.TrimSpace(preferredJapaneseName)
+	if idol.ID <= 0 || preferredJapaneseName == "" || !jav.IsJapaneseName(preferredJapaneseName) {
+		return reconcileJavIdolNameTx(tx, idol, preferredJapaneseName, aliases)
+	}
+
+	oldNames := []string{idol.Name, idol.JapaneseName}
+	if err := tx.Model(&models.JavIdol{}).Where("id = ?", idol.ID).Updates(map[string]any{
+		"name":          preferredJapaneseName,
+		"japanese_name": preferredJapaneseName,
+	}).Error; err != nil {
+		return fmt.Errorf("set authoritative JavDB idol name: %w", err)
+	}
+	idol.Name = preferredJapaneseName
+	idol.JapaneseName = preferredJapaneseName
+	allAliases := append(append([]string{}, aliases...), oldNames...)
+	if err := addJavIdolAliasesTx(tx, idol, allAliases); err != nil {
+		return err
+	}
+	return removeCanonicalJavIdolAliasesTx(tx, idol)
+}
+
 func addJavIdolAliasesTx(tx *gorm.DB, idol models.JavIdol, aliases []string) error {
 	if idol.ID <= 0 || len(aliases) == 0 {
 		return nil
@@ -4610,6 +4636,14 @@ func ensureJavIdolForExternalIdentityTx(tx *gorm.DB, rawName string, provider ja
 			if err := mergeJavIdolRecordsTx(tx, canonical.ID, sourceIDs, preferred, parts.Aliases); err != nil {
 				return models.JavIdol{}, err
 			}
+		}
+		if err := tx.Where("id = ?", canonical.ID).First(&canonical).Error; err != nil {
+			return models.JavIdol{}, err
+		}
+		if provider == jav.ProviderJavDB {
+			if err := reconcileAuthoritativeJavDBIdolNameTx(tx, canonical, preferred, parts.Aliases); err != nil {
+				return models.JavIdol{}, err
+			}
 		} else if err := reconcileJavIdolNameTx(tx, canonical, preferred, parts.Aliases); err != nil {
 			return models.JavIdol{}, err
 		}
@@ -4632,6 +4666,15 @@ func ensureJavIdolForExternalIdentityTx(tx *gorm.DB, rawName string, provider ja
 	}
 	if err := tx.Clauses(clause.OnConflict{DoNothing: true}).Create(&identity).Error; err != nil {
 		return models.JavIdol{}, fmt.Errorf("save jav idol external identity: %w", err)
+	}
+	if provider == jav.ProviderJavDB {
+		preferred := parts.Primary
+		if err := reconcileAuthoritativeJavDBIdolNameTx(tx, idol, preferred, parts.Aliases); err != nil {
+			return models.JavIdol{}, err
+		}
+		if err := tx.Where("id = ?", idol.ID).First(&idol).Error; err != nil {
+			return models.JavIdol{}, err
+		}
 	}
 	return idol, nil
 }

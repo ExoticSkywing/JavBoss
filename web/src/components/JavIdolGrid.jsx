@@ -339,21 +339,18 @@ export function IdolCard({
           <EditRoundedIcon sx={{ fontSize: 16 }} />
         </button>
       </div>
-      <div className="flex flex-1 select-text flex-col gap-2 p-3">
-        <div className="flex min-w-0 items-baseline gap-2 leading-tight">
-          <span
-            className="min-w-0 max-w-[72%] shrink-0 truncate text-base font-semibold text-gray-950"
-            title={primaryName}
-          >
+      <div className="relative flex flex-1 select-text flex-col gap-2 p-3">
+        <div className="min-w-0 pr-11 leading-tight">
+          <div className="min-w-0 truncate text-base font-semibold text-gray-950" title={primaryName}>
             {primaryName}
-          </span>
+          </div>
           {secondaryName ? (
-            <span
-              className="min-w-0 flex-1 truncate text-xs font-normal text-gray-500"
+            <div
+              className="min-w-0 truncate text-xs font-normal leading-4 text-gray-500"
               title={secondaryName}
             >
               {secondaryName}
-            </span>
+            </div>
           ) : null}
         </div>
         {showWorkCount ? <JavEntityInventoryBadges item={item} /> : null}

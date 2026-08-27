@@ -35,14 +35,14 @@ func TestSaveJavInfoCanonicalizesParenthesizedActressAndBindsJavDBIdentity(t *te
 	if err := database.Find(&idols).Error; err != nil {
 		t.Fatalf("list idols: %v", err)
 	}
-	if len(idols) != 1 || idols[0].Name != "和葉みれい" || idols[0].JapaneseName != "和葉みれい" {
+	if len(idols) != 1 || idols[0].Name != "藤白まき" || idols[0].JapaneseName != "藤白まき" {
 		t.Fatalf("idols = %#v", idols)
 	}
 	var aliases []models.JavIdolAlias
 	if err := database.Find(&aliases).Error; err != nil {
 		t.Fatalf("list aliases: %v", err)
 	}
-	if len(aliases) != 1 || aliases[0].Alias != "藤白まき" || aliases[0].JavIdolID != idols[0].ID {
+	if len(aliases) != 1 || aliases[0].Alias != "和葉みれい" || aliases[0].JavIdolID != idols[0].ID {
 		t.Fatalf("aliases = %#v", aliases)
 	}
 	var identities []models.JavIdolExternalIdentity
@@ -152,8 +152,15 @@ func TestReconcileJavDBIdolsMergesDifferentNamesWithSameExternalIdentity(t *test
 	if err := database.Find(&idols).Error; err != nil {
 		t.Fatalf("list reconciled idols: %v", err)
 	}
-	if len(idols) != 1 || idols[0].Name != "和葉みれい" {
+	if len(idols) != 1 || idols[0].Name != "藤白まき" || idols[0].JapaneseName != "藤白まき" {
 		t.Fatalf("reconciled idols = %#v", idols)
+	}
+	var aliases []models.JavIdolAlias
+	if err := database.Find(&aliases).Error; err != nil {
+		t.Fatalf("list reconciled aliases: %v", err)
+	}
+	if len(aliases) != 1 || aliases[0].JavIdolID != idols[0].ID || aliases[0].Alias != "和葉みれい" {
+		t.Fatalf("reconciled aliases = %#v", aliases)
 	}
 	var maps []models.JavIdolMap
 	if err := database.Order("jav_id").Find(&maps).Error; err != nil {
