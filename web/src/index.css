@@ -48,6 +48,67 @@ body.has-page-scroll .sticky-pagination {
   box-shadow: 0 8px 18px -13px rgba(15, 23, 42, 0.38);
 }
 
+html.jav-view-preset-transition::view-transition-old(root),
+html.jav-view-preset-transition::view-transition-new(root) {
+  animation: none;
+}
+
+html.jav-view-preset-transition::view-transition-group(*) {
+  animation-duration: 360ms;
+  animation-timing-function: cubic-bezier(0.2, 0, 0, 1);
+}
+
+html.jav-view-preset-transition::view-transition-old(*),
+html.jav-view-preset-transition::view-transition-new(*) {
+  animation-duration: 220ms;
+  animation-timing-function: cubic-bezier(0.2, 0, 0, 1);
+  mix-blend-mode: normal;
+}
+
+.jav-card-compact-content {
+  display: none;
+}
+
+.jav-view--compact .jav-work-grid {
+  grid-template-columns: repeat(auto-fill, minmax(min(13rem, 100%), 1fr)) !important;
+  gap: 0.75rem;
+}
+
+.jav-view--compact .jav-card-compact-content {
+  display: flex;
+}
+
+.jav-view--compact .jav-card-detailed-content,
+.jav-view--compact .jav-card-detailed-only {
+  display: none;
+}
+
+.jav-view--compact .jav-card-favorite-rating,
+.jav-view--compact .jav-card-favorite-button {
+  opacity: 0;
+}
+
+.jav-view--compact .jav-card-favorite-button {
+  background: rgb(0 0 0 / 0.65);
+  color: #fff;
+}
+
+.jav-view--compact .card-hover-scope:has(:focus-visible) .jav-card-favorite-rating,
+.jav-view--compact .card-hover-scope:has(:focus-visible) .jav-card-favorite-button {
+  opacity: 1;
+}
+
+@media (hover: hover) {
+  .jav-view--compact .card-hover-scope:hover .jav-card-favorite-rating,
+  .jav-view--compact .card-hover-scope:hover .jav-card-favorite-button {
+    opacity: 1;
+  }
+
+  .jav-view--compact .jav-card-favorite-button:hover {
+    background: rgb(0 0 0 / 0.8);
+  }
+}
+
 .pagination-toolbar-grid {
   gap: 10.8px;
 }
@@ -1020,6 +1081,23 @@ body.has-page-scroll .sticky-pagination {
   opacity: 1;
 }
 
+.jav-card-sample-preview {
+  animation: jav-card-sample-preview-in 220ms ease-out both;
+  transform-origin: center;
+}
+
+@keyframes jav-card-sample-preview-in {
+  from {
+    opacity: 0;
+    transform: scale(1.01);
+  }
+
+  to {
+    opacity: 1;
+    transform: scale(1.025);
+  }
+}
+
 .video-card:hover .video-card-select,
 .video-card:has(:focus-visible) .video-card-select,
 .video-card-select.is-visible {
@@ -1031,6 +1109,12 @@ body.has-page-scroll .sticky-pagination {
   .video-card-select {
     opacity: 1;
     transform: translateY(0) scale(1);
+  }
+}
+
+@media (prefers-reduced-motion: reduce) {
+  .jav-card-sample-preview {
+    animation: none;
   }
 }
 

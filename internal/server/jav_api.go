@@ -121,7 +121,7 @@ func searchJav(c *gin.Context) {
 		seed = &parsed
 	}
 
-	items, total, err := dbpkg.SearchJavWithPrefixFilters(c.Request.Context(), filterQuery.IdolIDs, filterQuery.TagIDs, filterQuery.Search, filterQuery.Prefix, sort, limit, offset, seed, filterQuery.DirectoryIDs, dbpkg.JavSearchFilters{
+	filters := dbpkg.JavSearchFilters{
 		StudioID:          filterQuery.StudioID,
 		SeriesID:          filterQuery.SeriesID,
 		SoloOnly:          filterQuery.SoloOnly,
@@ -129,15 +129,28 @@ func searchJav(c *gin.Context) {
 		FavoriteRatingMin: filterQuery.FavoriteRatingMin,
 		FavoriteRatingMax: filterQuery.FavoriteRatingMax,
 		Inventory:         filterQuery.Inventory,
-	})
+	}
+	items, total, err := dbpkg.SearchJavWithPrefixFilters(c.Request.Context(), filterQuery.IdolIDs, filterQuery.TagIDs, filterQuery.Search, filterQuery.Prefix, sort, limit, offset, seed, filterQuery.DirectoryIDs, filters)
 	if err != nil {
 		logging.Error("SearchJav: %v", err)
 		respondLocalizedError(c, http.StatusInternalServerError, "搜索 JAV 作品失败", "Failed to search JAV items")
 		return
 	}
+	pendingTotal := total
+	if filterQuery.Inventory != models.JavInventoryPending {
+		pendingFilters := filters
+		pendingFilters.Inventory = models.JavInventoryPending
+		pendingTotal, err = dbpkg.CountJavWithPrefixFilters(c.Request.Context(), filterQuery.IdolIDs, filterQuery.TagIDs, filterQuery.Search, filterQuery.Prefix, filterQuery.DirectoryIDs, pendingFilters)
+		if err != nil {
+			logging.Error("CountPendingJav: %v", err)
+			respondLocalizedError(c, http.StatusInternalServerError, "统计未入库作品失败", "Failed to count pending JAV items")
+			return
+		}
+	}
 	c.JSON(http.StatusOK, gin.H{
-		"items": items,
-		"total": total,
+		"items":         items,
+		"total":         total,
+		"pending_total": pendingTotal,
 	})
 }
 

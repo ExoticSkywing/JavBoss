@@ -27,7 +27,9 @@ import {
   normalizeIdolProfileFilters,
   normalizeJavSort,
   normalizeJavSortRules,
+  normalizeJavViewPreset,
   resolveJavSort,
+  JAV_VIEW_PRESET_DETAILED,
 } from '@/constants/jav'
 import { normalizeVideoSort } from '@/constants/video'
 import { zh } from '@/utils/i18n'
@@ -41,6 +43,7 @@ const JAV_GRID_COLUMNS_AUTO = 0
 const JAV_TITLE_MAX_ROWS_DEFAULT = 2
 const JAV_IDOL_TAG_MAX_ROWS_DEFAULT = 2
 const JAV_TAG_MAX_ROWS_DEFAULT = 2
+const JAV_VIEW_PRESET_STORAGE_KEY = 'javboss.jav.viewPreset'
 let videoLoadSeq = 0
 let videoLoadMoreSeq = 0
 let javLoadSeq = 0
@@ -66,6 +69,24 @@ let javTagFetchInFlightKey = null
 const RANDOM_SEED_MAX = 2147483646
 const DIRECTORY_FILTER_ALL = 'all'
 const DIRECTORY_FILTER_CUSTOM = 'custom'
+
+const readStoredJavViewPreset = () => {
+  if (typeof window === 'undefined') return JAV_VIEW_PRESET_DETAILED
+  try {
+    return normalizeJavViewPreset(window.localStorage.getItem(JAV_VIEW_PRESET_STORAGE_KEY))
+  } catch {
+    return JAV_VIEW_PRESET_DETAILED
+  }
+}
+
+const persistJavViewPreset = (preset) => {
+  if (typeof window === 'undefined') return
+  try {
+    window.localStorage.setItem(JAV_VIEW_PRESET_STORAGE_KEY, preset)
+  } catch {
+    // Storage can be unavailable in private or restricted browsing contexts.
+  }
+}
 
 const normalizeSeed = (seed) => {
   const num = Math.floor(Number(seed))
@@ -241,6 +262,12 @@ export const useStore = create((set, get) => ({
   javTitleMaxRows: JAV_TITLE_MAX_ROWS_DEFAULT,
   javIdolTagMaxRows: JAV_IDOL_TAG_MAX_ROWS_DEFAULT,
   javTagMaxRows: JAV_TAG_MAX_ROWS_DEFAULT,
+  javViewPreset: readStoredJavViewPreset(),
+  setJavViewPreset: (preset) => {
+    const next = normalizeJavViewPreset(preset)
+    persistJavViewPreset(next)
+    set({ javViewPreset: next })
+  },
   setJavGridColumns: (columns) => {
     const n = Math.floor(Number(columns))
     const next = Number.isFinite(n) && n > 0 ? Math.min(n, 12) : JAV_GRID_COLUMNS_AUTO
@@ -272,6 +299,7 @@ export const useStore = create((set, get) => ({
   javFavoriteGroupId: null,
   javItems: [],
   javTotal: 0,
+  javPendingTotal: 0,
   javLoading: false,
   javLoadingMore: false,
   javError: null,
@@ -924,6 +952,7 @@ export const useStore = create((set, get) => ({
       set({
         javItems: items,
         javTotal: javRandomMode ? items.length : resp.total || 0,
+        javPendingTotal: Math.max(0, Number(resp.pending_total) || 0),
       })
     } catch (e) {
       if (reqId !== javLoadSeq || key !== javListRequestKey(get())) return
@@ -979,6 +1008,7 @@ export const useStore = create((set, get) => ({
       set({
         javItems: [...(get().javItems || []), ...items],
         javTotal: resp.total || total,
+        javPendingTotal: Math.max(0, Number(resp.pending_total ?? state.javPendingTotal) || 0),
       })
     } catch (e) {
       if (

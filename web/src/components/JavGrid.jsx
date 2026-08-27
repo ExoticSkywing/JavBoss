@@ -1,4 +1,4 @@
-import { useCallback, useEffect, useMemo, useRef, useState } from 'react'
+import { memo, useCallback, useEffect, useMemo, useRef, useState } from 'react'
 import { IconButton, Popper, Rating, Tooltip } from '@mui/material'
 import AddIcon from '@mui/icons-material/Add'
 import CloseOutlinedIcon from '@mui/icons-material/CloseOutlined'
@@ -28,6 +28,8 @@ import {
   fetchJavSeries,
   fetchJavStudioPreview,
   fetchJavStudios,
+  getResolvedJavSampleImages,
+  resolveJavSampleImages,
   updateJavItem,
 } from '@/api'
 import JavDetailModal from '@/components/JavDetailModal'
@@ -96,7 +98,7 @@ function ReleaseIcon() {
   )
 }
 
-export default function JavGrid({
+function JavGrid({
   items,
   emptyMessage,
   columns = 0,
@@ -174,7 +176,6 @@ export default function JavGrid({
   const hasItems = Array.isArray(displayItems) && displayItems.length > 0
   const columnCount = Number.isFinite(Number(columns)) ? Math.floor(Number(columns)) : 0
   const fixedColumnCount = columnCount > 0 ? Math.min(columnCount, 12) : 0
-  const gridClassName = 'grid gap-4'
   const gridStyle = fixedColumnCount
     ? { gridTemplateColumns: `repeat(${fixedColumnCount}, minmax(0, 1fr))` }
     : { gridTemplateColumns: 'repeat(auto-fill, minmax(min(21rem, 100%), 1fr))' }
@@ -286,7 +287,7 @@ export default function JavGrid({
 
   return (
     <>
-      <div className={gridClassName} style={gridStyle}>
+      <div className="jav-work-grid grid gap-4" style={gridStyle}>
         {displayItems.map((item) => (
           <JavCard
             key={item.id || item.code}
@@ -356,6 +357,10 @@ export default function JavGrid({
     </>
   )
 }
+
+const MemoizedJavGrid = memo(JavGrid)
+
+export default MemoizedJavGrid
 
 function CoverPreviewModal({ preview, onClose }) {
   const [scale, setScale] = useState(1)
@@ -1746,6 +1751,201 @@ function JavCoverImage({ src, alt }) {
   )
 }
 
+const JAV_COVER_PREVIEW_DELAY_MS = 400
+const JAV_COVER_PREVIEW_INTERVAL_MS = 1100
+
+function normalizeJavCardSampleImages(images) {
+  if (!Array.isArray(images)) return []
+  const seen = new Set()
+  return images.flatMap((image) => {
+    const thumbnailURL = String(image?.thumbnail_url || image?.detail_url || '').trim()
+    const detailURL = String(image?.detail_url || image?.thumbnail_url || '').trim()
+    if (
+      !detailURL ||
+      thumbnailURL === ':not_found' ||
+      detailURL === ':not_found' ||
+      seen.has(detailURL)
+    ) {
+      return []
+    }
+    seen.add(detailURL)
+    return [{ thumbnail_url: thumbnailURL, detail_url: detailURL }]
+  })
+}
+
+function javSampleImagesNotFound(images) {
+  return (
+    Array.isArray(images) &&
+    images.length === 1 &&
+    images[0]?.thumbnail_url === ':not_found' &&
+    images[0]?.detail_url === ':not_found'
+  )
+}
+
+function JavCoverHoverPreview({ src, alt, itemId, sampleImages, directoryIds }) {
+  const [preview, setPreview] = useState(null)
+  const rootRef = useRef(null)
+  const hoverActiveRef = useRef(false)
+  const hoverGenerationRef = useRef(0)
+  const frameGenerationRef = useRef(0)
+  const startTimerRef = useRef(null)
+  const rotationTimerRef = useRef(null)
+  const availableImagesRef = useRef([])
+  const unavailableRef = useRef(false)
+  const directoryKey = (directoryIds || []).join(',')
+  const stableDirectoryIds = useMemo(
+    () =>
+      directoryKey
+        .split(',')
+        .map((value) => Number(value))
+        .filter((value) => Number.isFinite(value) && value > 0),
+    [directoryKey]
+  )
+
+  const clearTimers = useCallback(() => {
+    if (startTimerRef.current !== null) {
+      window.clearTimeout(startTimerRef.current)
+      startTimerRef.current = null
+    }
+    if (rotationTimerRef.current !== null) {
+      window.clearTimeout(rotationTimerRef.current)
+      rotationTimerRef.current = null
+    }
+  }, [])
+
+  const cancelPreview = useCallback(() => {
+    hoverActiveRef.current = false
+    hoverGenerationRef.current += 1
+    frameGenerationRef.current += 1
+    clearTimers()
+  }, [clearTimers])
+
+  const stopPreview = useCallback(() => {
+    cancelPreview()
+    setPreview(null)
+  }, [cancelPreview])
+
+  useEffect(() => {
+    const requestOptions = { directoryIds: stableDirectoryIds }
+    const cachedImages = getResolvedJavSampleImages(itemId, requestOptions)
+    const initialImages = normalizeJavCardSampleImages(sampleImages)
+    const cachedNormalizedImages = normalizeJavCardSampleImages(cachedImages)
+    availableImagesRef.current = initialImages.length > 0 ? initialImages : cachedNormalizedImages
+    unavailableRef.current =
+      javSampleImagesNotFound(sampleImages) || javSampleImagesNotFound(cachedImages)
+    cancelPreview()
+    setPreview(null)
+    return cancelPreview
+  }, [cancelPreview, itemId, sampleImages, stableDirectoryIds])
+
+  const beginRotation = useCallback((images, hoverGeneration) => {
+    if (!hoverActiveRef.current || hoverGenerationRef.current !== hoverGeneration) return
+    availableImagesRef.current = images
+    const failedURLs = new Set()
+    const reduceMotion = window.matchMedia?.('(prefers-reduced-motion: reduce)').matches
+
+    const nextAvailableIndex = (currentIndex) => {
+      for (let step = 1; step <= images.length; step += 1) {
+        const candidateIndex = (currentIndex + step) % images.length
+        if (!failedURLs.has(images[candidateIndex]?.detail_url)) return candidateIndex
+      }
+      return -1
+    }
+
+    const revealImage = (index) => {
+      if (!hoverActiveRef.current || hoverGenerationRef.current !== hoverGeneration) return
+      const candidate = images[index]
+      const detailURL = candidate?.detail_url
+      if (!detailURL) return
+      const frameGeneration = (frameGenerationRef.current += 1)
+      const image = new Image()
+      image.decoding = 'async'
+      image.referrerPolicy = 'no-referrer'
+      image.onload = () => {
+        if (
+          !hoverActiveRef.current ||
+          hoverGenerationRef.current !== hoverGeneration ||
+          frameGenerationRef.current !== frameGeneration
+        ) {
+          return
+        }
+        setPreview({ src: detailURL, index })
+        if (images.length < 2 || reduceMotion) return
+        const nextIndex = nextAvailableIndex(index)
+        if (nextIndex < 0 || nextIndex === index) return
+        rotationTimerRef.current = window.setTimeout(
+          () => revealImage(nextIndex),
+          JAV_COVER_PREVIEW_INTERVAL_MS
+        )
+      }
+      image.onerror = () => {
+        if (!hoverActiveRef.current || hoverGenerationRef.current !== hoverGeneration) return
+        failedURLs.add(detailURL)
+        const nextIndex = nextAvailableIndex(index)
+        if (nextIndex >= 0 && nextIndex !== index) revealImage(nextIndex)
+      }
+      image.src = detailURL
+    }
+
+    revealImage(0)
+  }, [])
+
+  const handlePointerEnter = useCallback(
+    (event) => {
+      if (event.pointerType && event.pointerType !== 'mouse') return
+      clearTimers()
+      hoverActiveRef.current = true
+      const hoverGeneration = (hoverGenerationRef.current += 1)
+      startTimerRef.current = window.setTimeout(async () => {
+        startTimerRef.current = null
+        let images = availableImagesRef.current
+        if (images.length === 0 && !unavailableRef.current) {
+          try {
+            const resolved = await resolveJavSampleImages(itemId, {
+              directoryIds: stableDirectoryIds,
+            })
+            unavailableRef.current = javSampleImagesNotFound(resolved)
+            images = normalizeJavCardSampleImages(resolved)
+          } catch (error) {
+            console.warn('load JAV card sample images failed', error)
+            return
+          }
+        }
+        if (images.length > 0) beginRotation(images, hoverGeneration)
+      }, JAV_COVER_PREVIEW_DELAY_MS)
+    },
+    [beginRotation, clearTimers, itemId, stableDirectoryIds]
+  )
+
+  useEffect(() => {
+    const hoverScope = rootRef.current?.closest('.card-hover-scope')
+    if (!hoverScope) return undefined
+    hoverScope.addEventListener('pointerenter', handlePointerEnter)
+    hoverScope.addEventListener('pointerleave', stopPreview)
+    return () => {
+      hoverScope.removeEventListener('pointerenter', handlePointerEnter)
+      hoverScope.removeEventListener('pointerleave', stopPreview)
+    }
+  }, [handlePointerEnter, stopPreview])
+
+  return (
+    <div ref={rootRef} className="relative h-full w-full">
+      <JavCoverImage src={src} alt={alt} />
+      {preview ? (
+        <img
+          key={`${preview.src}-${preview.index}`}
+          src={preview.src}
+          alt=""
+          aria-hidden="true"
+          className="jav-card-sample-preview pointer-events-none absolute inset-0 h-full w-full object-cover"
+          draggable="false"
+          referrerPolicy="no-referrer"
+        />
+      ) : null}
+    </div>
+  )
+}
+
 function normalizeIdolTagMaxRows(value) {
   const rows = Math.floor(Number(value))
   return Number.isFinite(rows) && rows > 0 ? Math.min(rows, 12) : 0
@@ -2111,6 +2311,31 @@ function JavTagList({ tags, maxRows, buildTagFilterHref, onTagClick, onFilterLin
         </div>
       ) : null}
     </div>
+  )
+}
+
+function JavCompactCardSummary({ code, title, fullTitle, pending }) {
+  const displayTitle = title && title !== code ? title : zh('标题待补全', 'Title pending')
+  const statusLabel = pending ? zh('未入库', 'Pending') : zh('已入库', 'Imported')
+
+  return (
+    <>
+      <div className="flex min-w-0 items-center gap-2">
+        <span className="min-w-0 flex-1 truncate text-[13px] font-bold text-slate-900" title={code}>
+          {code || zh('未知番号', 'Unknown code')}
+        </span>
+        <span
+          className={`shrink-0 rounded-md px-1.5 py-0.5 text-[11px] font-semibold leading-none ${
+            pending ? 'bg-violet-100 text-violet-700' : 'bg-pink-100 text-pink-700'
+          }`}
+        >
+          {statusLabel}
+        </span>
+      </div>
+      <div className="truncate text-xs font-medium text-slate-500" title={fullTitle}>
+        {displayTitle}
+      </div>
+    </>
   )
 }
 
@@ -2744,10 +2969,19 @@ function JavCard({
 
   return (
     <>
-      <div className="flex flex-col overflow-hidden rounded-lg border bg-white shadow-sm transition hover:shadow-lg">
+      <div
+        className="flex flex-col overflow-hidden rounded-lg border bg-white shadow-sm transition-shadow duration-150 hover:shadow-lg"
+        data-jav-view-transition-card
+      >
         <div className="card-hover-scope group relative aspect-[800/538] overflow-hidden bg-white">
           {cover ? (
-            <JavCoverImage src={cover} alt={item?.code || zh('JAV 封面', 'JAV cover')} />
+            <JavCoverHoverPreview
+              src={cover}
+              alt={item?.code || zh('JAV 封面', 'JAV cover')}
+              itemId={item?.id}
+              sampleImages={item?.sample_images}
+              directoryIds={directoryIds}
+            />
           ) : (
             <div className="flex h-full w-full items-center justify-center bg-gradient-to-br from-gray-100 to-gray-200 text-lg font-semibold text-gray-600">
               {item?.code || zh('未知番号', 'Unknown code')}
@@ -2806,7 +3040,7 @@ function JavCard({
                 setFavoriteRatingEditing(false)
                 setFavoriteRatingPreview(null)
               }}
-              className={`absolute left-2 top-2 z-10 flex items-center rounded-full bg-black/70 px-1.5 py-0.5 shadow-lg shadow-black/50 transition-opacity ${
+              className={`jav-card-favorite-rating absolute left-2 top-2 z-10 flex items-center rounded-full bg-black/70 px-1.5 py-0.5 shadow-lg shadow-black/50 transition-opacity ${
                 favoriteRatingSaving
                   ? 'opacity-60'
                   : favoriteRating > 0
@@ -2866,7 +3100,7 @@ function JavCard({
             </span>
           </Tooltip>
           {externalLinks.length > 0 ? (
-            <div className="card-hover-focus-visible absolute bottom-2 left-2 z-10 flex max-w-[calc(100%-1rem)] items-center gap-1.5 opacity-0 transition-opacity group-hover:opacity-100">
+            <div className="jav-card-detailed-only card-hover-focus-visible absolute bottom-2 left-2 z-10 flex max-w-[calc(100%-1rem)] items-center gap-1.5 opacity-0 transition-opacity group-hover:opacity-100">
               {externalLinks.map((site) => (
                 <Tooltip
                   key={site.key}
@@ -2895,7 +3129,7 @@ function JavCard({
           ) : null}
           <button
             type="button"
-            className="card-hover-focus-visible absolute right-12 top-2 z-10 flex h-8 w-8 items-center justify-center rounded-full bg-black/65 text-white opacity-0 shadow-lg shadow-black/40 transition hover:bg-black/80 group-hover:opacity-100"
+            className="jav-card-detailed-only card-hover-focus-visible absolute right-12 top-2 z-10 flex h-8 w-8 items-center justify-center rounded-full bg-black/65 text-white opacity-0 shadow-lg shadow-black/40 transition hover:bg-black/80 group-hover:opacity-100"
             title={zh('编辑自定义标签', 'Edit custom tags')}
             aria-label={zh('编辑自定义标签', 'Edit custom tags')}
             onClick={handleOpenCustomTags}
@@ -2904,7 +3138,7 @@ function JavCard({
           </button>
           <button
             type="button"
-            className={`card-hover-focus-visible absolute right-2 top-2 z-10 flex h-8 w-8 items-center justify-center rounded-full shadow-lg shadow-black/40 transition ${
+            className={`jav-card-favorite-button card-hover-focus-visible absolute right-2 top-2 z-10 flex h-8 w-8 items-center justify-center rounded-full shadow-lg shadow-black/40 transition ${
               favoriteCount > 0
                 ? 'bg-amber-400 text-amber-950 hover:bg-amber-300'
                 : 'bg-black/65 text-white opacity-0 hover:bg-black/80 group-hover:opacity-100'
@@ -2920,7 +3154,7 @@ function JavCard({
             )}
           </button>
           {cover || canOpen ? (
-            <div className="card-hover-focus-visible absolute bottom-2 right-2 z-10 flex items-center gap-2 opacity-0 transition-opacity group-hover:opacity-100">
+            <div className="jav-card-detailed-only card-hover-focus-visible absolute bottom-2 right-2 z-10 flex items-center gap-2 opacity-0 transition-opacity group-hover:opacity-100">
               {cover ? (
                 <button
                   type="button"
@@ -2947,7 +3181,15 @@ function JavCard({
             </div>
           ) : null}
         </div>
-        <div className="flex flex-1 flex-col gap-2 p-3">
+        <div className="jav-card-compact-content min-h-[3.75rem] flex-col gap-1 px-2.5 py-2">
+          <JavCompactCardSummary
+            code={codeText}
+            title={mainTitle}
+            fullTitle={titleText}
+            pending={isPending}
+          />
+        </div>
+        <div className="jav-card-detailed-content flex flex-1 flex-col gap-2 p-3">
           {isPending ? (
             <div
               className="flex flex-wrap items-center gap-2"
@@ -3050,26 +3292,26 @@ function JavCard({
               )}
             </div>
           ) : null}
-          <Popper
-            open={Boolean(previewStudio && studioHoverAnchorEl)}
-            anchorEl={studioHoverAnchorEl}
-            placement="right-start"
-            className="z-[1400]"
-            modifiers={[
-              {
-                name: 'offset',
-                options: {
-                  offset: [10, 0],
+          {previewStudio && studioHoverAnchorEl ? (
+            <Popper
+              open
+              anchorEl={studioHoverAnchorEl}
+              placement="right-start"
+              className="z-[1400]"
+              modifiers={[
+                {
+                  name: 'offset',
+                  options: {
+                    offset: [10, 0],
+                  },
                 },
-              },
-            ]}
-          >
-            <div
-              className="w-[320px]"
-              onMouseEnter={clearHoverCloseTimer}
-              onMouseLeave={scheduleHoverClose}
+              ]}
             >
-              {previewStudio ? (
+              <div
+                className="w-[320px]"
+                onMouseEnter={clearHoverCloseTimer}
+                onMouseLeave={scheduleHoverClose}
+              >
                 <StudioCard
                   item={previewStudio}
                   href={buildStudioFilterHref(previewStudio)}
@@ -3082,29 +3324,29 @@ function JavCard({
                   onSeriesListOpenChange={handleStudioSeriesListOpenChange}
                   directoryIds={directoryIds}
                 />
-              ) : null}
-            </div>
-          </Popper>
-          <Popper
-            open={Boolean(previewSeries && seriesHoverAnchorEl)}
-            anchorEl={seriesHoverAnchorEl}
-            placement="right-start"
-            className="z-[1400]"
-            modifiers={[
-              {
-                name: 'offset',
-                options: {
-                  offset: [10, 0],
+              </div>
+            </Popper>
+          ) : null}
+          {previewSeries && seriesHoverAnchorEl ? (
+            <Popper
+              open
+              anchorEl={seriesHoverAnchorEl}
+              placement="right-start"
+              className="z-[1400]"
+              modifiers={[
+                {
+                  name: 'offset',
+                  options: {
+                    offset: [10, 0],
+                  },
                 },
-              },
-            ]}
-          >
-            <div
-              className="w-[260px]"
-              onMouseEnter={clearHoverCloseTimer}
-              onMouseLeave={scheduleHoverClose}
+              ]}
             >
-              {previewSeries ? (
+              <div
+                className="w-[260px]"
+                onMouseEnter={clearHoverCloseTimer}
+                onMouseLeave={scheduleHoverClose}
+              >
                 <SeriesCard
                   item={previewSeries}
                   href={buildSeriesFilterHref(previewSeries)}
@@ -3112,9 +3354,9 @@ function JavCard({
                   onSelectStudio={(studio) => onStudioClick?.(studio)}
                   onOpenFavorites={onOpenSeriesFavorites}
                 />
-              ) : null}
-            </div>
-          </Popper>
+              </div>
+            </Popper>
+          ) : null}
           {!hideIdols && Array.isArray(item?.idols) && item.idols.length > 0 && (
             <>
               <IdolTagList
@@ -3127,26 +3369,26 @@ function JavCard({
                 onIdolHoverStart={handleIdolHoverStart}
                 onIdolHoverEnd={scheduleHoverClose}
               />
-              <Popper
-                open={Boolean(previewIdol && idolHoverAnchorEl)}
-                anchorEl={idolHoverAnchorEl}
-                placement="right-start"
-                className="z-[1400]"
-                modifiers={[
-                  {
-                    name: 'offset',
-                    options: {
-                      offset: [10, 0],
+              {previewIdol && idolHoverAnchorEl ? (
+                <Popper
+                  open
+                  anchorEl={idolHoverAnchorEl}
+                  placement="right-start"
+                  className="z-[1400]"
+                  modifiers={[
+                    {
+                      name: 'offset',
+                      options: {
+                        offset: [10, 0],
+                      },
                     },
-                  },
-                ]}
-              >
-                <div
-                  className="w-[220px]"
-                  onMouseEnter={clearHoverCloseTimer}
-                  onMouseLeave={scheduleHoverClose}
+                  ]}
                 >
-                  {previewIdol ? (
+                  <div
+                    className="w-[220px]"
+                    onMouseEnter={clearHoverCloseTimer}
+                    onMouseLeave={scheduleHoverClose}
+                  >
                     <IdolCard
                       item={previewIdol}
                       onSelectIdol={(idol) => onIdolClick?.(idol)}
@@ -3158,31 +3400,35 @@ function JavCard({
                       showWorkCount={showIdolWorkCount}
                       preferChineseName={preferChineseName}
                     />
-                  ) : null}
-                </div>
-              </Popper>
-              <JavIdolCoverModal
-                key={`idol-cover-${idolCoverEditorItem?.id || 'closed'}`}
-                open={Boolean(idolCoverEditorItem)}
-                item={idolCoverEditorItem}
-                directoryIds={directoryIds}
-                preferChineseName={preferChineseName}
-                onClose={() => setIdolCoverEditorItem(null)}
-                onSaved={handleIdolCoverSaved}
-              />
-              <JavIdolEditModal
-                key={`idol-editor-${idolEditorItem?.id || 'closed'}`}
-                open={Boolean(idolEditorItem)}
-                item={idolEditorItem}
-                directoryIds={directoryIds}
-                preferChineseName={preferChineseName}
-                onClose={() => setIdolEditorItem(null)}
-                onSaved={handleIdolSaved}
-                onMerged={() => {
-                  setIdolEditorItem(null)
-                  setPreviewIdol(null)
-                }}
-              />
+                  </div>
+                </Popper>
+              ) : null}
+              {idolCoverEditorItem ? (
+                <JavIdolCoverModal
+                  key={`idol-cover-${idolCoverEditorItem.id}`}
+                  open
+                  item={idolCoverEditorItem}
+                  directoryIds={directoryIds}
+                  preferChineseName={preferChineseName}
+                  onClose={() => setIdolCoverEditorItem(null)}
+                  onSaved={handleIdolCoverSaved}
+                />
+              ) : null}
+              {idolEditorItem ? (
+                <JavIdolEditModal
+                  key={`idol-editor-${idolEditorItem.id}`}
+                  open
+                  item={idolEditorItem}
+                  directoryIds={directoryIds}
+                  preferChineseName={preferChineseName}
+                  onClose={() => setIdolEditorItem(null)}
+                  onSaved={handleIdolSaved}
+                  onMerged={() => {
+                    setIdolEditorItem(null)
+                    setPreviewIdol(null)
+                  }}
+                />
+              ) : null}
             </>
           )}
           {!hideIdols && (!Array.isArray(item?.idols) || item.idols.length === 0) ? (

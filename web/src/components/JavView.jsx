@@ -1,6 +1,7 @@
 import SwapVertIcon from '@mui/icons-material/SwapVert'
 import { Popover } from '@mui/material'
-import { useState } from 'react'
+import { useCallback, useEffect, useRef, useState } from 'react'
+import { flushSync } from 'react-dom'
 import JavGrid from '@/components/JavGrid'
 import Pagination from '@/components/Pagination'
 import WaterfallLoader from '@/components/WaterfallLoader'
@@ -8,8 +9,11 @@ import {
   JAV_INVENTORY_IMPORTED,
   JAV_INVENTORY_PENDING,
   JAV_SORT_OPTIONS,
+  JAV_VIEW_PRESET_COMPACT,
+  JAV_VIEW_PRESET_DETAILED,
   findSortOption,
   normalizeJavInventory,
+  normalizeJavViewPreset,
   reverseSortValue,
   sortLabelParts,
 } from '@/constants/jav'
@@ -24,6 +28,113 @@ function SortText({ option, value, className = '' }) {
       <span className="font-normal text-gray-500">{parts.separator}</span>
       <span className="font-normal text-gray-500">{parts.direction}</span>
     </span>
+  )
+}
+
+function JavViewPresetSwitch({ value, onChange }) {
+  const selected = normalizeJavViewPreset(value)
+  const options = [
+    { value: JAV_VIEW_PRESET_DETAILED, label: zh('完整', 'Detailed') },
+    { value: JAV_VIEW_PRESET_COMPACT, label: zh('速览', 'Compact') },
+  ]
+
+  return (
+    <div className="flex shrink-0 items-center gap-1.5">
+      <span className="text-xs font-medium text-slate-500">{zh('视图', 'View')}</span>
+      <div
+        className="inline-flex rounded-lg border border-slate-200 bg-slate-100 p-0.5"
+        role="group"
+        aria-label={zh('作品视图', 'Work view')}
+      >
+        {options.map((option) => {
+          const active = selected === option.value
+          return (
+            <button
+              key={option.value}
+              type="button"
+              className={`min-h-8 rounded-md px-2.5 text-xs font-semibold transition-[color,background-color,box-shadow,transform] duration-150 focus-visible:outline focus-visible:outline-2 focus-visible:outline-offset-2 focus-visible:outline-indigo-600 active:scale-[0.96] ${
+                active
+                  ? 'bg-white text-indigo-700 shadow-sm'
+                  : 'text-slate-500 hover:bg-white/70 hover:text-slate-800'
+              }`}
+              aria-pressed={active}
+              onClick={() => onChange?.(option.value)}
+            >
+              {option.label}
+            </button>
+          )
+        })}
+      </div>
+    </div>
+  )
+}
+
+function useJavViewPresetTransition(value, onChange) {
+  const activeTransitionRef = useRef(null)
+  const transitionCardsRef = useRef([])
+  const transitionGenerationRef = useRef(0)
+
+  const clearCardTransitionNames = useCallback(() => {
+    transitionCardsRef.current.forEach((card) => {
+      card.style.removeProperty('view-transition-name')
+    })
+    transitionCardsRef.current = []
+  }, [])
+
+  useEffect(
+    () => () => {
+      transitionGenerationRef.current += 1
+      activeTransitionRef.current?.skipTransition?.()
+      clearCardTransitionNames()
+      document.documentElement.classList.remove('jav-view-preset-transition')
+    },
+    [clearCardTransitionNames]
+  )
+
+  return useCallback(
+    (nextValue) => {
+      const next = normalizeJavViewPreset(nextValue)
+      if (next === normalizeJavViewPreset(value)) return
+
+      const reduceMotion = window.matchMedia?.('(prefers-reduced-motion: reduce)').matches
+      if (reduceMotion || typeof document.startViewTransition !== 'function') {
+        onChange?.(next)
+        return
+      }
+
+      const generation = (transitionGenerationRef.current += 1)
+      activeTransitionRef.current?.skipTransition?.()
+      clearCardTransitionNames()
+
+      const viewportHeight = window.innerHeight
+      const current = normalizeJavViewPreset(value)
+      const lowerCaptureBoundary = viewportHeight * (current === JAV_VIEW_PRESET_DETAILED ? 2 : 1.2)
+      transitionCardsRef.current = Array.from(
+        document.querySelectorAll('[data-jav-view-transition-card]')
+      ).filter((card) => {
+        const bounds = card.getBoundingClientRect()
+        return bounds.bottom >= -viewportHeight * 0.2 && bounds.top <= lowerCaptureBoundary
+      })
+      transitionCardsRef.current.forEach((card, index) => {
+        card.style.viewTransitionName = `jav-card-${index}`
+      })
+
+      document.documentElement.classList.add('jav-view-preset-transition')
+
+      const transition = document.startViewTransition(() => {
+        flushSync(() => onChange?.(next))
+      })
+      activeTransitionRef.current = transition
+      void transition.finished
+        .catch(() => {})
+        .finally(() => {
+          if (transitionGenerationRef.current !== generation) return
+          activeTransitionRef.current = null
+          clearCardTransitionNames()
+          document.documentElement.classList.remove('jav-view-preset-transition')
+        })
+    },
+    [clearCardTransitionNames, onChange, value]
   )
 }
 
@@ -46,6 +157,8 @@ export default function JavView({
   javTitleMaxRows,
   javIdolTagMaxRows,
   javTagMaxRows,
+  javViewPreset = JAV_VIEW_PRESET_DETAILED,
+  onJavViewPresetChange,
   onPlay,
   onIdolClick,
   onOpenFavorites,
@@ -83,6 +196,7 @@ export default function JavView({
   const currentOption = findSortOption(JAV_SORT_OPTIONS, effectiveSort) || JAV_SORT_OPTIONS[0]
   const activeWaterfallMode = waterfallMode && !javRandomMode
   const normalizedInventory = normalizeJavInventory(javInventory)
+  const changeJavViewPreset = useJavViewPresetTransition(javViewPreset, onJavViewPresetChange)
   const emptyMessage =
     normalizedInventory === JAV_INVENTORY_PENDING
       ? zh('暂无未入库作品', 'No pending works')
@@ -129,7 +243,8 @@ export default function JavView({
               onWaterfallModeChange={onWaterfallModeChange}
             />
           </div>
-          <div className="flex justify-end">
+          <div className="flex flex-wrap items-center justify-end gap-3">
+            <JavViewPresetSwitch value={javViewPreset} onChange={changeJavViewPreset} />
             <div className="pagination-sort-group flex items-center">
               <span className="pagination-sort-label text-gray-500">{zh('排序', 'Sort')}</span>
               <button
@@ -217,7 +332,13 @@ export default function JavView({
           {zh('加载中…', 'Loading...')}
         </div>
       ) : (
-        <div className={contentClass}>
+        <div
+          className={`${contentClass} ${
+            normalizeJavViewPreset(javViewPreset) === JAV_VIEW_PRESET_COMPACT
+              ? 'jav-view--compact'
+              : 'jav-view--detailed'
+          }`}
+        >
           <JavGrid
             items={javItems}
             emptyMessage={emptyMessage}

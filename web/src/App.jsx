@@ -191,6 +191,8 @@ export default function App() {
     javTitleMaxRows,
     javIdolTagMaxRows,
     javTagMaxRows,
+    javViewPreset,
+    setJavViewPreset,
     javSearchTerm,
     javInventory,
     setJavInventory,
@@ -220,6 +222,7 @@ export default function App() {
     loadMoreJavs,
     javItems,
     javTotal,
+    javPendingTotal,
     javLoading,
     javLoadingMore,
     javError,
@@ -3229,6 +3232,22 @@ export default function App() {
     (idol) => handleOpenFavoriteModal('idol', idol),
     [handleOpenFavoriteModal]
   )
+  const handleOpenJavFavoriteModal = useCallback(
+    (item) => handleOpenFavoriteModal('jav', item),
+    [handleOpenFavoriteModal]
+  )
+  const handleOpenStudioFavoriteModal = useCallback(
+    (studio) => handleOpenFavoriteModal('studio', studio),
+    [handleOpenFavoriteModal]
+  )
+  const handleOpenSeriesFavoriteModal = useCallback(
+    (series) => handleOpenFavoriteModal('series', series),
+    [handleOpenFavoriteModal]
+  )
+  const handleJavWaterfallModeChange = useCallback(
+    (enabled) => setWaterfallMode('jav', enabled),
+    [setWaterfallMode]
+  )
 
   const handleCloseIdolFavoriteModal = useCallback(() => {
     if (idolFavoriteModalSaving) return
@@ -4000,6 +4019,7 @@ export default function App() {
         javSearchHref={javSearchHref}
         javSearchInput={javSearchInput}
         javInventory={javInventory}
+        javPendingTotal={javPendingTotal}
         javTab={javTab}
         onClearFilters={handleClearActiveFilters}
         onFavoriteGroupSelect={(groupId) =>
@@ -4159,6 +4179,8 @@ export default function App() {
               javTitleMaxRows,
               javIdolTagMaxRows,
               javTagMaxRows,
+              javViewPreset,
+              setJavViewPreset,
               onPlay: handleJavPlay,
               onOpenFile: handleJavOpenFile,
               alternatePlayerLabel,
@@ -4177,15 +4199,15 @@ export default function App() {
               onManageVideoTagClick: handleVideoTagClick,
               onIdolClick: handleJavIdolClick,
               onOpenFavorites: handleOpenIdolFavoriteModal,
-              onOpenJavFavorites: (item) => handleOpenFavoriteModal('jav', item),
-              onOpenStudioFavorites: (studio) => handleOpenFavoriteModal('studio', studio),
-              onOpenSeriesFavorites: (series) => handleOpenFavoriteModal('series', series),
+              onOpenJavFavorites: handleOpenJavFavoriteModal,
+              onOpenStudioFavorites: handleOpenStudioFavoriteModal,
+              onOpenSeriesFavorites: handleOpenSeriesFavoriteModal,
               onStudioClick: handleSelectStudio,
               onSeriesClick: handleSelectSeries,
               onPrefixClick: handleSelectJavPrefix,
               onTagClick: handleJavTagClick,
               waterfallMode: waterfallModes.jav,
-              onWaterfallModeChange: (enabled) => setWaterfallMode('jav', enabled),
+              onWaterfallModeChange: handleJavWaterfallModeChange,
               onLoadMore: loadMoreJavs,
               loadingMore: javLoadingMore,
               hasMore: javWaterfallHasMore,

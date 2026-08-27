@@ -48,8 +48,9 @@ function FilterChip({ label, onRemove }) {
   )
 }
 
-function JavInventoryFilter({ value, onChange }) {
+function JavInventoryFilter({ value, pendingCount = 0, onChange }) {
   const selected = normalizeJavInventory(value)
+  const normalizedPendingCount = Math.max(0, Math.floor(Number(pendingCount) || 0))
   const options = [
     { value: JAV_INVENTORY_ALL, label: zh('全部', 'All') },
     { value: JAV_INVENTORY_PENDING, label: zh('未入库', 'Pending') },
@@ -68,7 +69,7 @@ function JavInventoryFilter({ value, onChange }) {
           <button
             key={option.value}
             type="button"
-            className={`min-h-8 rounded-md px-3 text-xs font-semibold transition active:scale-[0.98] ${
+            className={`inline-flex min-h-8 items-center gap-1.5 whitespace-nowrap rounded-md px-3 text-xs font-semibold transition active:scale-[0.98] ${
               active
                 ? 'bg-white text-indigo-700 shadow-sm'
                 : 'text-slate-500 hover:bg-white/70 hover:text-slate-800'
@@ -76,7 +77,16 @@ function JavInventoryFilter({ value, onChange }) {
             aria-pressed={active}
             onClick={() => onChange?.(option.value)}
           >
-            {option.label}
+            <span>{option.label}</span>
+            {option.value === JAV_INVENTORY_PENDING ? (
+              <span
+                className={`inline-flex h-5 min-w-5 items-center justify-center rounded-md px-1.5 text-[11px] font-bold tabular-nums leading-none ${
+                  active ? 'bg-indigo-100 text-indigo-700' : 'bg-violet-100 text-violet-700'
+                }`}
+              >
+                {normalizedPendingCount}
+              </span>
+            ) : null}
           </button>
         )
       })}
@@ -358,6 +368,7 @@ export default function TopBar({
   javSearchHref,
   javSearchInput,
   javInventory,
+  javPendingTotal = 0,
   javTab,
   onClearFilters,
   onFavoriteGroupSelect,
@@ -506,7 +517,11 @@ export default function TopBar({
           </form>
 
           {isJavMode && javTab === 'list' ? (
-            <JavInventoryFilter value={javInventory} onChange={onJavInventoryChange} />
+            <JavInventoryFilter
+              value={javInventory}
+              pendingCount={javPendingTotal}
+              onChange={onJavInventoryChange}
+            />
           ) : null}
 
           {isJavMode && javTab === 'list' ? (

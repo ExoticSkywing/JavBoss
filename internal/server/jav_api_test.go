@@ -108,8 +108,9 @@ func TestSearchJavInventoryAPI(t *testing.T) {
 	router := gin.New()
 	router.GET("/jav", searchJav)
 	type inventoryResponse struct {
-		Items []models.Jav `json:"items"`
-		Total int64        `json:"total"`
+		Items        []models.Jav `json:"items"`
+		Total        int64        `json:"total"`
+		PendingTotal int64        `json:"pending_total"`
 	}
 	request := func(query string) (inventoryResponse, *httptest.ResponseRecorder) {
 		t.Helper()
@@ -125,7 +126,7 @@ func TestSearchJavInventoryAPI(t *testing.T) {
 	}
 
 	all, recorder := request("")
-	if recorder.Code != http.StatusOK || all.Total != 2 || len(all.Items) != 2 {
+	if recorder.Code != http.StatusOK || all.Total != 2 || all.PendingTotal != 1 || len(all.Items) != 2 {
 		t.Fatalf("all inventory status=%d response=%#v body=%s", recorder.Code, all, recorder.Body.String())
 	}
 	states := map[string]models.Jav{}
@@ -142,11 +143,11 @@ func TestSearchJavInventoryAPI(t *testing.T) {
 	}
 
 	pendingOnly, recorder := request("?inventory=pending")
-	if recorder.Code != http.StatusOK || pendingOnly.Total != 1 || len(pendingOnly.Items) != 1 || pendingOnly.Items[0].ID != pending.ID {
+	if recorder.Code != http.StatusOK || pendingOnly.Total != 1 || pendingOnly.PendingTotal != 1 || len(pendingOnly.Items) != 1 || pendingOnly.Items[0].ID != pending.ID {
 		t.Fatalf("pending inventory status=%d response=%#v", recorder.Code, pendingOnly)
 	}
 	importedOnly, recorder := request("?inventory=imported")
-	if recorder.Code != http.StatusOK || importedOnly.Total != 1 || len(importedOnly.Items) != 1 || importedOnly.Items[0].ID != imported.ID {
+	if recorder.Code != http.StatusOK || importedOnly.Total != 1 || importedOnly.PendingTotal != 1 || len(importedOnly.Items) != 1 || importedOnly.Items[0].ID != imported.ID {
 		t.Fatalf("imported inventory status=%d response=%#v", recorder.Code, importedOnly)
 	}
 	_, recorder = request("?inventory=stored")

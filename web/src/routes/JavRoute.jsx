@@ -246,6 +246,7 @@ function JavListRoute({
   javTagMaxRows,
   javTitleMaxRows,
   javTotal,
+  javViewPreset,
   loadingMore,
   onIdolClick,
   onLoadMore,
@@ -275,6 +276,7 @@ function JavListRoute({
   onWaterfallModeChange,
   setJavPage,
   setJavTempSort,
+  setJavViewPreset,
   waterfallMode,
 }) {
   return (
@@ -297,6 +299,8 @@ function JavListRoute({
       javTitleMaxRows={javTitleMaxRows}
       javIdolTagMaxRows={javIdolTagMaxRows}
       javTagMaxRows={javTagMaxRows}
+      javViewPreset={javViewPreset}
+      onJavViewPresetChange={setJavViewPreset}
       onPlay={onPlay}
       onOpenFile={onOpenFile}
       openFileLabel={alternatePlayerLabel}

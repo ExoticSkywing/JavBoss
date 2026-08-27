@@ -219,12 +219,9 @@ func SearchJavWithPrefixFilters(ctx context.Context, idolIDs []int64, tagIDs []i
 
 	filtered := buildJavFilter(ctx, idolIDs, tagIDs, search, prefix, directoryIDs, filters)
 
-	// Count on a cloned query to avoid mutating the main one.
-	countBase := buildJavFilter(ctx, idolIDs, tagIDs, search, prefix, directoryIDs, filters)
-	countQuery := countBase.Select("DISTINCT jav.id")
-	var total int64
-	if err := countQuery.Count(&total).Error; err != nil {
-		return nil, 0, fmt.Errorf("count jav: %w", err)
+	total, err := countJavMatches(ctx, idolIDs, tagIDs, search, prefix, directoryIDs, filters)
+	if err != nil {
+		return nil, 0, err
 	}
 
 	var items []models.Jav
@@ -296,6 +293,25 @@ func SearchJavWithPrefixFilters(ctx context.Context, idolIDs []int64, tagIDs []i
 		return nil, 0, err
 	}
 	return items, total, nil
+}
+
+// CountJavWithPrefixFilters counts JAV metadata using the complete filter set.
+func CountJavWithPrefixFilters(ctx context.Context, idolIDs []int64, tagIDs []int64, search, prefix string, directoryIDs []int64, filters JavSearchFilters) (int64, error) {
+	idolIDs = uniqueInt64s(idolIDs)
+	tagIDs = uniqueInt64s(tagIDs)
+	search = strings.TrimSpace(search)
+	prefix = normalizeJavCodePrefix(prefix)
+	return countJavMatches(ctx, idolIDs, tagIDs, search, prefix, directoryIDs, filters)
+}
+
+func countJavMatches(ctx context.Context, idolIDs []int64, tagIDs []int64, search, prefix string, directoryIDs []int64, filters JavSearchFilters) (int64, error) {
+	countQuery := buildJavFilter(ctx, idolIDs, tagIDs, search, prefix, directoryIDs, filters).
+		Select("DISTINCT jav.id")
+	var total int64
+	if err := countQuery.Count(&total).Error; err != nil {
+		return 0, fmt.Errorf("count jav: %w", err)
+	}
+	return total, nil
 }
 
 // ListJavPrefixes returns visible JAV code prefixes with studio, censor status,

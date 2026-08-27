@@ -4,6 +4,13 @@ export const JAV_PROVIDER_JAVDATABASE = 2
 export const JAV_PROVIDER_USER = 3
 export const JAV_PROVIDER_MANUAL_SCRAPE = 11
 
+export const JAV_VIEW_PRESET_DETAILED = 'detailed'
+export const JAV_VIEW_PRESET_COMPACT = 'compact'
+
+export function normalizeJavViewPreset(value) {
+  return value === JAV_VIEW_PRESET_COMPACT ? JAV_VIEW_PRESET_COMPACT : JAV_VIEW_PRESET_DETAILED
+}
+
 export {
   JAV_INVENTORY_ALL,
   JAV_INVENTORY_IMPORTED,
