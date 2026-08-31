@@ -3,8 +3,15 @@ import { Popover } from '@mui/material'
 import { useCallback, useEffect, useRef, useState } from 'react'
 import { flushSync } from 'react-dom'
 import JavGrid from '@/components/JavGrid'
+import AppModal from '@/components/AppModal'
 import Pagination from '@/components/Pagination'
 import WaterfallLoader from '@/components/WaterfallLoader'
+import {
+  fetchJavImportDays,
+  fetchJavMagnetQueue,
+  fetchJavQualityReviewQueue,
+  submitJavDownloadBatch,
+} from '@/api'
 import {
   JAV_INVENTORY_IMPORTED,
   JAV_INVENTORY_PENDING,
@@ -52,9 +59,9 @@ function JavViewPresetSwitch({ value, onChange }) {
             <button
               key={option.value}
               type="button"
-              className={`min-h-8 rounded-md px-2.5 text-xs font-semibold transition-[color,background-color,box-shadow,transform] duration-150 focus-visible:outline focus-visible:outline-2 focus-visible:outline-offset-2 focus-visible:outline-indigo-600 active:scale-[0.96] ${
+              className={`min-h-8 rounded-md px-2.5 text-xs font-semibold transition-[color,background-color,box-shadow,transform] duration-150 focus-visible:outline focus-visible:outline-2 focus-visible:outline-offset-2 focus-visible:outline-stone-600 active:scale-[0.96] ${
                 active
-                  ? 'bg-white text-indigo-700 shadow-sm'
+                  ? 'bg-white text-stone-800 shadow-sm'
                   : 'text-slate-500 hover:bg-white/70 hover:text-slate-800'
               }`}
               aria-pressed={active}
@@ -66,6 +73,483 @@ function JavViewPresetSwitch({ value, onChange }) {
         })}
       </div>
     </div>
+  )
+}
+
+function JavMagnetQueueButton() {
+  const [open, setOpen] = useState(false)
+  const [items, setItems] = useState([])
+  const [total, setTotal] = useState(0)
+  const [selectedIDs, setSelectedIDs] = useState(new Set())
+  const [loading, setLoading] = useState(false)
+  const [submitting, setSubmitting] = useState(false)
+  const [error, setError] = useState('')
+  const [message, setMessage] = useState('')
+
+  const loadQueue = useCallback(async () => {
+    setLoading(true)
+    setError('')
+    try {
+      const payload = await fetchJavMagnetQueue()
+      const nextItems = Array.isArray(payload?.items) ? payload.items : []
+      setItems(nextItems)
+      setTotal(Number(payload?.total) || 0)
+      setSelectedIDs((current) => {
+        const available = new Set(nextItems.map((entry) => Number(entry?.jav?.id)))
+        return new Set([...current].filter((id) => available.has(id)))
+      })
+    } catch (requestError) {
+      setError(requestError?.message || String(requestError))
+    } finally {
+      setLoading(false)
+    }
+  }, [])
+
+  useEffect(() => {
+    void loadQueue()
+  }, [loadQueue])
+
+  useEffect(() => {
+    if (open) void loadQueue()
+  }, [open, loadQueue])
+
+  const toggle = (id) => {
+    setSelectedIDs((current) => {
+      const next = new Set(current)
+      if (next.has(id)) next.delete(id)
+      else next.add(id)
+      return next
+    })
+  }
+
+  const allSelected =
+    items.length > 0 && items.every((entry) => selectedIDs.has(Number(entry?.jav?.id)))
+
+  const toggleAll = () => {
+    setSelectedIDs((current) => {
+      const available = items.map((entry) => Number(entry?.jav?.id))
+      const everySelected = available.length > 0 && available.every((id) => current.has(id))
+      return everySelected ? new Set() : new Set(available)
+    })
+  }
+
+  const submit = async () => {
+    if (selectedIDs.size === 0 || submitting) return
+    setSubmitting(true)
+    setError('')
+    setMessage('')
+    try {
+      const result = await submitJavDownloadBatch([...selectedIDs])
+      setMessage(
+        result?.delivery_status === 'submitted'
+          ? zh('已提交云下载。', 'Submitted to cloud download.')
+          : result?.delivery_status === 'partial'
+            ? zh(
+                '部分任务已提交，失败项仍留在待发送队列。',
+                'Some tasks were submitted; failed items remain queued.'
+              )
+            : zh(
+                '云下载服务未接收任务，选择仍留在待发送队列。',
+                'The cloud downloader did not accept the tasks; selections remain queued.'
+              )
+      )
+      setSelectedIDs(new Set())
+      await loadQueue()
+    } catch (requestError) {
+      setError(requestError?.message || String(requestError))
+    } finally {
+      setSubmitting(false)
+    }
+  }
+
+  return (
+    <>
+      <button
+        type="button"
+        onClick={() => setOpen(true)}
+        aria-label={zh(`待发送 ${total} 部作品`, `Send queue: ${total} works`)}
+        className="inline-flex min-h-8 items-center gap-2 rounded-md border border-stone-300 bg-stone-50 px-3 text-xs font-semibold text-stone-700 transition hover:border-stone-400 hover:bg-stone-100 active:scale-[0.96]"
+        title={zh(
+          '查看已保存的磁链选择并批量提交',
+          'Review saved magnet choices and submit them in a batch'
+        )}
+      >
+        {zh('待发送', 'Send queue')}
+        <span className="min-w-5 rounded-md bg-stone-800 px-1.5 py-0.5 text-center text-[10px] font-bold tabular-nums text-white">
+          {total}
+        </span>
+      </button>
+      {open ? (
+        <AppModal
+          open
+          onClose={() => setOpen(false)}
+          ariaLabel={zh('磁链待发送队列', 'Magnet send queue')}
+          contentClassName="max-h-[86vh] w-[min(720px,calc(100vw-2rem))] overflow-hidden rounded-2xl bg-white shadow-2xl"
+        >
+          <div className="flex max-h-[86vh] flex-col">
+            <header className="flex items-start justify-between gap-3 border-b border-slate-200 px-5 py-4">
+              <div>
+                <h2 className="text-lg font-semibold text-slate-950">
+                  {zh('磁链待发送', 'Magnet send queue')}
+                </h2>
+                <p className="mt-1 text-xs leading-5 text-slate-500">
+                  {zh(
+                    '这里汇总详情页中已保存、但尚未提交下载的选择。',
+                    'Saved choices from detail pages that have not been submitted yet.'
+                  )}
+                </p>
+              </div>
+              <button
+                type="button"
+                onClick={() => setOpen(false)}
+                className="rounded-lg px-2 py-1 text-sm text-slate-500 hover:bg-slate-100"
+              >
+                {zh('关闭', 'Close')}
+              </button>
+            </header>
+            <div className="min-h-0 flex-1 overflow-y-auto p-5">
+              {loading ? (
+                <div className="py-10 text-center text-sm text-slate-500">
+                  {zh('加载中…', 'Loading...')}
+                </div>
+              ) : null}
+              {!loading && items.length === 0 ? (
+                <div className="rounded-xl border border-dashed border-slate-200 px-4 py-10 text-center text-sm text-slate-500">
+                  {zh(
+                    '暂无待发送磁链。先在作品详情页保存磁链选择。',
+                    'No saved magnets are waiting. Save a choice from a work detail first.'
+                  )}
+                </div>
+              ) : null}
+              {!loading && items.length > 0 ? (
+                <>
+                  <div className="mb-3 flex flex-wrap items-center justify-between gap-3 rounded-lg border border-stone-200 bg-stone-50 px-3 py-2">
+                    <span className="text-xs text-stone-600">
+                      {zh(
+                        `已选择 ${selectedIDs.size} / ${items.length} 部作品`,
+                        `${selectedIDs.size} / ${items.length} work(s) selected`
+                      )}
+                    </span>
+                    <button
+                      type="button"
+                      onClick={toggleAll}
+                      aria-pressed={allSelected}
+                      className="min-h-8 rounded-md border border-stone-300 bg-white px-3 py-1.5 text-xs font-semibold text-stone-700 transition hover:border-stone-400 hover:bg-stone-100 active:scale-[0.96]"
+                    >
+                      {allSelected ? zh('取消全选', 'Clear all') : zh('全选', 'Select all')}
+                    </button>
+                  </div>
+                  <div className="space-y-2">
+                    {items.map((entry) => {
+                      const id = Number(entry?.jav?.id)
+                      const checked = selectedIDs.has(id)
+                      return (
+                        <label
+                          key={id}
+                          className={`flex cursor-pointer items-start gap-3 rounded-lg border px-3 py-3 ${checked ? 'border-stone-400 bg-stone-100' : 'border-slate-200 bg-white hover:border-slate-300'}`}
+                        >
+                          <input
+                            aria-label={zh(
+                              `选择 ${entry?.jav?.code || '作品'}`,
+                              `Select ${entry?.jav?.code || 'work'}`
+                            )}
+                            type="checkbox"
+                            checked={checked}
+                            onChange={() => toggle(id)}
+                            className="mt-1 h-4 w-4 accent-stone-700"
+                          />
+                          <span className="min-w-0 flex-1">
+                            <span className="block text-sm font-semibold text-slate-900">
+                              {entry?.jav?.code || '—'}{' '}
+                              <span className="font-normal">{entry?.jav?.title || ''}</span>
+                            </span>
+                            <span className="mt-1 block truncate text-xs text-slate-500">
+                              {entry?.candidate?.name || entry?.candidate?.info_hash}
+                            </span>
+                            {entry?.attempt?.status === 'uncertain' ? (
+                              <span className="mt-1 block text-[11px] font-medium text-amber-700">
+                                {zh(
+                                  '上次发送结果未知；重试会复用幂等键',
+                                  'Previous result unknown; retry reuses the idempotency key'
+                                )}
+                              </span>
+                            ) : entry?.attempt?.status === 'failed' ? (
+                              <span className="mt-1 block text-[11px] font-medium text-rose-700">
+                                {zh(
+                                  '上次发送失败，可安全重试',
+                                  'Previous submission failed; safe to retry'
+                                )}
+                              </span>
+                            ) : null}
+                          </span>
+                        </label>
+                      )
+                    })}
+                  </div>
+                </>
+              ) : null}
+              {error ? (
+                <div
+                  role="alert"
+                  className="mt-3 rounded-lg border border-rose-200 bg-rose-50 px-3 py-2 text-xs text-rose-700"
+                >
+                  {error}
+                </div>
+              ) : null}
+              {message ? (
+                <div
+                  role="status"
+                  className="mt-3 rounded-lg border border-stone-200 bg-stone-50 px-3 py-2 text-xs text-stone-700"
+                >
+                  {message}
+                </div>
+              ) : null}
+            </div>
+            <footer className="flex flex-wrap items-center justify-between gap-3 border-t border-slate-200 px-5 py-4">
+              <span className="text-xs text-slate-500">
+                {zh(`已选择 ${selectedIDs.size} 部作品`, `${selectedIDs.size} work(s) selected`)}
+              </span>
+              <button
+                type="button"
+                onClick={submit}
+                disabled={selectedIDs.size === 0 || submitting}
+                className="min-h-10 rounded-lg bg-stone-800 px-4 text-sm font-semibold text-white hover:bg-stone-900 disabled:cursor-not-allowed disabled:opacity-50"
+              >
+                {submitting ? zh('提交中…', 'Submitting…') : zh('批量提交下载', 'Submit selected')}
+              </button>
+            </footer>
+          </div>
+        </AppModal>
+      ) : null}
+    </>
+  )
+}
+
+function JavImportHistoryButton({ directoryIds = [], gridProps = {} }) {
+  const [open, setOpen] = useState(false)
+  const [days, setDays] = useState([])
+  const [loading, setLoading] = useState(false)
+  const [error, setError] = useState('')
+
+  const loadDays = useCallback(async () => {
+    setLoading(true)
+    setError('')
+    try {
+      const payload = await fetchJavImportDays({ limit: 31, directoryIds })
+      setDays(Array.isArray(payload?.items) ? payload.items : [])
+    } catch (requestError) {
+      setError(requestError?.message || String(requestError))
+    } finally {
+      setLoading(false)
+    }
+  }, [directoryIds])
+
+  useEffect(() => {
+    void loadDays()
+  }, [loadDays])
+
+  useEffect(() => {
+    if (open) void loadDays()
+  }, [open, loadDays])
+
+  return (
+    <>
+      <button
+        type="button"
+        onClick={() => setOpen(true)}
+        aria-label={zh(`入库记录 ${days.length} 天`, `Import history: ${days.length} days`)}
+        className="inline-flex min-h-8 items-center gap-2 rounded-md border border-stone-300 bg-white px-3 text-xs font-semibold text-stone-700 transition hover:border-stone-400 hover:bg-stone-50 active:scale-[0.96]"
+        title={zh('按验收日期查看正式入库记录', 'View accepted imports by review date')}
+      >
+        {zh('入库记录', 'Import history')}
+        <span className="min-w-5 rounded-md bg-stone-600 px-1.5 py-0.5 text-center text-[10px] font-bold tabular-nums text-white">
+          {days.length}
+        </span>
+      </button>
+      {open ? (
+        <AppModal
+          open
+          onClose={() => setOpen(false)}
+          ariaLabel={zh('每日入库记录', 'Daily import history')}
+          contentClassName="max-h-[86vh] w-[min(720px,calc(100vw-2rem))] overflow-hidden rounded-2xl bg-white shadow-2xl"
+        >
+          <div className="flex max-h-[86vh] flex-col">
+            <header className="flex items-start justify-between gap-3 border-b border-slate-200 px-5 py-4">
+              <div>
+                <h2 className="text-lg font-semibold text-slate-950">
+                  {zh('每日入库记录', 'Daily import history')}
+                </h2>
+                <p className="mt-1 text-xs leading-5 text-slate-500">
+                  {zh(
+                    '只记录质量验收通过的作品；没有验收作品的日期不会显示。',
+                    'Only quality-accepted works are recorded; empty dates are omitted.'
+                  )}
+                </p>
+              </div>
+              <button
+                type="button"
+                onClick={() => setOpen(false)}
+                className="rounded-lg px-2 py-1 text-sm text-slate-500 hover:bg-slate-100"
+              >
+                {zh('关闭', 'Close')}
+              </button>
+            </header>
+            <div className="min-h-0 flex-1 overflow-y-auto p-5">
+              {loading ? (
+                <div className="py-10 text-center text-sm text-slate-500">
+                  {zh('加载中…', 'Loading...')}
+                </div>
+              ) : null}
+              {!loading && days.length === 0 ? (
+                <div className="rounded-xl border border-dashed border-slate-200 px-4 py-10 text-center text-sm text-slate-500">
+                  {zh('还没有正式入库记录。', 'No accepted import records yet.')}
+                </div>
+              ) : null}
+              {!loading && days.length > 0 ? (
+                <div className="space-y-3">
+                  {days.map((entry) => (
+                    <section
+                      key={entry.day}
+                      className="rounded-xl border border-slate-200 bg-slate-50/70 p-3"
+                    >
+                      <div className="flex items-center justify-between gap-3">
+                        <h3 className="text-sm font-semibold text-slate-900">{entry.day}</h3>
+                        <span className="rounded-md bg-stone-200 px-2 py-0.5 text-xs font-semibold text-stone-700">
+                          {zh(`${entry.count || 0} 部`, `${entry.count || 0} work(s)`)}
+                        </span>
+                      </div>
+                      <div className="mt-3">
+                        <JavGrid
+                          {...gridProps}
+                          items={entry.items || []}
+                          emptyMessage={zh('当日没有作品', 'No works on this day')}
+                        />
+                      </div>
+                    </section>
+                  ))}
+                </div>
+              ) : null}
+              {error ? (
+                <div
+                  role="alert"
+                  className="mt-3 rounded-lg border border-rose-200 bg-rose-50 px-3 py-2 text-xs text-rose-700"
+                >
+                  {error}
+                </div>
+              ) : null}
+            </div>
+          </div>
+        </AppModal>
+      ) : null}
+    </>
+  )
+}
+
+function JavQualityReviewQueueButton({ directoryIds = [], gridProps = {} }) {
+  const [open, setOpen] = useState(false)
+  const [items, setItems] = useState([])
+  const [total, setTotal] = useState(0)
+  const [loading, setLoading] = useState(false)
+  const [error, setError] = useState('')
+
+  const loadItems = useCallback(async () => {
+    setLoading(true)
+    setError('')
+    try {
+      const payload = await fetchJavQualityReviewQueue({ limit: 50, directoryIds })
+      setItems(Array.isArray(payload?.items) ? payload.items : [])
+      setTotal(Number(payload?.total) || 0)
+    } catch (requestError) {
+      setError(requestError?.message || String(requestError))
+    } finally {
+      setLoading(false)
+    }
+  }, [directoryIds])
+
+  useEffect(() => {
+    void loadItems()
+  }, [loadItems])
+
+  useEffect(() => {
+    if (open) void loadItems()
+  }, [open, loadItems])
+
+  return (
+    <>
+      <button
+        type="button"
+        onClick={() => setOpen(true)}
+        aria-label={zh(`待验收 ${total} 部作品`, `Quality review: ${total} works`)}
+        className="inline-flex min-h-8 items-center gap-2 rounded-md border border-orange-300 bg-orange-50 px-3 text-xs font-semibold text-orange-900 transition hover:border-orange-400 hover:bg-orange-100 active:scale-[0.96]"
+        title={zh(
+          '查看文件已落盘、但尚未通过人工质量验收的作品',
+          'View downloaded works awaiting human quality review'
+        )}
+      >
+        {zh('待验收', 'Quality review')}
+        <span className="min-w-5 rounded-md bg-orange-700 px-1.5 py-0.5 text-center text-[10px] font-bold tabular-nums text-white">
+          {total}
+        </span>
+      </button>
+      {open ? (
+        <AppModal
+          open
+          onClose={() => setOpen(false)}
+          ariaLabel={zh('待质量验收作品', 'Works awaiting quality review')}
+          contentClassName="max-h-[86vh] w-[min(900px,calc(100vw-2rem))] overflow-hidden rounded-2xl bg-white shadow-2xl"
+        >
+          <div className="flex max-h-[86vh] flex-col">
+            <header className="flex items-start justify-between gap-3 border-b border-slate-200 px-5 py-4">
+              <div>
+                <h2 className="text-lg font-semibold text-slate-950">
+                  {zh('待质量验收', 'Quality review queue')}
+                </h2>
+                <p className="mt-1 text-xs leading-5 text-slate-500">
+                  {zh(
+                    '这些作品已经扫到真实文件，但还不是正式入库。打开详情核验磁链质量。',
+                    'These works have physical files but are not formal imports yet. Open a detail view to verify magnet quality.'
+                  )}
+                </p>
+              </div>
+              <button
+                type="button"
+                onClick={() => setOpen(false)}
+                className="rounded-lg px-2 py-1 text-sm text-slate-500 hover:bg-slate-100"
+              >
+                {zh('关闭', 'Close')}
+              </button>
+            </header>
+            <div className="min-h-0 flex-1 overflow-y-auto p-5">
+              {loading ? (
+                <div className="py-10 text-center text-sm text-slate-500">
+                  {zh('加载中…', 'Loading...')}
+                </div>
+              ) : null}
+              {!loading && items.length === 0 ? (
+                <div className="rounded-xl border border-dashed border-slate-200 px-4 py-10 text-center text-sm text-slate-500">
+                  {zh('当前没有悬挂待验收的作品。', 'No works are currently awaiting review.')}
+                </div>
+              ) : null}
+              {!loading && items.length > 0 ? (
+                <JavGrid
+                  {...gridProps}
+                  items={items}
+                  emptyMessage={zh('暂无待验收作品', 'No works awaiting review')}
+                />
+              ) : null}
+              {error ? (
+                <div
+                  role="alert"
+                  className="mt-3 rounded-lg border border-rose-200 bg-rose-50 px-3 py-2 text-xs text-rose-700"
+                >
+                  {error}
+                </div>
+              ) : null}
+            </div>
+          </div>
+        </AppModal>
+      ) : null}
+    </>
   )
 }
 
@@ -158,6 +642,7 @@ export default function JavView({
   javIdolTagMaxRows,
   javTagMaxRows,
   javViewPreset = JAV_VIEW_PRESET_DETAILED,
+  directoryIds = [],
   onJavViewPresetChange,
   onPlay,
   onIdolClick,
@@ -204,6 +689,39 @@ export default function JavView({
         ? zh('暂无已入库作品', 'No imported works')
         : zh('暂无 JAV 数据', 'No JAV data')
 
+  const workflowGridProps = {
+    columns: Math.min(Number(javGridColumns) || 4, 3),
+    titleMaxRows: javTitleMaxRows,
+    idolTagMaxRows: javIdolTagMaxRows,
+    tagMaxRows: javTagMaxRows,
+    buildJavUrl,
+    onPlay,
+    onIdolClick,
+    onOpenFavorites,
+    onOpenJavFavorites,
+    onOpenStudioFavorites,
+    onOpenSeriesFavorites,
+    onPrefixClick,
+    onStudioClick,
+    onSeriesClick,
+    onTagClick,
+    onOpenFile,
+    openFileLabel,
+    onRevealFile,
+    onOpenScreenshots,
+    onManageVideoPlay,
+    onManageVideoPlayAtTime,
+    onManageVideoCoverChanged,
+    onManageVideoOpenFile,
+    onManageVideoRevealFile,
+    onManageVideoOpenTagPicker,
+    onManageVideoOpenScreenshots,
+    onManageVideoOpenScrapeSettings,
+    onManageVideoRename,
+    onManageVideoDelete,
+    onManageVideoTagClick,
+  }
+
   const isOptionActive = (option) => {
     return findSortOption([option], effectiveSort)
   }
@@ -244,6 +762,12 @@ export default function JavView({
             />
           </div>
           <div className="flex flex-wrap items-center justify-end gap-3">
+            <JavMagnetQueueButton />
+            <JavQualityReviewQueueButton
+              directoryIds={directoryIds}
+              gridProps={workflowGridProps}
+            />
+            <JavImportHistoryButton directoryIds={directoryIds} gridProps={workflowGridProps} />
             <JavViewPresetSwitch value={javViewPreset} onChange={changeJavViewPreset} />
             <div className="pagination-sort-group flex items-center">
               <span className="pagination-sort-label text-gray-500">{zh('排序', 'Sort')}</span>
@@ -275,7 +799,7 @@ export default function JavView({
                       closeSortMenu()
                       setJavTempSort?.('')
                     }}
-                    className="w-full border-b border-slate-100 px-3 py-2 text-left text-xs font-medium text-blue-700 hover:bg-blue-50"
+                    className="w-full border-b border-slate-100 px-3 py-2 text-left text-xs font-medium text-stone-700 hover:bg-stone-50"
                   >
                     {zh('恢复自动排序', 'Restore automatic sort')}
                   </button>
@@ -287,7 +811,7 @@ export default function JavView({
                     <div
                       key={option.base}
                       className={`pagination-sort-row ${
-                        active ? 'bg-blue-50 text-blue-700' : 'text-gray-700 hover:bg-gray-50'
+                        active ? 'bg-stone-100 text-stone-800' : 'text-gray-700 hover:bg-gray-50'
                       }`}
                     >
                       <button

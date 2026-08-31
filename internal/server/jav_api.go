@@ -225,6 +225,26 @@ func getJavJavDBURL(c *gin.Context) {
 	c.JSON(http.StatusOK, gin.H{"url": javdbURL})
 }
 
+func getJavItem(c *gin.Context) {
+	id, err := strconv.ParseInt(strings.TrimSpace(c.Param("id")), 10, 64)
+	if err != nil || id <= 0 {
+		respondLocalizedError(c, http.StatusBadRequest, "JAV 作品 ID 无效", "Invalid JAV item ID")
+		return
+	}
+	item, err := dbpkg.GetJav(c.Request.Context(), id, parseDirectoryIDs(c.Query("directory_ids")))
+	if err != nil {
+		if errors.Is(err, gorm.ErrRecordNotFound) {
+			respondLocalizedError(c, http.StatusNotFound, "JAV 作品不存在", "JAV item was not found")
+			return
+		}
+		logging.Error("get JAV item id=%d: %v", id, err)
+		respondLocalizedError(c, http.StatusInternalServerError, "读取 JAV 作品失败", "Failed to load JAV item")
+		return
+	}
+	c.Header("Cache-Control", "no-store")
+	c.JSON(http.StatusOK, item)
+}
+
 func redirectJavAvsox(c *gin.Context) {
 	code := strings.TrimSpace(c.Query("code"))
 	if code == "" {
@@ -295,6 +315,120 @@ func resolveJavSampleImages(c *gin.Context) {
 		return
 	}
 	c.JSON(http.StatusOK, gin.H{"sample_images": stored})
+}
+
+const maxJavSampleImageProxyBytes = 12 << 20
+
+// proxyJavSampleImage serves a previously persisted provider image through
+// JavBoss's origin. Browsers connected through a remote VS Code port forward
+// often cannot reach the provider CDN directly (and some CDNs reject the
+// browser's referrer), even though the server can. The image URL is looked up
+// by canonical work and index rather than accepted from a query parameter so
+// this endpoint cannot be turned into an open proxy.
+func proxyJavSampleImage(c *gin.Context) {
+	id, err := strconv.ParseInt(strings.TrimSpace(c.Param("id")), 10, 64)
+	if err != nil || id <= 0 {
+		respondLocalizedError(c, http.StatusBadRequest, "JAV 作品 ID 无效", "Invalid JAV item ID")
+		return
+	}
+	index, err := strconv.Atoi(strings.TrimSpace(c.Param("index")))
+	if err != nil || index < 0 {
+		respondLocalizedError(c, http.StatusBadRequest, "样品图索引无效", "Invalid sample image index")
+		return
+	}
+	item, err := dbpkg.GetJav(c.Request.Context(), id, parseDirectoryIDs(c.Query("directory_ids")))
+	if err != nil {
+		if errors.Is(err, gorm.ErrRecordNotFound) {
+			respondLocalizedError(c, http.StatusNotFound, "JAV 作品不存在", "JAV item was not found")
+			return
+		}
+		logging.Error("get JAV sample image item id=%d: %v", id, err)
+		respondLocalizedError(c, http.StatusInternalServerError, "读取样品图失败", "Failed to load sample image")
+		return
+	}
+	if index >= len(item.SampleImages) || item.SampleImages.IsNotFound() {
+		respondLocalizedError(c, http.StatusNotFound, "样品图不存在", "Sample image was not found")
+		return
+	}
+	image := item.SampleImages[index]
+	imageURL := strings.TrimSpace(image.ThumbnailURL)
+	if strings.EqualFold(strings.TrimSpace(c.Query("variant")), "detail") {
+		imageURL = strings.TrimSpace(image.DetailURL)
+	}
+	if imageURL == "" || imageURL == models.JavSampleImageNotFound {
+		respondLocalizedError(c, http.StatusNotFound, "样品图不存在", "Sample image was not found")
+		return
+	}
+	parsed, err := url.Parse(imageURL)
+	if err != nil || !isAllowedJavSampleImageHost(parsed) {
+		respondLocalizedError(c, http.StatusBadGateway, "样品图来源不受支持", "Sample image source is not supported")
+		return
+	}
+
+	client := util.NewHTTPClient(15 * time.Second)
+	client.CheckRedirect = func(req *http.Request, _ []*http.Request) error {
+		if req == nil || !isAllowedJavSampleImageHost(req.URL) {
+			return http.ErrUseLastResponse
+		}
+		return nil
+	}
+	req, err := http.NewRequestWithContext(c.Request.Context(), http.MethodGet, imageURL, nil)
+	if err != nil {
+		respondLocalizedError(c, http.StatusBadGateway, "样品图地址无效", "Invalid sample image URL")
+		return
+	}
+	req.Header.Set("User-Agent", "Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/120.0.0.0 Safari/537.36")
+	req.Header.Set("Accept", "image/avif,image/webp,image/apng,image/*,*/*;q=0.8")
+	if host := strings.ToLower(parsed.Hostname()); host == "pics.dmm.co.jp" || strings.HasSuffix(host, ".dmm.co.jp") {
+		req.Header.Set("Referer", "https://www.dmm.co.jp/")
+	}
+	resp, err := client.Do(req)
+	if err != nil {
+		logging.Error("proxy JAV sample image id=%d index=%d: %v", id, index, err)
+		respondLocalizedError(c, http.StatusBadGateway, "样品图暂时无法加载", "Sample image is temporarily unavailable")
+		return
+	}
+	defer resp.Body.Close()
+	if resp.StatusCode < http.StatusOK || resp.StatusCode >= http.StatusMultipleChoices {
+		respondLocalizedError(c, http.StatusBadGateway, "样品图来源返回异常", "Sample image provider returned an error")
+		return
+	}
+	if resp.ContentLength > maxJavSampleImageProxyBytes {
+		respondLocalizedError(c, http.StatusBadGateway, "样品图文件过大", "Sample image is too large")
+		return
+	}
+	data, err := io.ReadAll(io.LimitReader(resp.Body, maxJavSampleImageProxyBytes+1))
+	if err != nil {
+		respondLocalizedError(c, http.StatusBadGateway, "读取样品图失败", "Failed to read sample image")
+		return
+	}
+	if len(data) == 0 || len(data) > maxJavSampleImageProxyBytes {
+		respondLocalizedError(c, http.StatusBadGateway, "样品图内容无效", "Sample image content is invalid")
+		return
+	}
+	contentType := http.DetectContentType(data)
+	if !strings.HasPrefix(strings.ToLower(contentType), "image/") {
+		respondLocalizedError(c, http.StatusBadGateway, "样品图内容无效", "Sample image content is invalid")
+		return
+	}
+	c.Header("Cache-Control", "private, max-age=3600")
+	c.Data(http.StatusOK, contentType, data)
+}
+
+func isAllowedJavSampleImageHost(parsed *url.URL) bool {
+	if parsed == nil || (parsed.Scheme != "http" && parsed.Scheme != "https") {
+		return false
+	}
+	host := strings.ToLower(strings.TrimSuffix(parsed.Hostname(), "."))
+	if host == "" {
+		return false
+	}
+	for _, allowed := range []string{"jdbstatic.com", "dmm.co.jp", "mgstage.com"} {
+		if host == allowed || strings.HasSuffix(host, "."+allowed) {
+			return true
+		}
+	}
+	return false
 }
 
 type javSampleImageLookupFunc func(string, jav.Provider) (*jav.JavInfo, error)

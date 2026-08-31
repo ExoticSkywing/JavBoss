@@ -639,6 +639,25 @@ export function getResolvedJavSampleImages(id, { directoryIds = [] } = {}) {
   return javSampleImagesResolved.get(requestKey) || null
 }
 
+// Provider sample images are served by JavBoss itself. This keeps image loads
+// same-origin for remote development/port-forwarded browsers and lets the
+// backend apply the provider's required headers safely.
+export function javSampleImageURL(id, index, { variant = 'thumbnail', directoryIds = [] } = {}) {
+  const javId = Number(id)
+  const imageIndex = Number(index)
+  if (!Number.isFinite(javId) || javId <= 0 || !Number.isInteger(imageIndex) || imageIndex < 0) {
+    return ''
+  }
+  const params = new URLSearchParams()
+  if (variant === 'detail') params.set('variant', 'detail')
+  const normalizedDirectoryIds = directoryIds
+    .map((directoryId) => Number(directoryId))
+    .filter((directoryId) => Number.isFinite(directoryId) && directoryId > 0)
+  if (normalizedDirectoryIds.length) params.set('directory_ids', normalizedDirectoryIds.join(','))
+  const query = params.toString()
+  return `/jav/items/${encodeURIComponent(javId)}/sample-images/${imageIndex}${query ? `?${query}` : ''}`
+}
+
 export function resolveJavSampleImages(id, { directoryIds = [] } = {}) {
   const { javId, normalizedDirectoryIds, requestKey } = javSampleImagesRequest(id, directoryIds)
   if (!Number.isFinite(javId) || javId <= 0) return Promise.resolve([])
@@ -1341,6 +1360,89 @@ export async function fetchJavJavDBURL({ code = '' } = {}) {
   }
   const data = await res.json()
   return data?.url || ''
+}
+
+export async function fetchJavItem(id, { directoryIds = [] } = {}) {
+  const params = new URLSearchParams()
+  if (directoryIds.length) params.set('directory_ids', directoryIds.join(','))
+  const query = params.toString()
+  const res = await apiFetch(`/jav/items/${encodeURIComponent(id)}${query ? `?${query}` : ''}`)
+  if (!res.ok) throw await apiError(res)
+  return parseJSONResponse(res)
+}
+
+export async function collectJavMagnets(id, { directoryIds = [] } = {}) {
+  const params = new URLSearchParams()
+  if (directoryIds.length) params.set('directory_ids', directoryIds.join(','))
+  const query = params.toString()
+  const res = await apiFetch(
+    `/jav/items/${encodeURIComponent(id)}/magnets/collect${query ? `?${query}` : ''}`,
+    { method: 'POST' }
+  )
+  if (!res.ok) throw await apiError(res)
+  return parseJSONResponse(res)
+}
+
+export async function selectJavMagnet(id, candidateId) {
+  const res = await apiFetch(`/jav/items/${encodeURIComponent(id)}/magnet-selection`, {
+    method: 'PUT',
+    headers: jsonHeaders,
+    body: JSON.stringify({ candidate_id: candidateId }),
+  })
+  if (!res.ok) throw await apiError(res)
+  return parseJSONResponse(res)
+}
+
+export async function fetchJavMagnetQueue({ limit = 50, offset = 0 } = {}) {
+  const params = new URLSearchParams({ page_size: String(limit), offset: String(offset) })
+  const res = await apiFetch(`/jav/magnet-queue?${params.toString()}`, { cache: 'no-store' })
+  if (!res.ok) throw await apiError(res)
+  return parseJSONResponse(res)
+}
+
+export async function fetchJavQualityReviewQueue({
+  limit = 50,
+  offset = 0,
+  directoryIds = [],
+} = {}) {
+  const params = new URLSearchParams({ page_size: String(limit), offset: String(offset) })
+  if (directoryIds.length) params.set('directory_ids', directoryIds.join(','))
+  const res = await apiFetch(`/jav/quality-review-queue?${params.toString()}`, {
+    cache: 'no-store',
+  })
+  if (!res.ok) throw await apiError(res)
+  return parseJSONResponse(res)
+}
+
+export async function fetchJavImportDays({ limit = 31, offset = 0, directoryIds = [] } = {}) {
+  const params = new URLSearchParams({ page_size: String(limit), offset: String(offset) })
+  if (directoryIds.length) params.set('directory_ids', directoryIds.join(','))
+  const res = await apiFetch(`/jav/import-days?${params.toString()}`, { cache: 'no-store' })
+  if (!res.ok) throw await apiError(res)
+  return parseJSONResponse(res)
+}
+
+export async function submitJavDownloadBatch(javIds = []) {
+  const res = await apiFetch('/jav/magnet-queue/submit', {
+    method: 'POST',
+    headers: jsonHeaders,
+    body: JSON.stringify({ jav_ids: javIds }),
+  })
+  if (!res.ok) throw await apiError(res)
+  return parseJSONResponse(res)
+}
+
+export async function reviewJavMagnet(id, candidateId, input = {}) {
+  const res = await apiFetch(
+    `/jav/items/${encodeURIComponent(id)}/magnets/${encodeURIComponent(candidateId)}/review`,
+    {
+      method: 'POST',
+      headers: jsonHeaders,
+      body: JSON.stringify(input),
+    }
+  )
+  if (!res.ok) throw await apiError(res)
+  return parseJSONResponse(res)
 }
 
 async function resolveSingleJavInput(number) {

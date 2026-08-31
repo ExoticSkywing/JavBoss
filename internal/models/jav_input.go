@@ -11,9 +11,13 @@ const (
 	JavInputStatusNote             = "note"
 	JavInputStatusCleared          = "cleared"
 
-	JavAcquisitionStageMetadataPending  = "metadata_pending"
-	JavAcquisitionStageMagnetCollecting = "magnet_collecting"
-	JavAcquisitionStageImported         = "imported"
+	JavAcquisitionStageMetadataPending   = "metadata_pending"
+	JavAcquisitionStageMagnetCollecting  = "magnet_collecting"
+	JavAcquisitionStageMagnetReview      = "magnet_review"
+	JavAcquisitionStageReadyToDownload   = "ready_to_download"
+	JavAcquisitionStageDownloadSubmitted = "download_submitted"
+	JavAcquisitionStageQualityReview     = "quality_review"
+	JavAcquisitionStageImported          = "imported"
 )
 
 // JavInputBatch is a complete snapshot of one single or bulk raw-code input.

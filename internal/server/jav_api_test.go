@@ -6,6 +6,7 @@ import (
 	"errors"
 	"net/http"
 	"net/http/httptest"
+	"net/url"
 	"path/filepath"
 	"reflect"
 	"strings"
@@ -401,6 +402,32 @@ func TestValidateJavSampleImageDetailURL(t *testing.T) {
 			}
 			if got != test.want {
 				t.Fatalf("valid = %v, want %v", got, test.want)
+			}
+		})
+	}
+}
+
+func TestAllowedJavSampleImageHost(t *testing.T) {
+	tests := []struct {
+		name string
+		raw  string
+		want bool
+	}{
+		{name: "JavDB CDN", raw: "https://c0.jdbstatic.com/samples/a.jpg", want: true},
+		{name: "DMM CDN", raw: "https://pics.dmm.co.jp/mono/movie/a.jpg", want: true},
+		{name: "subdomain of allowed CDN", raw: "https://img.mgstage.com/a.jpg", want: true},
+		{name: "lookalike domain", raw: "https://jdbstatic.com.evil.example/a.jpg", want: false},
+		{name: "localhost", raw: "http://127.0.0.1/a.jpg", want: false},
+		{name: "non-http scheme", raw: "file:///etc/passwd", want: false},
+	}
+	for _, test := range tests {
+		t.Run(test.name, func(t *testing.T) {
+			parsed, err := url.Parse(test.raw)
+			if err != nil {
+				t.Fatalf("parse URL: %v", err)
+			}
+			if got := isAllowedJavSampleImageHost(parsed); got != test.want {
+				t.Fatalf("allowed = %v, want %v for %s", got, test.want, test.raw)
 			}
 		})
 	}

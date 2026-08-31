@@ -49,6 +49,52 @@ import { directoryQueryIds, useStore, videoSelectionKey } from '@/store'
 import { zh } from '@/utils/i18n'
 import { getErrorMessage } from '@/utils/errors'
 
+const acquisitionStageIndicatorTone = {
+  metadata_pending: {
+    border: 'border-slate-300',
+    dot: 'bg-slate-400',
+    ring: 'ring-slate-100',
+  },
+  magnet_collecting: {
+    border: 'border-sky-500',
+    dot: 'bg-sky-500',
+    ring: 'ring-sky-100',
+  },
+  magnet_review: {
+    border: 'border-amber-500',
+    dot: 'bg-amber-500',
+    ring: 'ring-amber-100',
+  },
+  ready_to_download: {
+    border: 'border-cyan-600',
+    dot: 'bg-cyan-600',
+    ring: 'ring-cyan-100',
+  },
+  download_submitted: {
+    border: 'border-blue-600',
+    dot: 'bg-blue-600',
+    ring: 'ring-blue-100',
+  },
+  quality_review: {
+    border: 'border-rose-500',
+    dot: 'bg-rose-500',
+    ring: 'ring-rose-100',
+  },
+  imported: {
+    border: 'border-emerald-600',
+    dot: 'bg-emerald-600',
+    ring: 'ring-emerald-100',
+  },
+}
+
+const defaultAcquisitionStageIndicatorTone = {
+  border: 'border-stone-300',
+  dot: 'bg-stone-400',
+  ring: 'ring-stone-100',
+}
+
+const acquisitionAttentionStages = new Set(['magnet_review', 'ready_to_download', 'quality_review'])
+
 function DurationIcon() {
   return (
     <svg viewBox="0 0 20 20" aria-hidden="true" className="h-4 w-4 shrink-0">
@@ -2439,7 +2485,12 @@ function JavCard({
       magnet_review: zh('待筛选磁链', 'Magnet review'),
       ready_to_download: zh('等待提交下载', 'Ready to download'),
       download_submitted: zh('已提交下载', 'Download submitted'),
+      quality_review: zh('待质量验收', 'Quality review'),
+      imported: zh('已确认入库', 'Accepted import'),
     }[acquisitionStage] || zh('等待处理', 'Awaiting processing')
+  const acquisitionIndicatorTone =
+    acquisitionStageIndicatorTone[acquisitionStage] || defaultAcquisitionStageIndicatorTone
+  const acquisitionNeedsAttention = acquisitionAttentionStages.has(acquisitionStage)
   const encodedCode = code ? encodeURIComponent(code) : ''
   const javdbSearchURL = encodedCode ? `https://javdb.com/search?q=${encodedCode}&f=all` : ''
   const favoriteCount = Number(item?.favorite_count) || 0
@@ -2645,6 +2696,19 @@ function JavCard({
       })
     }
     setCustomTagEditorOpen(false)
+  }
+
+  const handleAcquisitionUpdated = (updated) => {
+    const javID = Number(item?.id)
+    if (!Number.isFinite(javID) || javID <= 0 || !updated) return
+    useStore.setState((state) => {
+      if (!Array.isArray(state.javItems)) return {}
+      return {
+        javItems: state.javItems.map((current) =>
+          Number(current?.id) === javID ? { ...current, ...updated } : current
+        ),
+      }
+    })
   }
 
   const canPlay = Boolean(playableVideo?.id)
@@ -3190,17 +3254,31 @@ function JavCard({
           />
         </div>
         <div className="jav-card-detailed-content flex flex-1 flex-col gap-2 p-3">
-          {isPending ? (
-            <div
-              className="flex flex-wrap items-center gap-2"
-              aria-label={zh('库存状态', 'Inventory state')}
+          <div
+            className="flex flex-wrap items-center gap-2"
+            aria-label={zh('库存与流程状态', 'Inventory and workflow state')}
+          >
+            <span
+              className={`inline-flex min-h-6 items-center rounded-full px-2.5 text-xs font-bold ${
+                isPending ? 'bg-amber-100 text-amber-800' : 'bg-emerald-100 text-emerald-800'
+              }`}
             >
-              <span className="inline-flex min-h-6 items-center rounded-full bg-amber-100 px-2.5 text-xs font-bold text-amber-800">
-                {zh('未入库', 'Pending')}
+              {isPending ? zh('未入库', 'Pending') : zh('已入库文件', 'File present')}
+            </span>
+            <span
+              className={`inline-flex min-w-0 max-w-full items-center gap-1.5 border-s-2 py-0.5 pe-1 ps-2 text-[13px] leading-5 ${acquisitionIndicatorTone.border} ${acquisitionNeedsAttention ? 'text-stone-800' : 'text-stone-600'}`}
+            >
+              <span
+                aria-hidden="true"
+                className={`h-2 w-2 shrink-0 rounded-full ${acquisitionIndicatorTone.dot} ${acquisitionNeedsAttention ? `ring-2 ${acquisitionIndicatorTone.ring}` : ''}`}
+              />
+              <span
+                className={`min-w-0 truncate ${acquisitionNeedsAttention ? 'font-semibold' : 'font-medium'}`}
+              >
+                {acquisitionStageLabel}
               </span>
-              <span className="text-xs font-medium text-slate-500">{acquisitionStageLabel}</span>
-            </div>
-          ) : null}
+            </span>
+          </div>
           <div className="text-sm leading-tight" title={titleText} style={titleClampStyle}>
             {codeText ? <span className="font-semibold text-gray-800">{codeText}</span> : null}
             {codeText ? ' ' : null}
@@ -3561,6 +3639,7 @@ function JavCard({
           onVideoRename={onManageVideoRename}
           onVideoDelete={onManageVideoDelete}
           onVideoTagClick={onManageVideoTagClick}
+          onAcquisitionUpdated={handleAcquisitionUpdated}
         />
       ) : null}
     </>

@@ -103,6 +103,10 @@ func ScanJavMetadata(ctx context.Context) error {
 	if err := scanPendingJavDBIdolIdentities(ctx); err != nil {
 		return err
 	}
+	// Metadata completion moves works into magnet_collecting. Wake the
+	// independent collector immediately so users do not have to open a detail
+	// page and press “获取磁链” just to start the next stage.
+	RequestJavMagnetScan()
 	return nil
 }
 

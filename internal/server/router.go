@@ -20,6 +20,7 @@ func NewRouter(staticDir string, auth *AuthService) *gin.Engine {
 	router.Use(ginLogger(), gin.Recovery())
 	router.GET("/healthz", handleHealth)
 	registerAuthRoutes(router, auth)
+	registerJavDownloadCallbackRoutes(router)
 	protected := router.Group("/")
 	protected.Use(auth.requireAuth())
 	registerProtectedAuthRoutes(protected, auth)

@@ -28,6 +28,26 @@ func TestJavSchemaOmitsFrontendEnglishMetadataColumns(t *testing.T) {
 	assertTableColumns(t, db, "jav_idol_alias", []string{
 		"id", "jav_idol_id", "alias", "created_at",
 	})
+	assertTableColumns(t, db, "jav_magnet_candidate", []string{
+		"id", "jav_id", "info_hash", "uri", "name", "size_mi_b", "hd", "cn_sub", "files",
+		"source_created_at", "first_seen_at", "last_seen_at", "review_status", "quality_clear",
+		"confirmed1080_p", "has_intro_ad", "has_watermark", "has_marquee", "is_uncensored",
+		"review_reasons", "review_notes", "reviewed_at", "created_at", "updated_at",
+	})
+	assertTableColumns(t, db, "jav_magnet_selection", []string{
+		"jav_id", "candidate_id", "selected_at", "updated_at",
+	})
+	assertTableColumns(t, db, "jav_download_batch", []string{
+		"id", "status", "external_batch_id", "error", "created_at", "submitted_at", "updated_at",
+	})
+	assertTableColumns(t, db, "jav_download_attempt", []string{
+		"id", "batch_id", "jav_id", "candidate_id", "idempotency_key", "external_task_id", "status",
+		"error", "created_at", "submitted_at", "completed_at",
+	})
+	assertTableColumns(t, db, "jav_quality_acceptance", []string{
+		"id", "jav_id", "candidate_id", "attempt_id", "video_id", "location_id", "accepted_at",
+		"notes", "created_at", "updated_at",
+	})
 }
 
 func assertTableColumns(t *testing.T, db *gorm.DB, table string, want []string) {

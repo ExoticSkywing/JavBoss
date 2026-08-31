@@ -231,6 +231,7 @@ function JavListRoute({
   activeJavLoading,
   alternatePlayerLabel,
   buildJavUrl,
+  directoryIds,
   hasMore,
   javResolvedSort,
   javSortSource,
@@ -287,6 +288,7 @@ function JavListRoute({
       javHasPrev={javHasPrev}
       javHasNext={javHasNext}
       javLoading={activeJavLoading}
+      directoryIds={directoryIds}
       javInventory={javInventory}
       javRandomMode={javRandomMode}
       javResolvedSort={javResolvedSort}

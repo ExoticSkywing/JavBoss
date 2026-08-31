@@ -12,10 +12,14 @@
 连字符和下划线等表现差异不能创建第二部作品。数据库唯一约束是最终并发防线，前端去重、
 批次去重和进程锁都不能代替它。
 
-真实文件也不是另一种作品。作品是否已入库由有效文件位置实时派生：
+真实文件也不是另一种作品。物理库存状态由有效文件位置实时派生：
 
 - `pending`：没有有效的 `video_location`；
 - `imported`：至少存在一个有效的 `video_location`。
+
+`imported` 只说明扫盘已经看到文件，不等于人工确认质量。云下载落盘后，作品会同时显示
+`inventory_state=imported` 和 `acquisition_stage=quality_review`；只有质量验收通过才是业务意义上的
+“正式入库”。
 
 不得保存一个可与真实文件关系漂移的 `is_imported` 布尔值。
 
@@ -50,15 +54,17 @@
   -> ready_to_download
   -> download_submitted
   -> 扫盘关联真实文件
-  -> imported
+  -> quality_review（云下载文件）
+  -> imported（质量通过）
 ```
 
-第一阶段可以只持久化当前已经实现的最小阶段；后续阶段只能在同一个 `jav_id` 下扩展，不能再建立
-一套候选作品实体。115 下载提交由未来服务负责，本项目当前只预留边界。
+所有阶段都绑定同一个 `jav_id`，不能再建立一套候选作品实体。115 下载提交由外部服务负责，
+JavBoss 只保存批次、幂等键和回调状态。
 
-当前实际持久化 `metadata_pending / magnet_collecting / imported`。若最后一个有效文件位置被隐藏、
-删除、替换或解除关联，库存立即回到 `pending`；已有元数据的作品回到 `magnet_collecting`，裸番号
-回到 `metadata_pending`。仍有同一文件镜像位置时保持 `imported`，目录暂时离线不视为作品出库。
+当前实际持久化上述全部阶段。若最后一个有效文件位置被隐藏、删除、替换或解除关联，库存立即回到
+`pending`；已有元数据的作品回到 `magnet_collecting`，裸番号回到 `metadata_pending`。仍有同一文件镜像
+位置时保持 `imported`，目录暂时离线不视为作品出库。`jav_quality_acceptance` 是正式验收事实，按
+`accepted_at` 派生每日入库记录；没有验收作品的日期不会产生记录。
 
 ## 提前刮削与扫盘转正
 
@@ -126,6 +132,75 @@
 当前质量目标以约 5–10 GiB、肉眼高清 1080P 为首要条件；无片头广告、无水印/跑马灯为次要条件。
 有码/无码的优先级描述目前存在冲突，因此第一阶段只记录客观状态，不硬编码排序。积累足够人工
 标注后，自动评分必须基于这些可解释事实训练和校准，人工仍可覆盖最终选择。
+
+详情页的“保存选择”只写入 `jav_magnet_selection`，不会发送下载；单个发送和批量发送都创建
+`jav_download_batch`，每个作品对应一个带唯一幂等键的 `jav_download_attempt`。外部云下载服务通过
+`JAVBOSS_CLOUD_DOWNLOAD_URL` 接收批次；未配置该地址时拒绝创建发送批次，已保存选择仍留在待发送队列，
+界面不会冒充已发送。
+已经存在有效物理文件或已经正式验收的作品不能再次发送；活动任务期间不能切换到其它候选。网络超时、
+连接中断或响应无法解析不等于外部服务明确拒绝任务：此时 attempt 记为 `uncertain`，锁定同一候选并继续
+出现在待发送队列。重试复用原 `idempotency_key`，外部服务也必须据此幂等接单。只有外部明确返回失败才
+记为 `failed`。乱序回调只能推动状态前进，不能把已下载、待验收或人工终态倒退。
+可选的 `JAVBOSS_CLOUD_DOWNLOAD_TOKEN` 会作为发送请求的 Bearer Token。外部服务通过
+`PATCH /jav/magnet-queue/attempts/:attempt_id` 回写 `submitted / downloaded / awaiting_quality / failed`
+等状态；该回调不使用浏览器会话，必须携带与 `JAVBOSS_CLOUD_DOWNLOAD_CALLBACK_TOKEN` 一致的
+Bearer Token。发送请求体包含 `batch_id`、`callback_path`，以及每项的 `attempt_id`、`jav_id`、
+`code`、`candidate_id`、`magnet_uri` 和 `idempotency_key`。
+
+下载落盘后，用户在详情页填写结构化质量事实并选择“通过验收并入库”或“标记不合格”。不合格候选
+不会删除：原因、事实和备注会保留在候选历史中；默认将对应最新位置移入系统回收站并隐藏位置，
+然后回到 `magnet_review` 继续选择。文件删除与不合格事实是两个结果：即使用户选择保留文件或移入
+回收站失败，扫盘也不能把已拒绝候选误转成正式入库。存储目录离线时拒绝删除；存在多个有效位置时
+拒绝猜测应删除或验收哪一个。正式验收必须检测到且仅检测到一个有效位置，并且只接受活动 attempt 对应的
+同一 `jav_id` 候选；没有对应下载 attempt 的旧/手工文件不能从此入口冒充云下载质量验收。
+
+陈列馆工具栏把三个动作阶段直接分开：`待发送` 是已保存但尚未确定接单的选择，`待验收` 是扫盘已经确认
+物理文件但尚无人工质量结论的悬挂作品，`入库记录` 只包含正式验收通过的作品。每日记录按
+`jav_quality_acceptance.accepted_at` 汇总，空日期不产生占位记录。
+
+相关持久化表：`jav_magnet_candidate`、`jav_magnet_selection`、`jav_download_batch`、
+`jav_download_attempt`、`jav_quality_acceptance`。主要接口：
+`GET /jav/items/:id`、`POST /jav/items/:id/magnets/collect`、`PUT /jav/items/:id/magnet-selection`、
+`GET /jav/magnet-queue`、`POST /jav/magnet-queue/submit`、`GET /jav/quality-review-queue`、
+`POST /jav/items/:id/magnets/:candidate_id/review` 和 `GET /jav/import-days`。
+
+外部云下载服务接收的请求形状：
+
+```json
+{
+  "batch_id": 42,
+  "callback_path": "/jav/magnet-queue/attempts/{attempt_id}",
+  "items": [
+    {
+      "attempt_id": 101,
+      "jav_id": 7,
+      "code": "DPMX-004",
+      "candidate_id": 19,
+      "magnet_uri": "magnet:?xt=urn:btih:...",
+      "idempotency_key": "jav:7:candidate:19"
+    }
+  ]
+}
+```
+
+服务应返回 JSON；可以只返回批次 ID，也可以逐项返回任务 ID 和初始状态：
+
+```json
+{
+  "external_batch_id": "115-batch-42",
+  "tasks": [
+    {
+      "attempt_id": 101,
+      "external_task_id": "115-task-9001",
+      "status": "submitted"
+    }
+  ]
+}
+```
+
+后续回调 body 为 `{"status":"downloaded","external_task_id":"115-task-9001"}`；允许状态只有
+`submitted`、`downloaded`、`awaiting_quality` 和 `failed`。正式的 `accepted/rejected` 只能由
+JavBoss 人工验收动作产生，外部服务无权代替。
 
 ## 文件唯一性与冲突
 

@@ -166,6 +166,9 @@ func GetJav(ctx context.Context, javID int64, directoryIDs []int64) (*models.Jav
 	if err := attachJavLifecycleStates(ctx, items); err != nil {
 		return nil, err
 	}
+	if err := AttachJavMagnetWorkflow(ctx, &items[0]); err != nil {
+		return nil, err
+	}
 	if err := attachVisibleJavTags(ctx, items); err != nil {
 		return nil, err
 	}
@@ -482,15 +485,37 @@ func attachJavLifecycleStates(ctx context.Context, items []models.Jav) error {
 	for _, row := range acquisitionRows {
 		stageByJavID[row.JavID] = strings.TrimSpace(row.Stage)
 	}
+	qualityReviewIDs := make(map[int64]struct{})
+	var qualityReviewRows []struct {
+		JavID int64 `gorm:"column:jav_id"`
+	}
+	if err := common.DB.WithContext(ctx).
+		Table("jav_download_attempt").
+		Select("DISTINCT jav_id").
+		Where("jav_id IN ?", ids).
+		Where("status IN ?", javDownloadAttemptAwaitingResolutionStatuses()).
+		Find(&qualityReviewRows).Error; err != nil {
+		return fmt.Errorf("load JAV quality review states: %w", err)
+	}
+	for _, row := range qualityReviewRows {
+		qualityReviewIDs[row.JavID] = struct{}{}
+	}
 
 	for i := range items {
+		items[i].AcquisitionStage = stageByJavID[items[i].ID]
 		if _, ok := imported[items[i].ID]; ok {
+			// Inventory is physical presence. A downloaded file can therefore be
+			// physically present while its workflow remains quality_review.
 			items[i].InventoryState = models.JavInventoryImported
-			items[i].AcquisitionStage = models.JavAcquisitionStageImported
+			if _, pendingReview := qualityReviewIDs[items[i].ID]; pendingReview && items[i].AcquisitionStage != models.JavAcquisitionStageImported {
+				items[i].AcquisitionStage = models.JavAcquisitionStageQualityReview
+			}
+			if items[i].AcquisitionStage == "" {
+				items[i].AcquisitionStage = models.JavAcquisitionStageImported
+			}
 			continue
 		}
 		items[i].InventoryState = models.JavInventoryPending
-		items[i].AcquisitionStage = stageByJavID[items[i].ID]
 	}
 	return nil
 }

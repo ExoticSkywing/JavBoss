@@ -43,10 +43,55 @@ func reconcileJavAcquisitionStagesTx(tx *gorm.DB, javIDs []int64) error {
 		Where(activeLocationWhereSQL("vl_reconcile", "d_reconcile"))
 
 	now := time.Now().UTC()
+	// A file created through the cloud-download path is physically present,
+	// but it is not a formal import until quality review passes. Keep that
+	// distinction durable while legacy/manual scan discoveries still become
+	// imported immediately. The latest attempt is authoritative here: a
+	// rejected candidate whose file was intentionally retained (or could not
+	// be moved to trash) must stay in magnet_review, never become a legacy
+	// import merely because the file is still visible to the scanner.
+	qualityPending := tx.Table("jav_download_attempt ja_reconcile").
+		Select("1").
+		Where("ja_reconcile.jav_id = jav_acquisition.jav_id").
+		Where("ja_reconcile.id = (SELECT MAX(ja_latest.id) FROM jav_download_attempt ja_latest WHERE ja_latest.jav_id = jav_acquisition.jav_id)").
+		Where("ja_reconcile.status IN ?", javDownloadAttemptAwaitingResolutionStatuses())
+	formalAcceptance := tx.Table("jav_quality_acceptance qa_reconcile").
+		Select("1").
+		Where("qa_reconcile.jav_id = jav_acquisition.jav_id")
+	latestRejected := tx.Table("jav_download_attempt ja_rejected").
+		Select("1").
+		Where("ja_rejected.jav_id = jav_acquisition.jav_id").
+		Where("ja_rejected.id = (SELECT MAX(ja_rejected_latest.id) FROM jav_download_attempt ja_rejected_latest WHERE ja_rejected_latest.jav_id = jav_acquisition.jav_id)").
+		Where("ja_rejected.status = ?", models.JavDownloadAttemptRejected)
 	if err := tx.Model(&models.JavAcquisition{}).
 		Where("jav_id IN ?", ids).
 		Where("stage <> ?", models.JavAcquisitionStageImported).
 		Where("EXISTS (?)", active).
+		Where("NOT EXISTS (?)", formalAcceptance).
+		Where("EXISTS (?)", qualityPending).
+		Updates(map[string]any{
+			"stage":      models.JavAcquisitionStageQualityReview,
+			"updated_at": now,
+		}).Error; err != nil {
+		return fmt.Errorf("mark downloaded JAV acquisitions awaiting quality review: %w", err)
+	}
+	if err := tx.Model(&models.JavAcquisition{}).
+		Where("jav_id IN ?", ids).
+		Where("stage <> ?", models.JavAcquisitionStageImported).
+		Where("EXISTS (?)", active).
+		Where("NOT EXISTS (?)", formalAcceptance).
+		Where("EXISTS (?)", latestRejected).
+		Updates(map[string]any{
+			"stage":      models.JavAcquisitionStageMagnetReview,
+			"updated_at": now,
+		}).Error; err != nil {
+		return fmt.Errorf("keep rejected JAV acquisitions out of formal imports: %w", err)
+	}
+	if err := tx.Model(&models.JavAcquisition{}).
+		Where("jav_id IN ?", ids).
+		Where("stage <> ?", models.JavAcquisitionStageImported).
+		Where("EXISTS (?)", active).
+		Where("EXISTS (?) OR (NOT EXISTS (?) AND NOT EXISTS (?))", formalAcceptance, qualityPending, latestRejected).
 		Updates(map[string]any{
 			"stage":      models.JavAcquisitionStageImported,
 			"updated_at": now,

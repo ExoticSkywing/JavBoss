@@ -341,7 +341,10 @@ export function IdolCard({
       </div>
       <div className="relative flex flex-1 select-text flex-col gap-2 p-3">
         <div className="min-w-0 pr-11 leading-tight">
-          <div className="min-w-0 truncate text-base font-semibold text-gray-950" title={primaryName}>
+          <div
+            className="min-w-0 truncate text-base font-semibold text-gray-950"
+            title={primaryName}
+          >
             {primaryName}
           </div>
           {secondaryName ? (
