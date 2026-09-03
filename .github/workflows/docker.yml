@@ -12,7 +12,7 @@ on:
         type: boolean
         default: false
       publish_test:
-        description: "Publish to the private javboss-test package"
+        description: "Publish to the private javmoe-test package"
         required: false
         type: boolean
         default: false
@@ -41,9 +41,9 @@ jobs:
           fi
 
           owner="$(echo "${GITHUB_REPOSITORY_OWNER}" | tr '[:upper:]' '[:lower:]')"
-          image_name="javboss"
+          image_name="javmoe"
           if [[ "${{ inputs.publish_test }}" == "true" ]]; then
-            image_name="javboss-test"
+            image_name="javmoe-test"
           fi
           image="ghcr.io/${owner}/${image_name}"
           {

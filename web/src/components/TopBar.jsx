@@ -557,7 +557,7 @@ export default function TopBar({
           className="filter-topbar__brand"
           aria-label={zh('返回当前页面首页', 'Return to current section home')}
         >
-          JavBoss
+          JavMoe
         </button>
         <div className="filter-topbar__controls">
           <form onSubmit={onSubmitSearch} className="filter-search">

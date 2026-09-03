@@ -5,7 +5,7 @@ import { fileURLToPath } from "node:url";
 
 const SCRIPT_DIR = path.dirname(fileURLToPath(import.meta.url));
 const ROOT_DIR = path.dirname(SCRIPT_DIR);
-const REPO = "Solr159/JavBoss";
+const REPO = "ExoticSkywing/JavMoe";
 
 const version = String(process.argv[2] || "").trim();
 if (!/^v[0-9]+\.[0-9]+\.[0-9]+([-.][0-9A-Za-z.-]+)?$/.test(version)) {

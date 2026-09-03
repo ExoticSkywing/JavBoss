@@ -141,13 +141,13 @@ async function relayMetadata(message, sender) {
   const stored = await chrome.storage.session.get(key);
   const relay = stored[key];
   if (!relay)
-    return { ok: false, error: "this page was not opened from JavBoss" };
+    return { ok: false, error: "this page was not opened from JavMoe" };
   const active = await chrome.storage.session.get(
     relaySessionKey(relay.sessionId),
   );
   if (!active[relaySessionKey(relay.sessionId)]) {
     await chrome.storage.session.remove(key);
-    return { ok: false, error: "the JavBoss scrape session has expired" };
+    return { ok: false, error: "the JavMoe scrape session has expired" };
   }
 
   try {
@@ -162,7 +162,7 @@ async function relayMetadata(message, sender) {
     await invalidateRelaySession(relay.sessionId);
     return {
       ok: false,
-      error: "the JavBoss extension bridge is no longer open",
+      error: "the JavMoe extension bridge is no longer open",
     };
   }
   return { ok: true };

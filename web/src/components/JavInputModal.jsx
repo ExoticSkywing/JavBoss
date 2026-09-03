@@ -229,7 +229,7 @@ export default function JavInputModal({ open, onClose, onCompleted, onViewPendin
             <p className="mt-1 max-w-2xl text-sm leading-6 text-slate-500">
               {zh(
                 '直接粘贴原始内容。系统会识别番号、统一格式并与整个作品库合并，只加入从未出现过的作品。',
-                'Paste the source as-is. JavBoss recognizes codes, normalizes them, and merges them into one library, adding only works never seen before.'
+                'Paste the source as-is. JavMoe recognizes codes, normalizes them, and merges them into one library, adding only works never seen before.'
               )}
             </p>
           </div>

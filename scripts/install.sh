@@ -1,7 +1,7 @@
 #!/usr/bin/env bash
 set -euo pipefail
 
-REPO="Solr159/JavBoss"
+REPO="ExoticSkywing/JavMoe"
 VERSION="v2.0.1"
 INSTALL_DIR=""
 TMP_DIR=""

@@ -1,18 +1,18 @@
-<h1 align="center">JavBoss</h1>
+<h1 align="center">JavMoe</h1>
 
 <p align="center">本地 JAV/视频 管理一站式解决方案：自动扫描目录视频生成封面截图，识别 JAV 并抓取元数据，提供强大的视频和 JAV 检索功能，并通过内置 mpv 播放器快速播放。</p>
 
 <p align="center">
-  <a href="https://github.com/Solr159/JavBoss/releases"><img alt="Release" src="https://img.shields.io/github/v/release/Solr159/JavBoss?display_name=tag"></a>
-  <a href="https://github.com/Solr159/JavBoss/stargazers"><img alt="Stars" src="https://img.shields.io/github/stars/Solr159/JavBoss?style=social"></a>
-  <a href="https://github.com/Solr159/JavBoss/releases"><img alt="Platform" src="https://img.shields.io/badge/Platform-Windows%20%7C%20Linux%20%7C%20macOS-1E88E5"></a>
+  <a href="https://github.com/ExoticSkywing/JavMoe/releases"><img alt="Release" src="https://img.shields.io/github/v/release/ExoticSkywing/JavMoe?display_name=tag"></a>
+  <a href="https://github.com/ExoticSkywing/JavMoe/stargazers"><img alt="Stars" src="https://img.shields.io/github/stars/ExoticSkywing/JavMoe?style=social"></a>
+  <a href="https://github.com/ExoticSkywing/JavMoe/releases"><img alt="Platform" src="https://img.shields.io/badge/Platform-Windows%20%7C%20Linux%20%7C%20macOS-1E88E5"></a>
   <a href="https://go.dev/"><img alt="Go" src="https://img.shields.io/badge/Go-1.25%2B-00ADD8?logo=go&logoColor=white"></a>
 </p>
 
 **此项目仍处于快速迭代中，点个 Star ⭐支持一下，不错过任何新版本功能更新，你的支持是作者积极更新的动力😊。**
 
 
-## 为什么选择 JavBoss？
+## 为什么选择 JavMoe？
 
 - 零配置开箱即用，小白也能轻松上手。
 
@@ -44,20 +44,20 @@
 Windows PowerShell：
 
 ```powershell
-irm https://raw.githubusercontent.com/Solr159/JavBoss/main/scripts/install.ps1 | iex
+irm https://raw.githubusercontent.com/ExoticSkywing/JavMoe/main/scripts/install.ps1 | iex
 ```
 
 Linux / macOS：
 
 ```bash
-curl -fsSL https://raw.githubusercontent.com/Solr159/JavBoss/main/scripts/install.sh | bash
+curl -fsSL https://raw.githubusercontent.com/ExoticSkywing/JavMoe/main/scripts/install.sh | bash
 ```
 
-安装脚本会自动下载对应系统的最新版发布包，完成安装后启动 JavBoss。
+安装脚本会自动下载对应系统的最新版发布包，完成安装后启动 JavMoe。
 
 以后每次打开：
 
-- Windows：双击桌面的 `JavBoss` 快捷方式，或在开始菜单中搜索 `JavBoss`。
+- Windows：双击桌面的 `JavMoe` 快捷方式，或在开始菜单中搜索 `JavMoe`。
 - Linux / macOS：打开终端运行 `javboss`。
 
 </dd>
@@ -70,12 +70,12 @@ curl -fsSL https://raw.githubusercontent.com/Solr159/JavBoss/main/scripts/instal
 
 点击下载对应系统的最新版发布包并解压：
 
-- [Windows](https://github.com/Solr159/JavBoss/releases/download/v2.0.1/javboss-v2.0.1-windows-x86_64.zip)
-- [Linux](https://github.com/Solr159/JavBoss/releases/download/v2.0.1/javboss-v2.0.1-linux-x86_64.zip)
-- [macOS-x86_64](https://github.com/Solr159/JavBoss/releases/download/v2.0.1/javboss-v2.0.1-macos-x86_64.zip)（适用于 Intel 芯片的 macOS）
-- [macOS-arm64](https://github.com/Solr159/JavBoss/releases/download/v2.0.1/javboss-v2.0.1-macos-arm64.zip)（适用于 M 芯片的 macOS）
+- [Windows](https://github.com/ExoticSkywing/JavMoe/releases/download/v2.0.1/javboss-v2.0.1-windows-x86_64.zip)
+- [Linux](https://github.com/ExoticSkywing/JavMoe/releases/download/v2.0.1/javboss-v2.0.1-linux-x86_64.zip)
+- [macOS-x86_64](https://github.com/ExoticSkywing/JavMoe/releases/download/v2.0.1/javboss-v2.0.1-macos-x86_64.zip)（适用于 Intel 芯片的 macOS）
+- [macOS-arm64](https://github.com/ExoticSkywing/JavMoe/releases/download/v2.0.1/javboss-v2.0.1-macos-arm64.zip)（适用于 M 芯片的 macOS）
 
-也可以前往 [Releases](https://github.com/Solr159/JavBoss/releases) 页面查看所有版本。
+也可以前往 [Releases](https://github.com/ExoticSkywing/JavMoe/releases) 页面查看所有版本。
 
 下载解压后启动程序：
 
@@ -95,9 +95,9 @@ docker-compose.yaml：
 
 ```yaml
 services:
-  javboss:
-    image: ghcr.io/solr159/javboss:latest
-    container_name: javboss
+  javmoe:
+    image: ghcr.io/exoticskywing/javmoe:latest
+    container_name: javmoe
     ports:
       - "8655:17654"
     extra_hosts:
@@ -133,7 +133,7 @@ Docker 部署下使用浏览器播放视频，不会调用本机 mpv。添加目
 
 **注意事项：**
   - 能够正常访问外网是获取 JAV 数据的前提。
-  - JavBoss 只会读取不会主动修改目录里的任何内容，请放心添加。
+  - JavMoe 只会读取不会主动修改目录里的任何内容，请放心添加。
   - 你可以随时关闭应用程序，下次打开所有任务会自动重启。
   - JAV 模式下的女优详情、厂商、系列等信息会逐渐补齐，请耐心等待（补齐速度：女优≈厂商>系列）。
 
@@ -153,7 +153,7 @@ Docker 部署下使用浏览器播放视频，不会调用本机 mpv。添加目
 
 #### 一键安装用户
 
-先退出正在运行的 JavBoss，然后重新执行一键安装命令即可升级。
+先退出正在运行的 JavMoe，然后重新执行一键安装命令即可升级。
 
 #### 手动下载用户
 
@@ -178,9 +178,9 @@ docker compose up -d
 
 一键安装默认目录：
 
-- Windows：`C:\Users\你的用户名\AppData\Local\JavBoss` （右键点击桌面快捷方式 -> 属性 -> 打开文件所在位置 即可快速定位）
+- Windows：`C:\Users\你的用户名\AppData\Local\JavMoe` （右键点击桌面快捷方式 -> 属性 -> 打开文件所在位置 即可快速定位）
 - Linux：`~/.local/share/javboss`
-- macOS：`~/Applications/JavBoss`
+- macOS：`~/Applications/JavMoe`
 
 之后升级只需要重新执行一键安装命令。
 
@@ -229,7 +229,7 @@ docker compose up -d
 
 ### 1. 🔎 强大的 JAV 刮削和检索
 
-JavBoss 会从文件名中自动提取番号，例如 `IPX-633`、`SSIS-001`、`ipx633_ch` 等常见格式，并将识别出的影片归入 JAV 媒体库。
+JavMoe 会从文件名中自动提取番号，例如 `IPX-633`、`SSIS-001`、`ipx633_ch` 等常见格式，并将识别出的影片归入 JAV 媒体库。
 
 - 内部整合多个数据源（javbus、avmoo、theporndb、javdatabase等等），不同信息自动从最合适的数据源获取。
 - 支持手动刮削视频到 JAV，解决冷门番号无法被自动刮削的问题。
@@ -245,7 +245,7 @@ JavBoss 会从文件名中自动提取番号，例如 `IPX-633`、`SSIS-001`、`
 
 ### 2. 📁 智能目录管理与可迁移数据
 
-添加本地视频目录后，JavBoss 会在后台持续同步目录内容，已经入库的视频可以立即浏览，扫描和资料补全会逐步完成。
+添加本地视频目录后，JavMoe 会在后台持续同步目录内容，已经入库的视频可以立即浏览，扫描和资料补全会逐步完成。
 
 - 支持多个资源目录，适合本机硬盘、NAS 挂载目录、移动硬盘等场景。
 - 自动截图生成视频封面，生成视频指纹落库，通过视频文件名尝试关联 JAV 番号。
@@ -256,7 +256,7 @@ JavBoss 会从文件名中自动提取番号，例如 `IPX-633`、`SSIS-001`、`
 
 ### 3. ⏯️ 内置 mpv 播放器
 
-JavBoss 集成 [mpv](https://github.com/mpv-player/mpv) 播放能力，点击视频即可调用轻量、高性能的本地播放器，适合播放大文件、高码率和各种常见视频格式。
+JavMoe 集成 [mpv](https://github.com/mpv-player/mpv) 播放能力，点击视频即可调用轻量、高性能的本地播放器，适合播放大文件、高码率和各种常见视频格式。
 
 - 通过 mpv 播放原始本地文件，避免浏览器格式兼容性限制。
 - 支持默认音量、窗口尺寸、置顶等播放配置。
@@ -279,18 +279,18 @@ JavBoss 集成 [mpv](https://github.com/mpv-player/mpv) 播放能力，点击视
 
 ## 注意事项
 
-- JavBoss 是本地媒体库管理工具，不提供任何资源分发、获取、共享等功能。
+- JavMoe 是本地媒体库管理工具，不提供任何资源分发、获取、共享等功能。
 - JAV 元数据、封面资料首次抓取依赖外部站点可访问性，请确保网络环境通畅。
 - 发布包根目录会包含 `config.toml` 文件，程序默认启动端口为 8655，如有需要可修改其中 port 的值更换启动端口。
 
 
 ## Client 模式说明
 
-**备注：此模式唯一的用处就是使用本机 MPV 播放器播放局域网 JavBoss 中的视频，没有此项需求的用户可忽略。**
+**备注：此模式唯一的用处就是使用本机 MPV 播放器播放局域网 JavMoe 中的视频，没有此项需求的用户可忽略。**
 
-Client 模式可连接远程 JavBoss Server，浏览远程媒体库并使用本机 MPV 播放视频，同时支持本地播放器设置及截图自动同步。
+Client 模式可连接远程 JavMoe Server，浏览远程媒体库并使用本机 MPV 播放视频，同时支持本地播放器设置及截图自动同步。
 
-使用此模式需要在本地安装 JavBoss，然后在程序目录的 `config.toml` 中设置远程 JavBoss Server 地址，之后正常启动 JavBoss 即可：
+使用此模式需要在本地安装 JavMoe，然后在程序目录的 `config.toml` 中设置远程 JavMoe Server 地址，之后正常启动 JavMoe 即可：
 
 ```toml
 server_url = "http://192.168.1.100:8655"
@@ -314,7 +314,7 @@ server_url = "http://192.168.1.100:8655"
 <br>
 
 - Q: 使用时要一直确保外网访问通畅吗？
-- A: JavBoss 所有的信息读取来源于`\data`目录，已经看到的信息都是永远离线可用的。无法访问外网意味着 JavBoss 无法做后续的 JAV 信息的抓取和更新，已入库的信息不受影响。
+- A: JavMoe 所有的信息读取来源于`\data`目录，已经看到的信息都是永远离线可用的。无法访问外网意味着 JavMoe 无法做后续的 JAV 信息的抓取和更新，已入库的信息不受影响。
 
 <br>
 
@@ -324,12 +324,12 @@ server_url = "http://192.168.1.100:8655"
 <br>
 
 - Q: 视频文件夹在移动硬盘里，没插硬盘时启动会丢数据吗？
-- A: 不会。目录不可用时，JavBoss 会保留已入库数据；移动硬盘再次接入后，数据会恢复显示。
+- A: 不会。目录不可用时，JavMoe 会保留已入库数据；移动硬盘再次接入后，数据会恢复显示。
 
 <br>
 
 - Q: 某个移动硬盘不够大了，文件夹要移动到新的硬盘里怎么办？
-- A: 直接移动文件夹，然后在“目录管理”里点击编辑更新目录路径，不用担心数据丢失，JavBoss 会处理好这一切。
+- A: 直接移动文件夹，然后在“目录管理”里点击编辑更新目录路径，不用担心数据丢失，JavMoe 会处理好这一切。
 
 <br>
 

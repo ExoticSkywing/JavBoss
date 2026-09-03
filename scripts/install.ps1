@@ -1,7 +1,7 @@
 $ErrorActionPreference = "Stop"
 $ProgressPreference = "SilentlyContinue"
 
-$Repo = "Solr159/JavBoss"
+$Repo = "ExoticSkywing/JavMoe"
 $Version = "v2.0.1"
 
 function Test-PrefersChinese {

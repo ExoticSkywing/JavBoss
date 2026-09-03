@@ -984,8 +984,8 @@ function JavMagnetSection({ item, directoryIds, onAcquisitionUpdated }) {
           </div>
           <div>
             {zh(
-              '文件已经移入正式作品库。JavBoss 扫到真实文件并关联本作品后，会自动标记为正式入库。',
-              'The file is in the formal library. JavBoss will mark it imported after the scanner links the real file to this work.'
+              '文件已经移入正式作品库。JavMoe 扫到真实文件并关联本作品后，会自动标记为正式入库。',
+              'The file is in the formal library. JavMoe will mark it imported after the scanner links the real file to this work.'
             )}
           </div>
         </div>

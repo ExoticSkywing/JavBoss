@@ -676,7 +676,7 @@ function invalidateResolvedJavTrailer(id) {
   }
 }
 
-// Provider sample images are served by JavBoss itself. This keeps image loads
+// Provider sample images are served by JavMoe itself. This keeps image loads
 // same-origin for remote development/port-forwarded browsers and lets the
 // backend apply the provider's required headers safely.
 export function javSampleImageURL(id, index, { variant = 'thumbnail', directoryIds = [] } = {}) {

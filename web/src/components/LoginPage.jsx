@@ -30,7 +30,7 @@ export default function LoginPage({ onLogin, checkError = '', onRetry }) {
     <main className="flex min-h-screen items-center justify-center bg-gradient-to-br from-zinc-100 via-white to-zinc-200 px-4">
       <section className="w-full max-w-md rounded-[28px] border border-white/80 bg-white/90 p-8 shadow-2xl shadow-zinc-300/50 backdrop-blur">
         <div className="mb-8 text-center">
-          <div className="text-3xl font-bold tracking-tight text-zinc-900">JavBoss</div>
+          <div className="text-3xl font-bold tracking-tight text-zinc-900">JavMoe</div>
           <p className="mt-2 text-sm text-zinc-500">
             {zh('请输入密码继续', 'Enter your password to continue')}
           </p>
@@ -112,7 +112,7 @@ export default function LoginPage({ onLogin, checkError = '', onRetry }) {
               className="mt-3 rounded-xl border border-amber-200 bg-amber-50 p-4 text-sm text-amber-900"
             >
               <ol className="list-decimal space-y-2 pl-5">
-                <li>{zh('先停止 JavBoss。', 'Stop JavBoss first.')}</li>
+                <li>{zh('先停止 JavMoe。', 'Stop JavMoe first.')}</li>
                 <li>
                   {zh(
                     '找到项目目录，进入 data 文件夹，在里面新建 password_reset.txt。',
@@ -127,8 +127,8 @@ export default function LoginPage({ onLogin, checkError = '', onRetry }) {
                 </li>
                 <li>
                   {zh(
-                    '重新启动 JavBoss；密码会自动重置，旧登录全部失效，重置文件会被自动删除。',
-                    'Restart JavBoss. The password is reset, old sessions are revoked, and the reset file is deleted automatically.'
+                    '重新启动 JavMoe；密码会自动重置，旧登录全部失效，重置文件会被自动删除。',
+                    'Restart JavMoe. The password is reset, old sessions are revoked, and the reset file is deleted automatically.'
                   )}
                 </li>
               </ol>

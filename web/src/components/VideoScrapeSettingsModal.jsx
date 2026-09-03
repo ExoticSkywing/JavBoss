@@ -333,7 +333,7 @@ export default function VideoScrapeSettingsModal({
 
       if (message.type === JAVBUS_MESSAGE_READY) {
         setJavBusExtensionReady(true)
-        setJavBusStatus(zh('JavBoss 助手已连接', 'JavBoss Assistant connected'))
+        setJavBusStatus(zh('JavMoe 助手已连接', 'JavMoe Assistant connected'))
         return
       }
       if (message.type === JAVBUS_MESSAGE_OPEN_STATUS) {
@@ -396,8 +396,8 @@ export default function VideoScrapeSettingsModal({
     const timer = window.setTimeout(() => {
       setJavBusStatus(
         zh(
-          '尚未检测到扩展。请重新加载 browser-extension 目录并刷新 JavBoss。',
-          'Extension not detected. Reload the browser-extension directory, then reload JavBoss.'
+          '尚未检测到扩展。请重新加载 browser-extension 目录并刷新 JavMoe。',
+          'Extension not detected. Reload the browser-extension directory, then reload JavMoe.'
         )
       )
     }, 5000)
@@ -462,8 +462,8 @@ export default function VideoScrapeSettingsModal({
     if (!javBusSessionId || !javBusExtensionReady) {
       setJavBusStatus(
         zh(
-          '未连接到扩展，请确认已重新加载扩展并刷新 JavBoss。',
-          'Extension is not connected. Reload the extension and the JavBoss page.'
+          '未连接到扩展，请确认已重新加载扩展并刷新 JavMoe。',
+          'Extension is not connected. Reload the extension and the JavMoe page.'
         )
       )
       return
@@ -762,8 +762,8 @@ export default function VideoScrapeSettingsModal({
                     </div>
                     <div className="mt-1 text-[11px] leading-4 text-gray-500">
                       {zh(
-                        '安装并启用“JavBoss 助手”扩展后，点击下方按钮打开对应网站，在影片详情页右下角点击“回填到 JavBoss”即可自动填充影片信息',
-                        'Install and enable the “JavBoss 助手” extension, click a button below to open the corresponding site, then click “Fill JavBoss” in the lower-right corner of a movie detail page to fill its metadata automatically.'
+                        '安装并启用“JavMoe 助手”扩展后，点击下方按钮打开对应网站，在影片详情页右下角点击“回填到 JavMoe”即可自动填充影片信息',
+                        'Install and enable the “JavMoe 助手” extension, click a button below to open the corresponding site, then click “Fill JavMoe” in the lower-right corner of a movie detail page to fill its metadata automatically.'
                       )}
                     </div>
                     <div className="mt-2 flex flex-wrap gap-2">
@@ -1064,7 +1064,7 @@ export default function VideoScrapeSettingsModal({
       <iframe
         ref={javBusBridgeRef}
         src={JAVBOSS_EXTENSION_BRIDGE_URL}
-        title={zh('JavBoss 扩展通信桥', 'JavBoss extension bridge')}
+        title={zh('JavMoe 扩展通信桥', 'JavMoe extension bridge')}
         className="hidden"
         tabIndex={-1}
         aria-hidden="true"

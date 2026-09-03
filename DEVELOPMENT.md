@@ -1,4 +1,4 @@
-# JavBoss 开发者说明
+# JavMoe 开发者说明
 
 ## 开发环境依赖
 
@@ -48,7 +48,7 @@ SKIP_RUNTIME_DOWNLOAD=1 ./scripts/cli.sh setup
 
 在本机联调环境中，该命令会自动读取
 `/root/data/docker_data/cd2_magnet_tgbot/.env`，并把下载网关地址、发送密钥和回调密钥传给
-JavBoss；不再需要每次手动执行多条 `export`。如果配置文件放在其它位置，可通过
+JavMoe；不再需要每次手动执行多条 `export`。如果配置文件放在其它位置，可通过
 `JAVBOSS_ENV_FILE=/path/to/.env ./scripts/cli.sh dev both` 指定；设置
 `JAVBOSS_AUTO_ENV=0` 可关闭自动读取。
 

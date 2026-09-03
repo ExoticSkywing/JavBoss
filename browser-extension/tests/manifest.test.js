@@ -29,8 +29,8 @@ function extensionIdFromKey(key) {
     .join("");
 }
 
-test("manifest public key produces the extension ID used by JavBoss", () => {
-  assert.equal(manifest.name, "JavBoss 助手");
+test("manifest public key produces the extension ID used by JavMoe", () => {
+  assert.equal(manifest.name, "JavMoe 助手");
   assert.equal(
     extensionIdFromKey(manifest.key),
     "iikdjhkpjihfkehccfmkpkdmenmbaacn",

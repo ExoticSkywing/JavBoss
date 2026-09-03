@@ -103,5 +103,5 @@ jobs:
             --repo "$GH_REPO" \
             --target "${{ github.sha }}" \
             --draft \
-            --title "JavBoss ${{ inputs.version }}" \
+            --title "JavMoe ${{ inputs.version }}" \
             --generate-notes

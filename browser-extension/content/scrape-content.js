@@ -103,7 +103,7 @@
     });
     if (!response?.ok) {
       window.alert(
-        `无法回填到 JavBoss：${response?.error || "未找到手动刮削窗口"}`,
+        `无法回填到 JavMoe：${response?.error || "未找到手动刮削窗口"}`,
       );
       return;
     }
@@ -112,7 +112,7 @@
       button.textContent = "已回填，可继续浏览";
       window.setTimeout(() => {
         if (relayEnabled && button.isConnected) {
-          button.textContent = "回填到 JavBoss";
+          button.textContent = "回填到 JavMoe";
         }
       }, 1500);
     }
@@ -142,10 +142,10 @@
     const button = document.createElement("button");
     button.id = BUTTON_ID;
     button.type = "button";
-    button.textContent = "回填到 JavBoss";
+    button.textContent = "回填到 JavMoe";
     button.setAttribute(
       "aria-label",
-      `提取当前 ${provider.name} 作品信息并回填到 JavBoss`,
+      `提取当前 ${provider.name} 作品信息并回填到 JavMoe`,
     );
     Object.assign(button.style, {
       border: "1px solid #1d4ed8",

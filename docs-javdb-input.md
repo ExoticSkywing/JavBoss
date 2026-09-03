@@ -23,9 +23,9 @@ JavDB 查询不提交下载、不访问 115/CD2，也不替代目录扫描。番
 - `origin`：`ExoticSkywing/mdcx-diy`（本地 Fork）；
 - `upstream`：`cdlongbow/mdcx-diy`（官方源）。
 
-JavBoss 不依赖完整 MDCx 镜像运行。MDCx 上游的 JavDB 适配逻辑更新时，先在 `mdcx-diy` 中
+JavMoe 不依赖完整 MDCx 镜像运行。MDCx 上游的 JavDB 适配逻辑更新时，先在 `mdcx-diy` 中
 `fetch upstream` 并通过测试，再将必要的协议变化移植到 `internal/jav/javdb_app.go`。不直接自动合并
-到生产服务，避免上游接口变化影响原生 JavBoss。
+到生产服务，避免上游接口变化影响原生 JavMoe。
 
 磁链协议同时对照 [FlanChanXwO/javdb-cli](https://github.com/FlanChanXwO/javdb-cli) 的
 App API 实现；其中已确认 `size` 为 MiB，并提供同一磁链接口、筛选与质量排序语义。后续更新时
@@ -55,5 +55,5 @@ App API 实现；其中已确认 `size` 为 MiB，并提供同一磁链接口、
 不得覆盖人工验收字段，也不得删除历史不合格候选。
 
 样品图像不要求浏览器直接访问第三方 CDN。详情页使用
-`GET /jav/items/:id/sample-images/:index` 由 JavBoss 同源代理已保存的图片，服务端校验来源域名、
+`GET /jav/items/:id/sample-images/:index` 由 JavMoe 同源代理已保存的图片，服务端校验来源域名、
 限制响应大小并带上必要的请求头，适配远程开发和 VS Code 端口转发环境。

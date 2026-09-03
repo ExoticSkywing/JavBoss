@@ -1,6 +1,6 @@
 # JAV 作品入库生命周期
 
-本文档定义 JavBoss 自上而下入库通路的权威领域语义。实现、接口和界面若与本文冲突，
+本文档定义 JavMoe 自上而下入库通路的权威领域语义。实现、接口和界面若与本文冲突，
 应以本文中的不变量为准并补充迁移，而不是继续维护第二套“待处理作品”。
 
 ## 一条核心不变量
@@ -17,7 +17,7 @@
 - `pending`：没有有效的 `video_location`；
 - `imported`：至少存在一个有效的 `video_location`。
 
-JavBoss 不扫描 `/115/云下载/jav待验收`。因此云下载完成时库存仍是 `pending`；只有质量通过、文件
+JavMoe 不扫描 `/115/云下载/jav待验收`。因此云下载完成时库存仍是 `pending`；只有质量通过、文件
 移入现有正式扫描目录 `/115/upload/javbosstest` 并被扫盘关联后，库存才变为 `imported`。这避免了先刮削暂存文件、验收失败后再撤销
 库存的浪费。历史上直接放入正式目录的文件仍按扫盘事实进入库存。
 
@@ -66,7 +66,7 @@ JavBoss 不扫描 `/115/云下载/jav待验收`。因此云下载完成时库存
 ```
 
 所有阶段都绑定同一个 `jav_id`，不能再建立一套候选作品实体。115 下载提交由外部服务负责，
-JavBoss 只保存批次、幂等键和回调状态。
+JavMoe 只保存批次、幂等键和回调状态。
 
 当前实际持久化上述全部阶段。若最后一个有效文件位置被隐藏、删除、替换或解除关联，库存立即回到
 `pending`；已有元数据的作品回到 `magnet_collecting`，裸番号回到 `metadata_pending`。仍有同一文件镜像
@@ -112,7 +112,7 @@ JavBoss 只保存批次、幂等键和回调状态。
 别名继续指向同一个 `jav`，不会因再次输入而产生新作品。若新番号已经属于另一部作品，应提示用户打开已有作品，不得合并或创建第二条记录。
 
 资料源返回登录页、年龄验证页或验证码页时，这类页面不算作品元数据；系统会忽略并继续尝试其他来源。历史上误写入的占位标题会在迁移后清理并重新扫描，
-样品图优先使用无需网页登录的 JavDB App 数据，随后再回退 JavMenu/JavBus，并由 JavBoss 同源代理图片请求。
+样品图优先使用无需网页登录的 JavDB App 数据，随后再回退 JavMenu/JavBus，并由 JavMoe 同源代理图片请求。
 
 档案补全也遵循同一原则。只有缺中文名且其它档案字段已齐全的女优会进入较长的重试窗口，避免每分钟
 重复请求相同来源；这不是把缺项当作已完成，而是降低无意义请求，服务重启后仍可再次尝试。
@@ -173,13 +173,13 @@ Bearer Token。发送请求体包含 `batch_id`、`callback_path`，以及每项
 Bot 只针对本批“通过”作品所属的任务目录先执行一次与 `/clean` 相同规则的清扫，去除小文件、黑名单文件和空子目录，
 且不会触碰尚未判断的作品；随后将所有通过项合并为一次 `MoveFile + Skip`，将所有不合格项合并为一次 `DeleteFiles`。
 队列只有一部作品时仍走同一套单项批次流程。不合格候选记录、原因、事实和备注全部保留，执行删除后回到 `magnet_review`。
-通过时 Bot 先将结果路径移入 `/115/upload/javbosstest`，JavBoss 再把候选标为最佳并进入 `awaiting_scan`。
+通过时 Bot 先将结果路径移入 `/115/upload/javbosstest`，JavMoe 再把候选标为最佳并进入 `awaiting_scan`。
 移动或删除的源路径必须严格位于 `/115/云下载/jav待验收/` 之下；禁止对待验收根目录或 `/115/云下载` 的其它内容执行操作。
 
 `awaiting_scan` 仍不是正式入库，也不会提前写每日入库记录。扫盘关联到同一 `jav_id` 的唯一有效媒体后，
 系统才原子创建 `jav_quality_acceptance`、把 attempt 置为 `accepted` 并把 acquisition 置为 `imported`。
 
-批量验收中只要有一项“通过”，JavBoss 会在验收接口成功返回后自动请求一次正式库增量扫描，
+批量验收中只要有一项“通过”，JavMoe 会在验收接口成功返回后自动请求一次正式库增量扫描，
 不受目录 `auto_scan_enabled` 开关影响；扫描任务会等待 CloudNAS 挂载刷新后再开始，并根据
 `JAV_LIBRARY_PATH` 的末级目录名匹配本地已配置的扫描目录。这样“通过 → 移入正式库 → 扫盘关联 → 正式入库”
 不需要再次手动点击扫描。若存在多个同名目录会分别扫描；存在多个目录但无法唯一匹配时不会盲扫，
@@ -244,9 +244,9 @@ Bot 只针对本批“通过”作品所属的任务目录先执行一次与 `/c
 `{"status":"awaiting_quality","external_task_id":"...","result_paths":["/115/云下载/jav待验收/..."]}`；
 允许状态为 `submitted`、`downloaded`、`awaiting_quality`、`uncertain` 和 `failed`。正式的
 `accepted/rejected` 只能由
-JavBoss 人工验收动作产生，外部服务无权代替。
+JavMoe 人工验收动作产生，外部服务无权代替。
 
-批量人工验收由 JavBoss 调用外部服务的
+批量人工验收由 JavMoe 调用外部服务的
 `POST /v1/javboss/download-attempts/review-batch`；请求只携带 attempt ID 和 `accepted/rejected` 决定，
 外部服务先返回本批通过目录的清扫统计，再按决定合并 CloudDrive2 的移动与删除操作，并返回每项最终状态。
 CloudDrive2 Bot 同时向 `ADMIN_IDS` 中的管理员发送验收汇总通知；Telegram 通知失败不会回滚已完成的存储操作。

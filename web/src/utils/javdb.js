@@ -26,7 +26,7 @@ function postBridgeConnect() {
     )
   } catch {
     // A regular browser rejects chrome-extension:// origins when the optional
-    // JavBoss Helper extension is not installed. Treat that as unavailable.
+    // JavMoe Helper extension is not installed. Treat that as unavailable.
     bridgeReady = false
   }
 }
@@ -35,7 +35,7 @@ function mountBridge() {
   if (bridgeElement || typeof document === 'undefined' || !document.body) return
   const iframe = document.createElement('iframe')
   iframe.src = EXTENSION_BRIDGE_URL
-  iframe.title = 'JavBoss extension availability bridge'
+  iframe.title = 'JavMoe extension availability bridge'
   iframe.tabIndex = -1
   iframe.setAttribute('aria-hidden', 'true')
   iframe.style.display = 'none'

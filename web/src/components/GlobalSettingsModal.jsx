@@ -574,8 +574,8 @@ export default function GlobalSettingsModal({
             </h4>
             <p className="mt-1 text-sm text-zinc-500">
               {zh(
-                '开启后，局域网设备可以通过本机 IP 地址访问 JavBoss。修改将在下次启动时生效。',
-                'When enabled, devices on your local network can access JavBoss through this computer’s IP address. Changes take effect after the next restart.'
+                '开启后，局域网设备可以通过本机 IP 地址访问 JavMoe。修改将在下次启动时生效。',
+                'When enabled, devices on your local network can access JavMoe through this computer’s IP address. Changes take effect after the next restart.'
               )}
             </p>
           </div>
@@ -1084,7 +1084,7 @@ export default function GlobalSettingsModal({
       <div className="flex items-center gap-1.5 text-xs font-semibold text-zinc-600">
         <InfoOutlinedIcon fontSize="inherit" className="text-[15px]" aria-hidden="true" />
         {zh(
-          '添加本地视频目录让 JavBoss 接管，所有内容将自动为您呈现。',
+          '添加本地视频目录让 JavMoe 接管，所有内容将自动为您呈现。',
           'No directories yet. Added folders will be scanned automatically.'
         )}
       </div>
@@ -1141,8 +1141,8 @@ export default function GlobalSettingsModal({
                 </div>
                 <p className="mt-2 max-w-2xl text-sm text-zinc-500">
                   {zh(
-                    '浏览器无法直接播放某些视频编码时，JavBoss 使用 FFmpeg 转码后播放。',
-                    'When a browser cannot play a video codec directly, JavBoss uses FFmpeg to transcode it for playback.'
+                    '浏览器无法直接播放某些视频编码时，JavMoe 使用 FFmpeg 转码后播放。',
+                    'When a browser cannot play a video codec directly, JavMoe uses FFmpeg to transcode it for playback.'
                   )}
                 </p>
               </div>
@@ -1188,8 +1188,8 @@ export default function GlobalSettingsModal({
                 </div>
                 <p className="mt-2 text-xs text-zinc-500">
                   {zh(
-                    '正在下载并校验 FFmpeg，请不要关闭 JavBoss。',
-                    'Downloading and validating FFmpeg. Keep JavBoss running.'
+                    '正在下载并校验 FFmpeg，请不要关闭 JavMoe。',
+                    'Downloading and validating FFmpeg. Keep JavMoe running.'
                   )}
                 </p>
               </div>
