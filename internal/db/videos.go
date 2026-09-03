@@ -253,8 +253,15 @@ func updateVideoJavScrapeOverrideTx(tx *gorm.DB, videoID int64, override string)
 			query = query.Where(`NOT EXISTS (
 				SELECT 1 FROM jav
 				WHERE jav.id = video_location.jav_id
-					AND jav.normalized_code = ?
-			)`, normalizedOverrideCode)
+					AND (
+						jav.normalized_code = ?
+						OR EXISTS (
+							SELECT 1 FROM jav_code_alias jca_override
+							WHERE jca_override.jav_id = jav.id
+								AND jca_override.normalized_code = ?
+						)
+					)
+			)`, normalizedOverrideCode, normalizedOverrideCode)
 		}
 		return query
 	}

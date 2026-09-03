@@ -5,6 +5,35 @@ import (
 	"strings"
 )
 
+// IsPlaceholderJavTitle reports titles that come from an authentication,
+// challenge, or generic provider shell page rather than a movie record. They
+// must never satisfy the metadata-complete condition.
+func IsPlaceholderJavTitle(value string) bool {
+	title := strings.ToLower(strings.TrimSpace(value))
+	if title == "" {
+		return false
+	}
+	for _, marker := range []string{
+		"登入",
+		"登录",
+		"login",
+		"sign in",
+		"signin",
+		"register",
+		"age verification",
+		"driver verification",
+		"verification required",
+		"just a moment",
+		"access denied",
+		"captcha",
+	} {
+		if title == marker || strings.Contains(title, marker) {
+			return true
+		}
+	}
+	return false
+}
+
 // ResourceNotFonud indicates the requested resource is not available.
 var ResourceNotFonud = errors.New("jav: resource not found")
 

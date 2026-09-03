@@ -10,6 +10,7 @@ import {
   fetchJavImportDays,
   fetchJavMagnetQueue,
   fetchJavQualityReviewQueue,
+  executeJavQualityReviewBatch,
   submitJavDownloadBatch,
 } from '@/api'
 import {
@@ -451,6 +452,8 @@ function JavQualityReviewQueueButton({ directoryIds = [], gridProps = {} }) {
   const [total, setTotal] = useState(0)
   const [loading, setLoading] = useState(false)
   const [error, setError] = useState('')
+  const [executing, setExecuting] = useState(false)
+  const [message, setMessage] = useState('')
 
   const loadItems = useCallback(async () => {
     setLoading(true)
@@ -473,6 +476,69 @@ function JavQualityReviewQueueButton({ directoryIds = [], gridProps = {} }) {
   useEffect(() => {
     if (open) void loadItems()
   }, [open, loadItems])
+
+  const decidedItems = items.filter((item) => {
+    const decision = String(item?.quality_review?.decision || '').trim()
+    return decision === 'accepted' || decision === 'rejected'
+  })
+  const approvedCount = decidedItems.filter(
+    (item) => item?.quality_review?.decision === 'accepted'
+  ).length
+  const rejectedCount = decidedItems.length - approvedCount
+
+  const executeDecisions = async () => {
+    const attemptIds = decidedItems
+      .map((item) =>
+        Number(item?.quality_review?.attempt_id || item?.download_attempt?.id || item?.attempt?.id)
+      )
+      .filter((id) => Number.isFinite(id) && id > 0)
+    if (executing) return
+    if (attemptIds.length === 0) {
+      setError(
+        zh(
+          '验收决定缺少下载任务编号，请刷新待验收列表后重试。',
+          'The saved review decisions have no download task IDs. Refresh the queue and try again.'
+        )
+      )
+      return
+    }
+    setExecuting(true)
+    setError('')
+    setMessage(
+      zh(
+        '正在清扫通过作品并执行验收，请稍候…',
+        'Cleaning approved works and executing the review batch…'
+      )
+    )
+    try {
+      const result = await executeJavQualityReviewBatch(attemptIds)
+      const cleanup = result?.cleanup || {}
+      const cleanedFiles = Number(cleanup.files_deleted) || 0
+      const cleanedFolders = Number(cleanup.folders_deleted) || 0
+      setMessage(
+        zh(
+          `已批量执行 ${Number(result?.count) || attemptIds.length} 项验收；通过 ${approvedCount} 部，不合格 ${rejectedCount} 部。执行前清扫删除文件 ${cleanedFiles} 个、空目录 ${cleanedFolders} 个。`,
+          `Executed ${Number(result?.count) || attemptIds.length} reviews; ${approvedCount} approved, ${rejectedCount} rejected. Pre-promotion cleanup removed ${cleanedFiles} file(s) and ${cleanedFolders} empty directorie(s).`
+        )
+      )
+      await loadItems()
+    } catch (requestError) {
+      setError(requestError?.message || String(requestError))
+    } finally {
+      setExecuting(false)
+    }
+  }
+
+  const queueGridProps = {
+    ...gridProps,
+    onAcquisitionUpdated: (updated, sourceItem) => {
+      const sourceID = Number(sourceItem?.id)
+      setItems((current) =>
+        current.map((item) => (Number(item?.id) === sourceID ? { ...item, ...updated } : item))
+      )
+      gridProps.onAcquisitionUpdated?.(updated, sourceItem)
+    },
+  }
 
   return (
     <>
@@ -519,7 +585,23 @@ function JavQualityReviewQueueButton({ directoryIds = [], gridProps = {} }) {
                 {zh('关闭', 'Close')}
               </button>
             </header>
-            <div className="min-h-0 flex-1 overflow-y-auto p-5">
+            <div className="min-h-0 flex-1 overflow-y-auto p-5" aria-busy={executing}>
+              {error ? (
+                <div
+                  role="alert"
+                  className="mb-3 rounded-lg border border-rose-200 bg-rose-50 px-3 py-2 text-xs font-medium text-rose-700"
+                >
+                  {error}
+                </div>
+              ) : null}
+              {message ? (
+                <div
+                  role="status"
+                  className={`mb-3 rounded-lg border px-3 py-2 text-xs font-medium ${executing ? 'border-amber-200 bg-amber-50 text-amber-900' : 'border-stone-200 bg-stone-50 text-stone-700'}`}
+                >
+                  {message}
+                </div>
+              ) : null}
               {loading ? (
                 <div className="py-10 text-center text-sm text-slate-500">
                   {zh('加载中…', 'Loading...')}
@@ -531,19 +613,61 @@ function JavQualityReviewQueueButton({ directoryIds = [], gridProps = {} }) {
                 </div>
               ) : null}
               {!loading && items.length > 0 ? (
-                <JavGrid
-                  {...gridProps}
-                  items={items}
-                  emptyMessage={zh('暂无待验收作品', 'No works awaiting review')}
-                />
-              ) : null}
-              {error ? (
-                <div
-                  role="alert"
-                  className="mt-3 rounded-lg border border-rose-200 bg-rose-50 px-3 py-2 text-xs text-rose-700"
-                >
-                  {error}
-                </div>
+                <>
+                  <div className="mb-4 rounded-xl border border-amber-200 bg-amber-50/70 px-4 py-3">
+                    <div className="flex flex-wrap items-center justify-between gap-3">
+                      <div>
+                        <div className="text-sm font-semibold text-amber-950">
+                          {zh(
+                            `已记录 ${decidedItems.length} / ${items.length} 部验收决定`,
+                            `${decidedItems.length} / ${items.length} review decisions saved`
+                          )}
+                        </div>
+                        <div className="mt-1 text-xs text-amber-800">
+                          {zh(
+                            `通过 ${approvedCount} 部 · 不合格 ${rejectedCount} 部 · 其余待判断`,
+                            `${approvedCount} approved · ${rejectedCount} rejected · the rest need review`
+                          )}
+                        </div>
+                      </div>
+                      <button
+                        type="button"
+                        onClick={() => void executeDecisions()}
+                        disabled={decidedItems.length === 0 || executing}
+                        aria-busy={executing}
+                        className="min-h-9 rounded-lg bg-stone-800 px-3.5 text-xs font-semibold text-white transition hover:bg-stone-900 active:scale-[0.96] disabled:cursor-not-allowed disabled:opacity-50"
+                      >
+                        {executing ? (
+                          <span
+                            aria-hidden="true"
+                            className="mr-1.5 inline-block h-3 w-3 animate-spin rounded-full border-2 border-white/40 border-t-white align-[-2px]"
+                          />
+                        ) : null}
+                        {executing
+                          ? zh('批量执行中…', 'Executing…')
+                          : decidedItems.length === 1
+                            ? zh('执行 1 项验收', 'Execute 1 review')
+                            : zh(
+                                `批量执行 ${decidedItems.length} 项验收`,
+                                `Execute ${decidedItems.length} reviews`
+                              )}
+                      </button>
+                    </div>
+                    {decidedItems.length === 0 ? (
+                      <div className="mt-2 text-xs text-amber-800">
+                        {zh(
+                          '打开作品详情，记录“通过”或“不合格”；记录完成后会在这里一次性执行。',
+                          'Open each detail, record approval or rejection, then execute the decisions here in one batch.'
+                        )}
+                      </div>
+                    ) : null}
+                  </div>
+                  <JavGrid
+                    {...queueGridProps}
+                    items={items}
+                    emptyMessage={zh('暂无待验收作品', 'No works awaiting review')}
+                  />
+                </>
               ) : null}
             </div>
           </div>

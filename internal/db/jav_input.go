@@ -27,9 +27,10 @@ var leadingNumericJavInputCodePattern = regexp.MustCompile(`^\s*\d{4,}[-_]\d{2,}
 var dateLikeJavInputTokenPattern = regexp.MustCompile(`^\s*\d{4}[-_/]\d{1,2}[-_/]\d{1,2}(?:\D|$)`)
 
 type javInputLibraryMatch struct {
-	ID             int64
-	Code           string
-	NormalizedCode string `gorm:"column:normalized_code"`
+	ID                   int64
+	Code                 string
+	NormalizedCode       string `gorm:"column:normalized_code"`
+	LookupNormalizedCode string `gorm:"column:lookup_normalized_code"`
 }
 
 // CreateJavInputBatch atomically merges parsed codes into the canonical JAV
@@ -38,16 +39,37 @@ func CreateJavInputBatch(ctx context.Context, rawInput string) (*models.JavInput
 	return createJavInputBatch(ctx, rawInput, nil)
 }
 
+// CreateJavInputBatchFromSource gives trusted integrations an idempotent copy
+// of the normal input path. The external request id identifies the caller's
+// original message; parsing and global de-duplication remain owned by JavBoss.
+func CreateJavInputBatchFromSource(ctx context.Context, rawInput, source, externalRequestID string) (*models.JavInputBatch, bool, error) {
+	source = strings.ToLower(strings.TrimSpace(source))
+	externalRequestID = strings.TrimSpace(externalRequestID)
+	if source == "" || externalRequestID == "" {
+		return nil, false, errors.New("source and external request id are required")
+	}
+	return createJavInputBatchWithSource(ctx, rawInput, source, &externalRequestID, nil)
+}
+
 func createJavInputBatch(ctx context.Context, rawInput string, afterSnapshot func(*gorm.DB) error) (*models.JavInputBatch, error) {
+	batch, _, err := createJavInputBatchWithSource(ctx, rawInput, "web", nil, afterSnapshot)
+	return batch, err
+}
+
+func createJavInputBatchWithSource(ctx context.Context, rawInput, source string, externalRequestID *string, afterSnapshot func(*gorm.DB) error) (*models.JavInputBatch, bool, error) {
 	_, validationBatch := prepareJavInputBatch(rawInput)
 	if validationBatch.InputCount == 0 {
-		return nil, ErrJavInputEmpty
+		return nil, false, ErrJavInputEmpty
 	}
 	if validationBatch.ParsedCount == 0 {
-		return nil, ErrJavInputNoCodes
+		return nil, false, ErrJavInputNoCodes
 	}
 	if common.DB == nil {
-		return nil, errors.New("database is not initialized")
+		return nil, false, errors.New("database is not initialized")
+	}
+	source = strings.ToLower(strings.TrimSpace(source))
+	if source == "" {
+		source = "web"
 	}
 
 	// The canonical JAV unique index is the durable invariant; this process-level
@@ -57,10 +79,27 @@ func createJavInputBatch(ctx context.Context, rawInput string, afterSnapshot fun
 
 	var committedItems []models.JavInputItem
 	var committedBatch models.JavInputBatch
+	created := false
 	err := withSQLiteTransactionRetry(ctx, common.DB, func(tx *gorm.DB) error {
+		if externalRequestID != nil {
+			var existing models.JavInputBatch
+			query := tx.Preload("Items").
+				Where("source = ? AND external_request_id = ?", source, *externalRequestID).
+				First(&existing)
+			if query.Error == nil {
+				committedBatch = existing
+				committedItems = existing.Items
+				return nil
+			}
+			if !errors.Is(query.Error, gorm.ErrRecordNotFound) {
+				return fmt.Errorf("find idempotent JAV input batch: %w", query.Error)
+			}
+		}
 		// A failed SQLite snapshot must not leak statuses, counters, or IDs into
 		// the next attempt. Rebuild all mutable attempt state from the raw input.
 		items, batch := prepareJavInputBatch(rawInput)
+		batch.Source = source
+		batch.ExternalRequestID = externalRequestID
 		committedItems = nil
 		committedBatch = models.JavInputBatch{}
 
@@ -174,19 +213,21 @@ func createJavInputBatch(ctx context.Context, rawInput string, afterSnapshot fun
 		}
 		committedBatch = batch
 		committedItems = items
+		created = true
 		return nil
 	})
 	if err != nil {
-		return nil, err
+		return nil, false, err
 	}
 	committedBatch.Items = committedItems
-	return &committedBatch, nil
+	return &committedBatch, created, nil
 }
 
 type javInputWorkMatch struct {
-	ID              int64  `gorm:"column:id"`
-	NormalizedCode  string `gorm:"column:normalized_code"`
-	JavInputBatchID *int64 `gorm:"column:jav_input_batch_id"`
+	ID                   int64  `gorm:"column:id"`
+	NormalizedCode       string `gorm:"column:normalized_code"`
+	LookupNormalizedCode string `gorm:"column:lookup_normalized_code"`
+	JavInputBatchID      *int64 `gorm:"column:jav_input_batch_id"`
 }
 
 type createCanonicalJavResult struct {
@@ -202,7 +243,7 @@ func listJavInputWorks(tx *gorm.DB, normalizedCodes []string) (map[string]javInp
 	var rows []javInputWorkMatch
 	if err := tx.
 		Table("jav j").
-		Select(`j.id, j.normalized_code, (
+		Select(`j.id, j.normalized_code, j.normalized_code AS lookup_normalized_code, (
 			SELECT MIN(jii.jav_input_batch_id)
 			FROM jav_input_item jii
 			WHERE jii.jav_id = j.id
@@ -212,7 +253,55 @@ func listJavInputWorks(tx *gorm.DB, normalizedCodes []string) (map[string]javInp
 		return nil, fmt.Errorf("list canonical JAV works for input: %w", err)
 	}
 	for _, row := range rows {
-		result[row.NormalizedCode] = row
+		lookupCode := row.LookupNormalizedCode
+		if lookupCode == "" {
+			lookupCode = row.NormalizedCode
+		}
+		result[lookupCode] = row
+	}
+
+	// A corrected work keeps every historical input item attached to the same
+	// Jav. Treat those previous normalized values as aliases during future input
+	// so correcting a typo never makes the old typo a new work again.
+	var aliases []javInputWorkMatch
+	if err := tx.
+		Table("jav_input_item jii").
+		Select(`j.id, j.normalized_code, jii.normalized_code AS lookup_normalized_code,
+			(SELECT MIN(src.jav_input_batch_id) FROM jav_input_item src WHERE src.jav_id = j.id) AS jav_input_batch_id`).
+		Joins("JOIN jav j ON j.id = jii.jav_id").
+		Where("jii.jav_id IS NOT NULL AND jii.normalized_code IN ?", normalizedCodes).
+		Find(&aliases).Error; err != nil {
+		return nil, fmt.Errorf("list historical JAV code aliases for input: %w", err)
+	}
+	for _, row := range aliases {
+		lookupCode := row.LookupNormalizedCode
+		if lookupCode == "" {
+			continue
+		}
+		// Prefer a current canonical code if a legacy alias happens to collide
+		// with one; the database invariant still owns the canonical identity.
+		if _, exists := result[lookupCode]; !exists {
+			result[lookupCode] = row
+		}
+	}
+	var durableAliases []javInputWorkMatch
+	if err := tx.
+		Table("jav_code_alias jca").
+		Select(`j.id, j.normalized_code, jca.normalized_code AS lookup_normalized_code,
+			(SELECT MIN(src.jav_input_batch_id) FROM jav_input_item src WHERE src.jav_id = j.id) AS jav_input_batch_id`).
+		Joins("JOIN jav j ON j.id = jca.jav_id").
+		Where("jca.normalized_code IN ?", normalizedCodes).
+		Find(&durableAliases).Error; err != nil {
+		return nil, fmt.Errorf("list durable JAV code aliases for input: %w", err)
+	}
+	for _, row := range durableAliases {
+		lookupCode := row.LookupNormalizedCode
+		if lookupCode == "" {
+			continue
+		}
+		if _, exists := result[lookupCode]; !exists {
+			result[lookupCode] = row
+		}
 	}
 	return result, nil
 }
@@ -225,6 +314,16 @@ func createCanonicalJavForInputTx(tx *gorm.DB, code, normalizedCode string, crea
 	normalizedCode = models.NormalizeJavCode(normalizedCode)
 	if normalizedCode == "" {
 		return nil, models.ErrInvalidJavCode
+	}
+	// Recheck both canonical identities and durable aliases inside the write
+	// transaction. The earlier batch snapshot is only an optimization; a code
+	// correction may have claimed this spelling after that snapshot.
+	existing, err := lockJavByCodeTx(tx, normalizedCode)
+	if err != nil {
+		return nil, err
+	}
+	if existing != nil {
+		return &createCanonicalJavResult{Jav: *existing}, nil
 	}
 	item := models.Jav{
 		Code:           code,
@@ -415,7 +514,7 @@ func listJavInputLibraryMatches(tx *gorm.DB, normalizedCodes []string) (map[stri
 	var rows []javInputLibraryMatch
 	if err := tx.
 		Table("jav j").
-		Select("DISTINCT j.id, j.code, j.normalized_code").
+		Select("DISTINCT j.id, j.code, j.normalized_code, j.normalized_code AS lookup_normalized_code").
 		Joins("JOIN video_location vl ON vl.jav_id = j.id").
 		Joins("JOIN directory d ON d.id = vl.directory_id").
 		Where(activeLocationWhereSQL("vl", "d")).
@@ -424,7 +523,53 @@ func listJavInputLibraryMatches(tx *gorm.DB, normalizedCodes []string) (map[stri
 		return nil, fmt.Errorf("list final JAV codes for input de-duplication: %w", err)
 	}
 	for _, row := range rows {
-		result[row.NormalizedCode] = row
+		lookupCode := row.LookupNormalizedCode
+		if lookupCode == "" {
+			lookupCode = row.NormalizedCode
+		}
+		result[lookupCode] = row
+	}
+	var aliases []javInputLibraryMatch
+	if err := tx.
+		Table("jav_input_item jii").
+		Select("DISTINCT j.id, j.code, j.normalized_code, jii.normalized_code AS lookup_normalized_code").
+		Joins("JOIN jav j ON j.id = jii.jav_id").
+		Joins("JOIN video_location vl ON vl.jav_id = j.id").
+		Joins("JOIN directory d ON d.id = vl.directory_id").
+		Where("jii.jav_id IS NOT NULL AND jii.normalized_code IN ?", normalizedCodes).
+		Where(activeLocationWhereSQL("vl", "d")).
+		Scan(&aliases).Error; err != nil {
+		return nil, fmt.Errorf("list historical JAV library code aliases for input: %w", err)
+	}
+	for _, row := range aliases {
+		lookupCode := row.LookupNormalizedCode
+		if lookupCode == "" {
+			continue
+		}
+		if _, exists := result[lookupCode]; !exists {
+			result[lookupCode] = row
+		}
+	}
+	var durableAliases []javInputLibraryMatch
+	if err := tx.
+		Table("jav_code_alias jca").
+		Select("DISTINCT j.id, j.code, j.normalized_code, jca.normalized_code AS lookup_normalized_code").
+		Joins("JOIN jav j ON j.id = jca.jav_id").
+		Joins("JOIN video_location vl ON vl.jav_id = j.id").
+		Joins("JOIN directory d ON d.id = vl.directory_id").
+		Where("jca.normalized_code IN ?", normalizedCodes).
+		Where(activeLocationWhereSQL("vl", "d")).
+		Scan(&durableAliases).Error; err != nil {
+		return nil, fmt.Errorf("list durable JAV library code aliases for input: %w", err)
+	}
+	for _, row := range durableAliases {
+		lookupCode := row.LookupNormalizedCode
+		if lookupCode == "" {
+			continue
+		}
+		if _, exists := result[lookupCode]; !exists {
+			result[lookupCode] = row
+		}
 	}
 	return result, nil
 }
@@ -579,7 +724,10 @@ func ListJavInputPreprocessed(ctx context.Context, page, pageSize int, search st
 	search = strings.TrimSpace(search)
 	if search != "" {
 		pattern := "%" + search + "%"
-		query = query.Where("j.code LIKE ? COLLATE NOCASE OR j.title LIKE ? COLLATE NOCASE", pattern, pattern)
+		query = query.Where(`j.code LIKE ? COLLATE NOCASE OR j.title LIKE ? COLLATE NOCASE OR EXISTS (
+			SELECT 1 FROM jav_code_alias jca_pending_search
+			WHERE jca_pending_search.jav_id = j.id AND jca_pending_search.code LIKE ? COLLATE NOCASE
+		)`, pattern, pattern, pattern)
 	}
 
 	var total int64

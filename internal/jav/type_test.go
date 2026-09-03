@@ -71,3 +71,16 @@ func TestJavInfoOmitsUncensoredWhenUnset(t *testing.T) {
 		t.Fatalf("unexpected IsUncensored field: %s", data)
 	}
 }
+
+func TestIsPlaceholderJavTitle(t *testing.T) {
+	for _, title := range []string{"登入", "Login | JavDB", "Age Verification", "Just a moment"} {
+		if !IsPlaceholderJavTitle(title) {
+			t.Fatalf("IsPlaceholderJavTitle(%q) = false", title)
+		}
+	}
+	for _, title := range []string{"キャットウォーク ポイズン 52", "作品标题"} {
+		if IsPlaceholderJavTitle(title) {
+			t.Fatalf("IsPlaceholderJavTitle(%q) = true", title)
+		}
+	}
+}

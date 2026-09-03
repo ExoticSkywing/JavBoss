@@ -42,7 +42,9 @@ func TestJavSchemaOmitsFrontendEnglishMetadataColumns(t *testing.T) {
 	})
 	assertTableColumns(t, db, "jav_download_attempt", []string{
 		"id", "batch_id", "jav_id", "candidate_id", "idempotency_key", "external_task_id", "status",
-		"error", "created_at", "submitted_at", "completed_at",
+		"error", "created_at", "submitted_at", "completed_at", "result_paths", "review_decision",
+		"review_quality_clear", "review_confirmed_1080p", "review_has_intro_ad", "review_has_watermark",
+		"review_has_marquee", "review_is_uncensored", "review_reasons", "review_notes", "reviewed_at",
 	})
 	assertTableColumns(t, db, "jav_quality_acceptance", []string{
 		"id", "jav_id", "candidate_id", "attempt_id", "video_id", "location_id", "accepted_at",

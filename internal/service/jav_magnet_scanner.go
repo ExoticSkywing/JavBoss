@@ -10,6 +10,7 @@ import (
 	"javboss/internal/common/logging"
 	"javboss/internal/db"
 	"javboss/internal/jav"
+	"javboss/internal/models"
 )
 
 const (
@@ -104,7 +105,11 @@ func scanJavMagnets(ctx context.Context, retryAfter time.Duration) error {
 			logging.Error("automatic JAV magnet collection failed id=%d code=%s: %s", item.ID, code, resolved.Error)
 			continue
 		}
-		if _, err := db.UpsertJavMagnetCandidates(ctx, item.ID, resolved.Magnets); err != nil {
+		if resolved.Movie == nil || models.NormalizeJavCode(resolved.Movie.Number) != models.NormalizeJavCode(code) {
+			logging.Error("ignore mismatched automatic JAV magnets id=%d requested=%s", item.ID, code)
+			continue
+		}
+		if _, err := db.UpsertJavMagnetCandidatesForCode(ctx, item.ID, code, resolved.Magnets); err != nil {
 			logging.Error("save automatic JAV magnets failed id=%d code=%s: %v", item.ID, code, err)
 			continue
 		}

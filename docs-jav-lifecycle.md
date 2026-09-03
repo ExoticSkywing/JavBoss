@@ -17,9 +17,9 @@
 - `pending`：没有有效的 `video_location`；
 - `imported`：至少存在一个有效的 `video_location`。
 
-`imported` 只说明扫盘已经看到文件，不等于人工确认质量。云下载落盘后，作品会同时显示
-`inventory_state=imported` 和 `acquisition_stage=quality_review`；只有质量验收通过才是业务意义上的
-“正式入库”。
+JavBoss 不扫描 `/115/云下载/jav待验收`。因此云下载完成时库存仍是 `pending`；只有质量通过、文件
+移入现有正式扫描目录 `/115/upload/javbosstest` 并被扫盘关联后，库存才变为 `imported`。这避免了先刮削暂存文件、验收失败后再撤销
+库存的浪费。历史上直接放入正式目录的文件仍按扫盘事实进入库存。
 
 不得保存一个可与真实文件关系漂移的 `is_imported` 布尔值。
 
@@ -41,6 +41,9 @@
 `jav_input_batch` 和 `jav_input_item` 可以保留原文与来源，作用仅是审计收据。删除输入历史或清理
 工作区永远不能删除 `jav`、改变库存状态或让番号重新成为增量。
 
+显式输入的两位数字也属于完整番号（例如 `CWPBD-52`），不得因为文件名解析的历史兼容规则被
+自动补成 `CWPBD-052`。需要兼容旧写法时，旧写法只能作为同一作品的历史别名。
+
 ## 同一作品的状态机
 
 库存状态和工作流阶段是两个正交维度：
@@ -49,13 +52,17 @@
 脏数据输入
   -> 原子命中或创建 Jav
   -> metadata_pending
+  -> code_review（所有主资料源均未精确匹配）
   -> magnet_collecting
   -> magnet_review
-  -> ready_to_download
-  -> download_submitted
-  -> 扫盘关联真实文件
-  -> quality_review（云下载文件）
-  -> imported（质量通过）
+	  -> ready_to_download
+	  -> download_submitted
+	  -> quality_review（文件位于 /115/云下载/jav待验收，不扫盘）
+	  -> 人工质量验收
+	     -> 不通过：删除暂存文件，回到 magnet_review
+	     -> 通过：移入 /115/upload/javbosstest，进入 awaiting_scan
+	  -> 扫盘关联真实文件
+	  -> imported
 ```
 
 所有阶段都绑定同一个 `jav_id`，不能再建立一套候选作品实体。115 下载提交由外部服务负责，
@@ -63,8 +70,8 @@ JavBoss 只保存批次、幂等键和回调状态。
 
 当前实际持久化上述全部阶段。若最后一个有效文件位置被隐藏、删除、替换或解除关联，库存立即回到
 `pending`；已有元数据的作品回到 `magnet_collecting`，裸番号回到 `metadata_pending`。仍有同一文件镜像
-位置时保持 `imported`，目录暂时离线不视为作品出库。`jav_quality_acceptance` 是正式验收事实，按
-`accepted_at` 派生每日入库记录；没有验收作品的日期不会产生记录。
+位置时保持 `imported`，目录暂时离线不视为作品出库。顶层下载通路只有在 `awaiting_scan` 被扫盘确认时
+才创建 `jav_quality_acceptance`；它按 `accepted_at` 派生每日入库记录，没有验收作品的日期不会产生记录。
 
 ## 提前刮削与扫盘转正
 
@@ -99,6 +106,14 @@ JavBoss 只保存批次、幂等键和回调状态。
 - 资料源暂时找不到某字段时保持“待补全”，不创建“未知女优/未知片商/未知系列”实体；人工编辑可以直接
   赋值，后续再提供强制重试或明确的“来源确认无此字段”状态。
 
+当多个主资料源都没有返回精确作品时，作品不能继续伪装成“正在收集磁链”。卡片应将阶段标为“待核对番号”（`code_review`），并在该状态旁
+直接提供“修正番号”动作；详情页的磁链区域只负责说明当前没有可用资料，不承载番号审核入口。该动作只允许用于尚无文件、
+磁链候选、下载任务和质量结论的未解析作品；保存后保留原始输入收据，将新番号重新放回 `metadata_pending`；原番号会作为历史
+别名继续指向同一个 `jav`，不会因再次输入而产生新作品。若新番号已经属于另一部作品，应提示用户打开已有作品，不得合并或创建第二条记录。
+
+资料源返回登录页、年龄验证页或验证码页时，这类页面不算作品元数据；系统会忽略并继续尝试其他来源。历史上误写入的占位标题会在迁移后清理并重新扫描，
+样品图优先使用无需网页登录的 JavDB App 数据，随后再回退 JavMenu/JavBus，并由 JavBoss 同源代理图片请求。
+
 档案补全也遵循同一原则。只有缺中文名且其它档案字段已齐全的女优会进入较长的重试窗口，避免每分钟
 重复请求相同来源；这不是把缺项当作已完成，而是降低无意义请求，服务重启后仍可再次尝试。
 
@@ -127,7 +142,7 @@ JavBoss 只保存批次、幂等键和回调状态。
 候选需要分别保存自动事实和人工事实，未知值不能等同于否：
 
 - 自动事实：名称、大小、文件数、来源 HD/中文字幕标记、发布时间、抓取时间；
-- 人工事实：肉眼清晰度、是否确认 1080P、片头广告、水印、跑马灯、有码/无码、采用或淘汰原因、备注。
+- 人工事实：清晰度是否达标（包含 1080P 判断）、片头广告、水印、跑马灯、有码/无码、采用或淘汰原因、备注。
 
 当前质量目标以约 5–10 GiB、肉眼高清 1080P 为首要条件；无片头广告、无水印/跑马灯为次要条件。
 有码/无码的优先级描述目前存在冲突，因此第一阶段只记录客观状态，不硬编码排序。积累足够人工
@@ -141,28 +156,41 @@ JavBoss 只保存批次、幂等键和回调状态。
 连接中断或响应无法解析不等于外部服务明确拒绝任务：此时 attempt 记为 `uncertain`，锁定同一候选并继续
 出现在待发送队列。重试复用原 `idempotency_key`，外部服务也必须据此幂等接单。只有外部明确返回失败才
 记为 `failed`。乱序回调只能推动状态前进，不能把已下载、待验收或人工终态倒退。
-可选的 `JAVBOSS_CLOUD_DOWNLOAD_TOKEN` 会作为发送请求的 Bearer Token。外部服务通过
-`PATCH /jav/magnet-queue/attempts/:attempt_id` 回写 `submitted / downloaded / awaiting_quality / failed`
+可选的 `JAVBOSS_CLOUD_DOWNLOAD_TOKEN` 会作为发送请求和验收控制请求的 Bearer Token。外部服务通过
+`PATCH /jav/magnet-queue/attempts/:attempt_id` 回写 `submitted / downloaded / awaiting_quality / uncertain / failed`
 等状态；该回调不使用浏览器会话，必须携带与 `JAVBOSS_CLOUD_DOWNLOAD_CALLBACK_TOKEN` 一致的
 Bearer Token。发送请求体包含 `batch_id`、`callback_path`，以及每项的 `attempt_id`、`jav_id`、
 `code`、`candidate_id`、`magnet_uri` 和 `idempotency_key`。
 
-下载落盘后，用户在详情页填写结构化质量事实并选择“通过验收并入库”或“标记不合格”。不合格候选
-不会删除：原因、事实和备注会保留在候选历史中；默认将对应最新位置移入系统回收站并隐藏位置，
-然后回到 `magnet_review` 继续选择。文件删除与不合格事实是两个结果：即使用户选择保留文件或移入
-回收站失败，扫盘也不能把已拒绝候选误转成正式入库。存储目录离线时拒绝删除；存在多个有效位置时
-拒绝猜测应删除或验收哪一个。正式验收必须检测到且仅检测到一个有效位置，并且只接受活动 attempt 对应的
-同一 `jav_id` 候选；没有对应下载 attempt 的旧/手工文件不能从此入口冒充云下载质量验收。
+下载落盘后，用户在详情页填写结构化质量事实并保存“通过”或“不合格”决定；此时文件仍留在待验收区，
+不会发生移动或删除。用户可继续核验其它作品，再从“待验收”入口统一执行已保存的决定。批量执行时，
+Bot 只针对本批“通过”作品所属的任务目录先执行一次与 `/clean` 相同规则的清扫，去除小文件、黑名单文件和空子目录，
+且不会触碰尚未判断的作品；随后将所有通过项合并为一次 `MoveFile + Skip`，将所有不合格项合并为一次 `DeleteFiles`。
+队列只有一部作品时仍走同一套单项批次流程。不合格候选记录、原因、事实和备注全部保留，执行删除后回到 `magnet_review`。
+通过时 Bot 先将结果路径移入 `/115/upload/javbosstest`，JavBoss 再把候选标为最佳并进入 `awaiting_scan`。
+移动或删除的源路径必须严格位于 `/115/云下载/jav待验收/` 之下；禁止对待验收根目录或 `/115/云下载` 的其它内容执行操作。
 
-陈列馆工具栏把三个动作阶段直接分开：`待发送` 是已保存但尚未确定接单的选择，`待验收` 是扫盘已经确认
-物理文件但尚无人工质量结论的悬挂作品，`入库记录` 只包含正式验收通过的作品。每日记录按
+`awaiting_scan` 仍不是正式入库，也不会提前写每日入库记录。扫盘关联到同一 `jav_id` 的唯一有效媒体后，
+系统才原子创建 `jav_quality_acceptance`、把 attempt 置为 `accepted` 并把 acquisition 置为 `imported`。
+
+批量验收中只要有一项“通过”，JavBoss 会在验收接口成功返回后自动请求一次正式库增量扫描，
+不受目录 `auto_scan_enabled` 开关影响；扫描任务会等待 CloudNAS 挂载刷新后再开始，并根据
+`JAV_LIBRARY_PATH` 的末级目录名匹配本地已配置的扫描目录。这样“通过 → 移入正式库 → 扫盘关联 → 正式入库”
+不需要再次手动点击扫描。若存在多个同名目录会分别扫描；存在多个目录但无法唯一匹配时不会盲扫，
+会记录日志并保留 `awaiting_scan`，需要先在目录设置中明确正式库路径。
+
+陈列馆工具栏把动作阶段直接分开：`待发送` 是已保存但尚未确定接单的选择，`待验收` 是文件位于 115
+专属暂存目录且等待人工质量结论的作品，`等待扫盘` 是质量已通过且已移入正式库的作品，`入库记录` 只
+包含扫盘确认后的作品。每日记录按
 `jav_quality_acceptance.accepted_at` 汇总，空日期不产生占位记录。
 
-相关持久化表：`jav_magnet_candidate`、`jav_magnet_selection`、`jav_download_batch`、
+相关持久化表：`jav_code_alias`、`jav_magnet_candidate`、`jav_magnet_selection`、`jav_download_batch`、
 `jav_download_attempt`、`jav_quality_acceptance`。主要接口：
 `GET /jav/items/:id`、`POST /jav/items/:id/magnets/collect`、`PUT /jav/items/:id/magnet-selection`、
+`PATCH /jav/items/:id/code`、
 `GET /jav/magnet-queue`、`POST /jav/magnet-queue/submit`、`GET /jav/quality-review-queue`、
-`POST /jav/items/:id/magnets/:candidate_id/review` 和 `GET /jav/import-days`。
+`POST /jav/items/:id/magnets/:candidate_id/review-decision`、`POST /jav/quality-review-queue/execute`、
+`POST /jav/items/:id/magnets/:candidate_id/review`（兼容旧调用）和 `GET /jav/import-days`。
 
 外部云下载服务接收的请求形状：
 
@@ -198,9 +226,20 @@ Bearer Token。发送请求体包含 `batch_id`、`callback_path`，以及每项
 }
 ```
 
-后续回调 body 为 `{"status":"downloaded","external_task_id":"115-task-9001"}`；允许状态只有
-`submitted`、`downloaded`、`awaiting_quality` 和 `failed`。正式的 `accepted/rejected` 只能由
+后续回调 body 包含状态、任务 ID 和 CD2 返回的路径，例如
+`{"status":"awaiting_quality","external_task_id":"...","result_paths":["/115/云下载/jav待验收/..."]}`；
+允许状态为 `submitted`、`downloaded`、`awaiting_quality`、`uncertain` 和 `failed`。正式的
+`accepted/rejected` 只能由
 JavBoss 人工验收动作产生，外部服务无权代替。
+
+批量人工验收由 JavBoss 调用外部服务的
+`POST /v1/javboss/download-attempts/review-batch`；请求只携带 attempt ID 和 `accepted/rejected` 决定，
+外部服务先返回本批通过目录的清扫统计，再按决定合并 CloudDrive2 的移动与删除操作，并返回每项最终状态。
+CloudDrive2 Bot 同时向 `ADMIN_IDS` 中的管理员发送验收汇总通知；Telegram 通知失败不会回滚已完成的存储操作。
+
+Telegram Bot 的番号入口调用 `POST /integrations/telegram/jav/input-batches`，携带
+`Authorization: Bearer JAVBOSS_INPUT_TOKEN` 与 `Idempotency-Key: telegram:<chat_id>:<message_id>`。
+Bot 只转发完整原文，不复制解析规则；同一消息重复投递返回原批次。
 
 ## 文件唯一性与冲突
 

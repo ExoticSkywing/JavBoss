@@ -12,11 +12,13 @@ const (
 	JavInputStatusCleared          = "cleared"
 
 	JavAcquisitionStageMetadataPending   = "metadata_pending"
+	JavAcquisitionStageCodeReview        = "code_review"
 	JavAcquisitionStageMagnetCollecting  = "magnet_collecting"
 	JavAcquisitionStageMagnetReview      = "magnet_review"
 	JavAcquisitionStageReadyToDownload   = "ready_to_download"
 	JavAcquisitionStageDownloadSubmitted = "download_submitted"
 	JavAcquisitionStageQualityReview     = "quality_review"
+	JavAcquisitionStageAwaitingScan      = "awaiting_scan"
 	JavAcquisitionStageImported          = "imported"
 )
 
@@ -35,6 +37,8 @@ type JavInputBatch struct {
 	InvalidCount          int            `json:"invalid_count" gorm:"not null;default:0"`
 	CreatedAt             time.Time      `json:"created_at" gorm:"not null"`
 	Preview               string         `json:"preview" gorm:"type:text;not null;default:''"`
+	Source                string         `json:"source" gorm:"type:text;not null;default:web;uniqueIndex:idx_jav_input_batch_source_external_request,priority:1"`
+	ExternalRequestID     *string        `json:"external_request_id,omitempty" gorm:"type:text;uniqueIndex:idx_jav_input_batch_source_external_request,priority:2"`
 	Items                 []JavInputItem `json:"items,omitempty" gorm:"foreignKey:JavInputBatchID;constraint:OnUpdate:CASCADE,OnDelete:CASCADE"`
 }
 

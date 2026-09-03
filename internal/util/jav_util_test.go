@@ -33,6 +33,10 @@ func TestExtractCodeFromName(t *testing.T) {
 			expected: []string{"AGEMIX-080"},
 		},
 		{
+			input:    "CWPBD-052.mp4",
+			expected: []string{"CWPBD-052"},
+		},
+		{
 			input:    "AMBI027a.avi",
 			expected: []string{"AMBI-027", "AMBI-027A"},
 		},
@@ -130,11 +134,15 @@ func TestExtractCodeFromName(t *testing.T) {
 		},
 		{
 			input:    "PT-82.mp4",
-			expected: []string{"PT-082", "PT-82"},
+			expected: []string{"PT-82", "PT-082"},
+		},
+		{
+			input:    "CWPBD-52.mp4",
+			expected: []string{"CWPBD-52", "CWPBD-052"},
 		},
 		{
 			input:    "LLDV-44.mp4",
-			expected: []string{"LLDV-044", "LLDV-44"},
+			expected: []string{"LLDV-44", "LLDV-044"},
 		},
 		{
 			input:    "t28-502.mp4",
@@ -151,5 +159,19 @@ func TestExtractCodeFromName(t *testing.T) {
 		if !slices.Equal(got, tt.expected) {
 			t.Fatalf("ExtractCodeFromName(%q) = %#v, want %#v", tt.input, got, tt.expected)
 		}
+	}
+}
+
+func TestExtractCodeFromNameFindsCodeEmbeddedAfterDigits(t *testing.T) {
+	got := util.ExtractCodeFromName("hjd2048.com-0831pred099-h264.mp4")
+	if !slices.Contains(got, "PRED-099") {
+		t.Fatalf("ExtractCodeFromName did not recover embedded code: %#v", got)
+	}
+}
+
+func TestExtractCodeFromNameKeepsEmbeddedShortCodeBeforePaddedFallback(t *testing.T) {
+	got := util.ExtractCodeFromName("release0831cwpbd52-h264.mp4")
+	if !slices.Contains(got, "CWPBD-52") {
+		t.Fatalf("ExtractCodeFromName did not keep embedded short code: %#v", got)
 	}
 }

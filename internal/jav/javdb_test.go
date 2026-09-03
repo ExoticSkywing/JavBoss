@@ -254,6 +254,24 @@ func TestParseJavDBMovieInfo(t *testing.T) {
 	}
 }
 
+func TestParseJavDBMovieInfoRejectsLoginPage(t *testing.T) {
+	doc, err := html.Parse(strings.NewReader(`
+<!doctype html>
+<html>
+<head><title> 登入 | JavDB 成人影片數據庫 </title></head>
+<body>
+  <p class="panel-heading">歡迎登入</p>
+  <form action="/login" method="post"><input name="password"></form>
+</body>
+</html>`))
+	if err != nil {
+		t.Fatalf("parse html: %v", err)
+	}
+	if info := parseJavDBMovieInfo(doc); info != nil {
+		t.Fatalf("login page parsed as movie metadata: %#v", info)
+	}
+}
+
 func TestParseJavDBActressURLByName(t *testing.T) {
 	doc, err := html.Parse(strings.NewReader(`
 <!doctype html>

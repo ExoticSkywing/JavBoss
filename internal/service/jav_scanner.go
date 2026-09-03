@@ -184,14 +184,14 @@ func scanMissingJavStudioAndEnglishSeries(ctx context.Context) error {
 			seriesEn = strings.TrimSpace(info.Series)
 		}
 		if item.StudioID == nil && studio != "" {
-			if updated, err := db.UpdateJavStudioIfMissing(ctx, item.ID, studio); err != nil {
+			if updated, err := db.UpdateJavStudioIfMissingForCode(ctx, item.ID, code, studio); err != nil {
 				logging.Error("update jav studio failed id=%d code=%s err=%v", item.ID, code, err)
 			} else if updated {
 				logging.Info("jav studio updated id=%d code=%s studio=%s", item.ID, code, studio)
 			}
 		}
 		if item.SeriesEnID == nil && seriesEn != "" {
-			if updated, err := db.UpdateJavEnglishSeriesIfMissing(ctx, item.ID, seriesEn); err != nil {
+			if updated, err := db.UpdateJavEnglishSeriesIfMissingForCode(ctx, item.ID, code, seriesEn); err != nil {
 				logging.Error("update jav internal english series failed id=%d code=%s err=%v", item.ID, code, err)
 			} else if updated {
 				logging.Info("jav internal english series updated id=%d code=%s series=%s", item.ID, code, seriesEn)
@@ -216,6 +216,12 @@ func lookupJavDatabaseMetadata(ctx context.Context, item db.JavMetadataScanItem)
 			logging.Error("lookup javdatabase metadata failed id=%d code=%s err=%v", item.ID, code, err)
 		}
 		return nil, code, false, nil
+	}
+	if info != nil {
+		if responseCode := models.NormalizeJavCode(info.Code); responseCode != "" && responseCode != models.NormalizeJavCode(code) {
+			logging.Error("ignore mismatched javdatabase metadata id=%d requested=%s response=%s", item.ID, code, strings.TrimSpace(info.Code))
+			return nil, code, false, nil
+		}
 	}
 	return info, code, true, nil
 }
@@ -315,12 +321,16 @@ func scanMissingJavLocalSeriesWithJavMenu(ctx context.Context) (int64, error) {
 		}
 		series := ""
 		if info != nil {
+			if responseCode := models.NormalizeJavCode(info.Code); responseCode != "" && responseCode != models.NormalizeJavCode(code) {
+				logging.Error("ignore mismatched javmenu series id=%d requested=%s response=%s", item.ID, code, strings.TrimSpace(info.Code))
+				continue
+			}
 			series = strings.TrimSpace(info.Series)
 		}
 		if series == "" {
 			continue
 		}
-		if updated, err := db.UpdateJavSeriesIfMissing(ctx, item.ID, series); err != nil {
+		if updated, err := db.UpdateJavSeriesIfMissingForCode(ctx, item.ID, code, series); err != nil {
 			logging.Error("update javmenu local series failed id=%d code=%s err=%v", item.ID, code, err)
 		} else if updated {
 			updatedCount++
@@ -363,12 +373,16 @@ func scanMissingJavLocalSeriesWithoutEnglishHintWithJavMenu(ctx context.Context)
 		}
 		series := ""
 		if info != nil {
+			if responseCode := models.NormalizeJavCode(info.Code); responseCode != "" && responseCode != models.NormalizeJavCode(code) {
+				logging.Error("ignore mismatched javmenu series id=%d requested=%s response=%s", item.ID, code, strings.TrimSpace(info.Code))
+				continue
+			}
 			series = strings.TrimSpace(info.Series)
 		}
 		if series == "" {
 			continue
 		}
-		if updated, err := db.UpdateJavSeriesIfMissing(ctx, item.ID, series); err != nil {
+		if updated, err := db.UpdateJavSeriesIfMissingForCode(ctx, item.ID, code, series); err != nil {
 			logging.Error("update javmenu local series without english hint failed id=%d code=%s err=%v", item.ID, code, err)
 		} else if updated {
 			updatedCount++
@@ -458,7 +472,7 @@ func scanMissingJavUncensored(ctx context.Context) error {
 				logging.Error("ignore mismatched jav uncensored metadata provider=%s id=%d requested=%s response=%s", provider.String(), item.ID, code, strings.TrimSpace(info.Code))
 				continue
 			}
-			if err := db.UpdateJavIsUncensoredIfUnknown(ctx, item.ID, *info.IsUncensored); err != nil {
+			if err := db.UpdateJavIsUncensoredIfUnknownForCode(ctx, item.ID, code, *info.IsUncensored); err != nil {
 				logging.Error("update jav is_uncensored failed provider=%s id=%d code=%s err=%v", provider.String(), item.ID, code, err)
 				continue
 			}
@@ -494,10 +508,14 @@ func scanMissingUncensoredJavInfoWithAvsox(ctx context.Context) error {
 		if info == nil {
 			continue
 		}
+		if responseCode := models.NormalizeJavCode(info.Code); responseCode != "" && responseCode != models.NormalizeJavCode(code) {
+			logging.Error("ignore mismatched avsox metadata id=%d requested=%s response=%s", item.ID, code, strings.TrimSpace(info.Code))
+			continue
+		}
 
 		studio := strings.TrimSpace(info.Studio)
 		if item.StudioID == nil && studio != "" {
-			if updated, err := db.UpdateJavStudioIfMissing(ctx, item.ID, studio); err != nil {
+			if updated, err := db.UpdateJavStudioIfMissingForCode(ctx, item.ID, code, studio); err != nil {
 				logging.Error("update uncensored jav studio failed id=%d code=%s err=%v", item.ID, code, err)
 			} else if updated {
 				logging.Info("uncensored jav studio updated provider=%s id=%d code=%s studio=%s", jav.ProviderAvsox.String(), item.ID, code, studio)
@@ -506,7 +524,7 @@ func scanMissingUncensoredJavInfoWithAvsox(ctx context.Context) error {
 
 		series := strings.TrimSpace(info.Series)
 		if item.SeriesID == nil && series != "" {
-			if updated, err := db.UpdateJavSeriesIfMissing(ctx, item.ID, series); err != nil {
+			if updated, err := db.UpdateJavSeriesIfMissingForCode(ctx, item.ID, code, series); err != nil {
 				logging.Error("update uncensored jav series failed id=%d code=%s err=%v", item.ID, code, err)
 			} else if updated {
 				logging.Info("uncensored jav series updated provider=%s id=%d code=%s series=%s", jav.ProviderAvsox.String(), item.ID, code, series)
@@ -514,7 +532,7 @@ func scanMissingUncensoredJavInfoWithAvsox(ctx context.Context) error {
 		}
 
 		if len(info.Actors) > 0 {
-			updated, err := db.AppendJavIdolsIfMissingForProvider(ctx, item.ID, info.Actors, jav.ProviderAvsox)
+			updated, err := db.AppendJavIdolsIfMissingForProviderAndCode(ctx, item.ID, code, info.Actors, jav.ProviderAvsox)
 			if err != nil {
 				logging.Error("update uncensored jav idols failed id=%d code=%s err=%v", item.ID, code, err)
 			} else if updated {
@@ -554,12 +572,16 @@ func scanMissingJavLocalSeriesWithAvmoo(ctx context.Context) (int64, error) {
 
 		series := ""
 		if info != nil {
+			if responseCode := models.NormalizeJavCode(info.Code); responseCode != "" && responseCode != models.NormalizeJavCode(code) {
+				logging.Error("ignore mismatched avmoo series id=%d requested=%s response=%s", item.ID, code, strings.TrimSpace(info.Code))
+				continue
+			}
 			series = strings.TrimSpace(info.Series)
 		}
 		if series == "" {
 			continue
 		}
-		if updated, err := db.UpdateJavSeriesIfMissing(ctx, item.ID, series); err != nil {
+		if updated, err := db.UpdateJavSeriesIfMissingForCode(ctx, item.ID, code, series); err != nil {
 			logging.Error("update jav local series failed id=%d code=%s err=%v", item.ID, code, err)
 			continue
 		} else if updated {
@@ -593,21 +615,29 @@ func scanMissingJavZhInfo(ctx context.Context, providers []jav.Provider) error {
 		if code == "" {
 			continue
 		}
-		needsTitle := strings.TrimSpace(item.Title) == ""
+		needsTitle := strings.TrimSpace(item.Title) == "" || jav.IsPlaceholderJavTitle(item.Title)
 		needsIdols := item.IdolCount == 0
+		completedLookup := false
+		hadRetryableLookupError := false
 
 		for _, provider := range javMetadataProvidersForCode(code, providers) {
 			info, err := lookupJavMetadataByCode(code, provider)
 			if err != nil {
 				if !errors.Is(err, jav.ResourceNotFonud) {
+					hadRetryableLookupError = true
 					logging.Error("lookup %s metadata failed id=%d code=%s err=%v", provider.String(), item.ID, code, err)
+				} else {
+					completedLookup = true
 				}
 				continue
 			}
 			if info == nil {
+				hadRetryableLookupError = true
 				continue
 			}
+			completedLookup = true
 			if responseCode := models.NormalizeJavCode(info.Code); responseCode != "" && responseCode != models.NormalizeJavCode(code) {
+				hadRetryableLookupError = true
 				logging.Error("ignore mismatched jav metadata provider=%s id=%d requested=%s response=%s", provider.String(), item.ID, code, strings.TrimSpace(info.Code))
 				continue
 			}
@@ -643,7 +673,7 @@ func scanMissingJavZhInfo(ctx context.Context, providers []jav.Provider) error {
 					metadata.Provider = jav.ProviderJavDB
 					appended, err = db.ReconcileJavDBIdols(ctx, item.ID, code, &metadata)
 				} else {
-					appended, err = db.AppendJavIdolsIfMissingForProvider(ctx, item.ID, info.Actors, providerValue)
+					appended, err = db.AppendJavIdolsIfMissingForProviderAndCode(ctx, item.ID, code, info.Actors, providerValue)
 				}
 				if err != nil {
 					logging.Error("update jav idol metadata failed provider=%s id=%d code=%s err=%v", provider.String(), item.ID, code, err)
@@ -668,6 +698,14 @@ func scanMissingJavZhInfo(ctx context.Context, providers []jav.Provider) error {
 			}
 			if !needsTitle && !needsIdols {
 				break
+			}
+		}
+		if needsTitle && completedLookup && !hadRetryableLookupError {
+			marked, err := db.MarkJavMetadataNeedsCodeReview(ctx, item.ID, code)
+			if err != nil {
+				logging.Error("mark JAV code for review id=%d code=%s err=%v", item.ID, code, err)
+			} else if marked {
+				logging.Info("JAV metadata exact match not found; code review required id=%d code=%s", item.ID, code)
 			}
 		}
 	}

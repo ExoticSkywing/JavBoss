@@ -758,6 +758,10 @@ func lookupVideoJavScrapeByProvider(c *gin.Context, provider jav.Provider) {
 		)
 		return
 	}
+	if responseCode := models.NormalizeJavCode(info.Code); responseCode != "" && responseCode != models.NormalizeJavCode(code) {
+		respondLocalizedError(c, http.StatusBadGateway, "来源返回了不匹配的番号", "The provider returned metadata for a different JAV code")
+		return
+	}
 	c.JSON(http.StatusOK, javInfoToVideoScrapeResponse(info))
 }
 

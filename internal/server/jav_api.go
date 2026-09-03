@@ -21,6 +21,7 @@ import (
 	"javboss/internal/jav"
 	"javboss/internal/manager"
 	"javboss/internal/models"
+	"javboss/internal/service"
 	"javboss/internal/util"
 )
 
@@ -299,7 +300,11 @@ func resolveJavSampleImages(c *gin.Context) {
 			respondLocalizedError(c, http.StatusBadGateway, "样品图来源暂时不可用，请稍后重试", "Sample image providers are temporarily unavailable; try again later")
 			return
 		}
-		if err := dbpkg.MarkJavSampleImagesNotFound(c.Request.Context(), item.ID); err != nil {
+		if err := dbpkg.MarkJavSampleImagesNotFoundForCode(c.Request.Context(), item.ID, item.Code); err != nil {
+			if errors.Is(err, dbpkg.ErrJavIdentityChanged) {
+				respondLocalizedError(c, http.StatusConflict, "番号已发生变化，请重新打开作品", "The JAV code changed; reopen the work")
+				return
+			}
 			logging.Error("mark JAV sample images not found id=%d code=%s: %v", item.ID, item.Code, err)
 			respondLocalizedError(c, http.StatusInternalServerError, "保存样品图查询状态失败", "Failed to save sample image lookup state")
 			return
@@ -308,8 +313,12 @@ func resolveJavSampleImages(c *gin.Context) {
 		return
 	}
 
-	stored, err := dbpkg.SetJavSampleImagesIfEmpty(c.Request.Context(), item.ID, images)
+	stored, err := dbpkg.SetJavSampleImagesIfEmptyForCode(c.Request.Context(), item.ID, item.Code, images)
 	if err != nil {
+		if errors.Is(err, dbpkg.ErrJavIdentityChanged) {
+			respondLocalizedError(c, http.StatusConflict, "番号已发生变化，请重新打开作品", "The JAV code changed; reopen the work")
+			return
+		}
 		logging.Error("save JAV sample images id=%d code=%s: %v", item.ID, item.Code, err)
 		respondLocalizedError(c, http.StatusInternalServerError, "保存样品图失败", "Failed to save sample images")
 		return
@@ -423,7 +432,7 @@ func isAllowedJavSampleImageHost(parsed *url.URL) bool {
 	if host == "" {
 		return false
 	}
-	for _, allowed := range []string{"jdbstatic.com", "dmm.co.jp", "mgstage.com"} {
+	for _, allowed := range []string{"jdbstatic.com", "dmm.co.jp", "mgstage.com", "1pondo.tv"} {
 		if host == allowed || strings.HasSuffix(host, "."+allowed) {
 			return true
 		}
@@ -445,13 +454,24 @@ func lookupJavSampleImagesByProvider(
 	}
 
 	var lookupErrors []error
-	for _, provider := range []jav.Provider{jav.ProviderJavMenu, jav.ProviderJavBus} {
+	// JavDB App exposes the same preview set without requiring a browser login;
+	// keep the HTML mirrors as fallbacks for installations that do not have the
+	// app endpoint available.
+	for _, provider := range []jav.Provider{jav.ProviderJavDBApp, jav.ProviderJavMenu, jav.ProviderJavBus} {
 		info, err := lookup(code, provider)
 		if err != nil {
 			if !errors.Is(err, jav.ResourceNotFonud) {
 				lookupErrors = append(lookupErrors, fmt.Errorf("%s: %w", provider.String(), err))
 			}
 			continue
+		}
+		if info != nil {
+			requested := models.NormalizeJavCode(code)
+			response := models.NormalizeJavCode(info.Code)
+			if response != "" && response != requested {
+				logging.Info("skip mismatched JAV sample images provider=%s requested=%s response=%s", provider.String(), code, info.Code)
+				continue
+			}
 		}
 		images := javSampleImagesToModel(info)
 		if len(images) == 0 {
@@ -472,6 +492,24 @@ func lookupJavSampleImagesByProvider(
 			continue
 		}
 		return images, nil
+	}
+
+	onePondoImages, err := jav.LookupOnePondoSampleImages(ctx, code)
+	if err != nil {
+		lookupErrors = append(lookupErrors, fmt.Errorf("1pondo: %w", err))
+	} else if images := javSampleImagesToModel(&jav.JavInfo{SampleImages: onePondoImages}); len(images) > 0 {
+		detailURL := lastJavSampleImageDetailURL(images)
+		if detailURL != "" && validateURL != nil {
+			valid, validationErr := validateURL(ctx, detailURL)
+			switch {
+			case validationErr != nil:
+				lookupErrors = append(lookupErrors, fmt.Errorf("1pondo sample image validation: %w", validationErr))
+			case valid:
+				return images, nil
+			default:
+				logging.Info("skip invalid JAV sample images provider=1pondo detail_url=%s", detailURL)
+			}
+		}
 	}
 	return models.JavSampleImages{}, errors.Join(lookupErrors...)
 }
@@ -706,6 +744,51 @@ type javItemUpdateRequest struct {
 	ReleaseDate    *string  `json:"release_date"`
 	DurationMin    *int     `json:"duration_min"`
 	FavoriteRating *float64 `json:"favorite_rating"`
+}
+
+type javCodeCorrectionRequest struct {
+	Code string `json:"code"`
+}
+
+func correctJavCode(c *gin.Context) {
+	id, err := strconv.ParseInt(strings.TrimSpace(c.Param("id")), 10, 64)
+	if err != nil || id <= 0 {
+		respondLocalizedError(c, http.StatusBadRequest, "JAV 作品 ID 无效", "Invalid JAV item ID")
+		return
+	}
+	var req javCodeCorrectionRequest
+	if err := c.ShouldBindJSON(&req); err != nil {
+		respondLocalizedError(c, http.StatusBadRequest, "修正番号请求无效", "Invalid JAV code correction request")
+		return
+	}
+	updated, err := dbpkg.CorrectJavCode(c.Request.Context(), id, req.Code, parseDirectoryIDs(c.Query("directory_ids")))
+	if err != nil {
+		switch {
+		case errors.Is(err, dbpkg.ErrJavCodeCorrectionInvalid):
+			respondLocalizedError(c, http.StatusBadRequest, "请输入一个有效的番号", "Enter one valid JAV code")
+		case errors.Is(err, dbpkg.ErrJavCodeCorrectionConflict):
+			var conflict *dbpkg.JavCodeCorrectionConflictError
+			if errors.As(err, &conflict) && conflict.JavID > 0 {
+				c.JSON(http.StatusConflict, gin.H{
+					"error_zh":           "这个番号已经对应另一部作品，请打开已有作品",
+					"error_en":           "This code already belongs to another work; open that work instead",
+					"conflicting_jav_id": conflict.JavID,
+				})
+			} else {
+				respondLocalizedError(c, http.StatusConflict, "这个番号已经对应另一部作品，请打开已有作品", "This code already belongs to another work; open that work instead")
+			}
+		case errors.Is(err, dbpkg.ErrJavCodeCorrectionNotAllowed):
+			respondLocalizedError(c, http.StatusConflict, "当前作品已有文件或处理记录，暂不能修正番号", "This work already has files or workflow records and cannot be corrected here")
+		case errors.Is(err, gorm.ErrRecordNotFound):
+			respondLocalizedError(c, http.StatusNotFound, "JAV 作品不存在", "JAV item was not found")
+		default:
+			logging.Error("correct jav code error: %v", err)
+			respondLocalizedError(c, http.StatusInternalServerError, "修正番号失败", "Failed to correct JAV code")
+		}
+		return
+	}
+	service.RequestJavMetadataScan()
+	c.JSON(http.StatusOK, updated)
 }
 
 func updateJavItem(c *gin.Context) {

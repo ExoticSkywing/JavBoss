@@ -103,7 +103,7 @@ func TestLookupCacheKeyVersionIsProviderSpecific(t *testing.T) {
 			provider: ProviderJavDB,
 			method:   "lookup_jav",
 			input:    "abc-001",
-			want:     "v4:jav:javdb:lookup_jav:ABC-001",
+			want:     "v5:jav:javdb:lookup_jav:ABC-001",
 		},
 		{
 			name:     "avmoo lookup jav uses provider version",

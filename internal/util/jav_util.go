@@ -19,6 +19,10 @@ var (
 	fc2CodeRe                   = regexp.MustCompile(`(?i)FC2(?:[^a-z0-9]+PPV)?[^0-9]*(\d{5,})`)
 	heyzoCodeRe                 = regexp.MustCompile(`(?i)HEYZO[^0-9]*(\d{3,})`)
 	luxuCodeRe                  = regexp.MustCompile(`(?i)(?:\d{3,})?LUXU[^0-9]*(\d{2,})`)
+	// Some downloaders prepend a release/date token directly to the JAV code,
+	// for example "0831pred099".  The normal boundary-aware expressions cannot
+	// see PRED-099 there because another match may consume the preceding digits.
+	embeddedCensoredCodeRe = regexp.MustCompile(`(?i)^([a-z]{2,6})[-_ ]?(\d{2,5})([a-z]{0,2})`)
 )
 
 func ExtractCodeFromName(name string) []string {
@@ -30,6 +34,12 @@ func ExtractCodeFromName(name string) []string {
 		appendUniqueCodes(&out, seen, specialCodes)
 		return out
 	}
+	// A two-digit number is a complete, explicit identity when the user or a
+	// filename actually contains it. Keep that exact spelling first and retain
+	// the historical three-digit form only as a later provider fallback. This
+	// prevents a real code such as CWPBD-52 from being silently stored as
+	// CWPBD-052.
+	appendUniqueCodes(&out, seen, extractExplicitShortCodesFromName(base))
 	appendUniqueCodes(&out, seen, extractCensoredCodesFromName(base))
 	appendUniqueCodes(&out, seen, extractUncensoredCodesFromName(base))
 	return out
@@ -93,6 +103,13 @@ func extractUncensoredCodesFromName(base string) []string {
 		appendUniqueCode(&out, seen, strings.TrimSpace(m[2]))
 	}
 
+	appendUniqueCodes(&out, seen, extractExplicitShortCodesFromName(base))
+	return out
+}
+
+func extractExplicitShortCodesFromName(base string) []string {
+	var out []string
+	seen := make(map[string]struct{})
 	for _, m := range explicitShortCodeRe.FindAllStringSubmatch(base, -1) {
 		if len(m) < 5 {
 			continue
@@ -150,7 +167,51 @@ func extractCensoredCodesFromName(base string) []string {
 			appendUniqueCode(&out, seen, base+suffix)
 		}
 	}
+
+	// Recover codes glued to a preceding numeric token (for example
+	// "0831pred099-h264").  Scan each position independently so a broader
+	// match such as "com-0831" cannot consume the beginning of "pred099".
+	for i := 2; i < len(base); i++ {
+		// Require at least a two-digit numeric run before the prefix.  This
+		// avoids treating the tail of mixed prefixes such as "MCB3DBD-42"
+		// as a second, unrelated code ("DBD-42").
+		if base[i-1] < '0' || base[i-1] > '9' || base[i-2] < '0' || base[i-2] > '9' {
+			continue
+		}
+		match := embeddedCensoredCodeRe.FindStringSubmatch(base[i:])
+		if len(match) < 3 {
+			continue
+		}
+		end := i + len(match[0])
+		if end < len(base) && isASCIIAlphaNumeric(base[end]) {
+			// Do not extract a random word prefix from a longer token such as
+			// "2024abc123title".
+			continue
+		}
+		prefix := strings.ToUpper(strings.TrimSpace(match[1]))
+		rawNumber := strings.TrimSpace(match[2])
+		suffix := strings.ToUpper(strings.TrimSpace(match[3]))
+		if len(rawNumber) == 2 {
+			shortBase := fmt.Sprintf("%s-%s", prefix, rawNumber)
+			appendUniqueCode(&out, seen, shortBase)
+			if suffix != "" {
+				appendUniqueCode(&out, seen, shortBase+suffix)
+			}
+		}
+		number := normalizeNumber(rawNumber)
+		codeBase := fmt.Sprintf("%s-%s", prefix, number)
+		appendUniqueCode(&out, seen, codeBase)
+		if suffix != "" {
+			appendUniqueCode(&out, seen, codeBase+suffix)
+		}
+	}
 	return out
+}
+
+func isASCIIAlphaNumeric(value byte) bool {
+	return (value >= 'a' && value <= 'z') ||
+		(value >= 'A' && value <= 'Z') ||
+		(value >= '0' && value <= '9')
 }
 
 func appendUniqueCodes(out *[]string, seen map[string]struct{}, codes []string) {

@@ -57,6 +57,7 @@ func TestMigratedSchemaMatchesGormModels(t *testing.T) {
 		&models.JavInputBatch{},
 		&models.JavInputItem{},
 		&models.JavAcquisition{},
+		&models.JavCodeAlias{},
 		&models.JavMagnetCandidate{},
 		&models.JavMagnetSelection{},
 		&models.JavDownloadBatch{},

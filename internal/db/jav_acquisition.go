@@ -8,6 +8,7 @@ import (
 	"javboss/internal/models"
 
 	"gorm.io/gorm"
+	"gorm.io/gorm/clause"
 )
 
 // reconcileJavAcquisitionStagesTx keeps the durable workflow stage consistent
@@ -33,6 +34,9 @@ func reconcileJavAcquisitionStagesTx(tx *gorm.DB, javIDs []int64) error {
 	// caller able to report a media conflict and the surrounding transaction
 	// rolls back the attempted reactivation.
 	if err := ensureNoActiveJavMediaConflictsTx(tx, ids); err != nil {
+		return err
+	}
+	if err := finalizeAwaitingScanJavImportsTx(tx, ids); err != nil {
 		return err
 	}
 
@@ -129,6 +133,76 @@ func reconcileJavAcquisitionStagesTx(tx *gorm.DB, javIDs []int64) error {
 			"updated_at": now,
 		}).Error; err != nil {
 		return fmt.Errorf("resume metadata collection for unlinked JAV acquisitions: %w", err)
+	}
+	return nil
+}
+
+// finalizeAwaitingScanJavImportsTx is the only top-down path that creates the
+// formal acceptance record. Human review has already promoted the file out of
+// staging; this step runs only after the scanner links a real formal-library
+// VideoLocation to the same canonical work.
+func finalizeAwaitingScanJavImportsTx(tx *gorm.DB, javIDs []int64) error {
+	type awaitingRow struct {
+		AttemptID   int64  `gorm:"column:attempt_id"`
+		BatchID     int64  `gorm:"column:batch_id"`
+		JavID       int64  `gorm:"column:jav_id"`
+		CandidateID int64  `gorm:"column:candidate_id"`
+		Notes       string `gorm:"column:notes"`
+	}
+	var attempts []awaitingRow
+	if err := tx.Table("jav_download_attempt a_finalize").
+		Select("a_finalize.id AS attempt_id, a_finalize.batch_id, a_finalize.jav_id, a_finalize.candidate_id, c_finalize.review_notes AS notes").
+		Joins("JOIN jav_magnet_candidate c_finalize ON c_finalize.id = a_finalize.candidate_id AND c_finalize.jav_id = a_finalize.jav_id").
+		Where("a_finalize.jav_id IN ?", javIDs).
+		Where("a_finalize.status = ?", models.JavDownloadAttemptAwaitingScan).
+		Where("c_finalize.review_status = ?", models.JavMagnetReviewAccepted).
+		Where("a_finalize.id = (SELECT MAX(a_latest.id) FROM jav_download_attempt a_latest WHERE a_latest.jav_id = a_finalize.jav_id)").
+		Find(&attempts).Error; err != nil {
+		return fmt.Errorf("list JAV downloads awaiting scan finalization: %w", err)
+	}
+	for _, attempt := range attempts {
+		var location struct {
+			ID      int64 `gorm:"column:id"`
+			VideoID int64 `gorm:"column:video_id"`
+		}
+		query := tx.Table("video_location vl_finalize").
+			Select("vl_finalize.id, vl_finalize.video_id").
+			Joins("JOIN directory d_finalize ON d_finalize.id = vl_finalize.directory_id").
+			Where("vl_finalize.jav_id = ?", attempt.JavID).
+			Where(activeLocationWhereSQL("vl_finalize", "d_finalize")).
+			Order("vl_finalize.id DESC").
+			First(&location)
+		if errors.Is(query.Error, gorm.ErrRecordNotFound) {
+			continue
+		}
+		if query.Error != nil {
+			return fmt.Errorf("find scanned JAV location for finalization: %w", query.Error)
+		}
+		now := time.Now().UTC()
+		attemptID := attempt.AttemptID
+		videoID := location.VideoID
+		locationID := location.ID
+		acceptance := models.JavQualityAcceptance{
+			JavID: attempt.JavID, CandidateID: attempt.CandidateID,
+			AttemptID: &attemptID, VideoID: &videoID, LocationID: &locationID,
+			AcceptedAt: now, Notes: attempt.Notes, CreatedAt: now, UpdatedAt: now,
+		}
+		if err := tx.Clauses(clause.OnConflict{Columns: []clause.Column{{Name: "jav_id"}}, DoNothing: true}).Create(&acceptance).Error; err != nil {
+			return fmt.Errorf("finalize scanned JAV quality acceptance: %w", err)
+		}
+		if err := tx.Model(&models.JavDownloadAttempt{}).Where("id = ?", attempt.AttemptID).Updates(map[string]any{
+			"status": models.JavDownloadAttemptAccepted, "completed_at": now, "error": "",
+		}).Error; err != nil {
+			return fmt.Errorf("mark scanned JAV download accepted: %w", err)
+		}
+		if err := tx.Model(&models.JavAcquisition{}).Where("jav_id = ?", attempt.JavID).Updates(map[string]any{
+			"stage": models.JavAcquisitionStageImported, "updated_at": now,
+		}).Error; err != nil {
+			return fmt.Errorf("mark scanned JAV acquisition imported: %w", err)
+		}
+		if err := aggregateJavDownloadBatchTx(tx, attempt.BatchID); err != nil {
+			return err
+		}
 	}
 	return nil
 }

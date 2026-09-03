@@ -12,9 +12,12 @@ export const authExpiredEvent = 'javboss:auth-expired'
 
 async function apiError(res) {
   const payload = await res.json().catch(() => ({}))
-  return new Error(
+  const error = new Error(
     getErrorMessage(zh(String(payload.error_zh || ''), String(payload.error_en || '')))
   )
+  error.status = res.status
+  error.payload = payload
+  return error
 }
 
 async function apiFetch(input, init = {}) {
@@ -639,6 +642,30 @@ export function getResolvedJavSampleImages(id, { directoryIds = [] } = {}) {
   return javSampleImagesResolved.get(requestKey) || null
 }
 
+function invalidateResolvedJavSampleImages(id) {
+  const javId = Number(id)
+  if (!Number.isFinite(javId) || javId <= 0) return
+  const prefix = `${javId}:`
+  for (const requestKey of javSampleImagesResolved.keys()) {
+    if (requestKey.startsWith(prefix)) javSampleImagesResolved.delete(requestKey)
+  }
+  for (const requestKey of javSampleImagesResolveInFlight.keys()) {
+    if (requestKey.startsWith(prefix)) javSampleImagesResolveInFlight.delete(requestKey)
+  }
+}
+
+function invalidateResolvedJavTrailer(id) {
+  const javId = Number(id)
+  if (!Number.isFinite(javId) || javId <= 0) return
+  const prefix = `${javId}:`
+  for (const requestKey of javTrailerResolved.keys()) {
+    if (requestKey.startsWith(prefix)) javTrailerResolved.delete(requestKey)
+  }
+  for (const requestKey of javTrailerInFlight.keys()) {
+    if (requestKey.startsWith(prefix)) javTrailerInFlight.delete(requestKey)
+  }
+}
+
 // Provider sample images are served by JavBoss itself. This keeps image loads
 // same-origin for remote development/port-forwarded browsers and lets the
 // backend apply the provider's required headers safely.
@@ -680,11 +707,15 @@ export function resolveJavSampleImages(id, { directoryIds = [] } = {}) {
       if (!res.ok) throw await apiError(res)
       const payload = await res.json()
       const images = Array.isArray(payload?.sample_images) ? payload.sample_images : []
-      javSampleImagesResolved.set(requestKey, images)
+      if (javSampleImagesResolveInFlight.get(requestKey) === request) {
+        javSampleImagesResolved.set(requestKey, images)
+      }
       return images
     })
     .finally(() => {
-      javSampleImagesResolveInFlight.delete(requestKey)
+      if (javSampleImagesResolveInFlight.get(requestKey) === request) {
+        javSampleImagesResolveInFlight.delete(requestKey)
+      }
     })
   javSampleImagesResolveInFlight.set(requestKey, request)
   return request
@@ -713,16 +744,22 @@ export function fetchJavTrailer(id, { directoryIds = [], refresh = false } = {})
   )
     .then(async (res) => {
       if (res.status === 404) {
-        javTrailerResolved.set(requestKey, null)
+        if (javTrailerInFlight.get(requestKey) === request) {
+          javTrailerResolved.set(requestKey, null)
+        }
         return null
       }
       if (!res.ok) throw await apiError(res)
       const payload = await parseJSONResponse(res)
-      javTrailerResolved.set(requestKey, payload)
+      if (javTrailerInFlight.get(requestKey) === request) {
+        javTrailerResolved.set(requestKey, payload)
+      }
       return payload
     })
     .finally(() => {
-      javTrailerInFlight.delete(requestKey)
+      if (javTrailerInFlight.get(requestKey) === request) {
+        javTrailerInFlight.delete(requestKey)
+      }
     })
   javTrailerInFlight.set(requestKey, request)
   return request
@@ -783,6 +820,25 @@ export async function updateJavItem(id, payload, { directoryIds = [] } = {}) {
     throw await apiError(res)
   }
   return res.json()
+}
+
+export async function correctJavCode(id, code, { directoryIds = [] } = {}) {
+  const params = new URLSearchParams()
+  if (directoryIds.length) params.set('directory_ids', directoryIds.join(','))
+  const query = params.toString()
+  const res = await apiFetch(
+    `/jav/items/${encodeURIComponent(id)}/code${query ? `?${query}` : ''}`,
+    {
+      method: 'PATCH',
+      headers: jsonHeaders,
+      body: JSON.stringify({ code: String(code || '') }),
+    }
+  )
+  if (!res.ok) throw await apiError(res)
+  const updated = await parseJSONResponse(res)
+  invalidateResolvedJavSampleImages(id)
+  invalidateResolvedJavTrailer(id)
+  return updated
 }
 
 export async function createJavTag(name) {
@@ -1441,6 +1497,29 @@ export async function reviewJavMagnet(id, candidateId, input = {}) {
       body: JSON.stringify(input),
     }
   )
+  if (!res.ok) throw await apiError(res)
+  return parseJSONResponse(res)
+}
+
+export async function saveJavQualityReviewDecision(id, candidateId, input = {}) {
+  const res = await apiFetch(
+    `/jav/items/${encodeURIComponent(id)}/magnets/${encodeURIComponent(candidateId)}/review-decision`,
+    {
+      method: 'POST',
+      headers: jsonHeaders,
+      body: JSON.stringify(input),
+    }
+  )
+  if (!res.ok) throw await apiError(res)
+  return parseJSONResponse(res)
+}
+
+export async function executeJavQualityReviewBatch(attemptIds = []) {
+  const res = await apiFetch('/jav/quality-review-queue/execute', {
+    method: 'POST',
+    headers: jsonHeaders,
+    body: JSON.stringify({ attempt_ids: attemptIds }),
+  })
   if (!res.ok) throw await apiError(res)
   return parseJSONResponse(res)
 }

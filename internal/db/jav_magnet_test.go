@@ -65,6 +65,117 @@ func TestJavMagnetCandidatesAreIdempotentAndSelectionQueuesOnce(t *testing.T) {
 	}
 }
 
+func TestQualityApprovalWaitsForFormalLibraryScan(t *testing.T) {
+	database := openTestDB(t)
+	ctx := context.Background()
+	work := models.Jav{Code: "STAGED-001", NormalizedCode: "STAGED001", Title: "Staged work"}
+	if err := database.Create(&work).Error; err != nil {
+		t.Fatalf("create JAV: %v", err)
+	}
+	candidates, err := UpsertJavMagnetCandidates(ctx, work.ID, []jav.JavDBAppMagnet{{Hash: "staged-hash", Name: "STAGED-001"}})
+	if err != nil {
+		t.Fatalf("upsert magnet: %v", err)
+	}
+	if _, err := SelectJavMagnet(ctx, work.ID, candidates[0].ID); err != nil {
+		t.Fatalf("select magnet: %v", err)
+	}
+	batch, err := CreateJavDownloadBatch(ctx, []int64{work.ID})
+	if err != nil {
+		t.Fatalf("create download batch: %v", err)
+	}
+	attemptID := batch.Attempts[0].ID
+	stagingPath := "/115/云下载/jav待验收/STAGED-001"
+	if _, err := MarkJavDownloadAttemptWithResultPaths(ctx, attemptID, models.JavDownloadAttemptAwaitingQuality, "staged-task", "", []string{stagingPath}); err != nil {
+		t.Fatalf("mark awaiting quality: %v", err)
+	}
+	queue, total, err := ListJavQualityReviewQueue(ctx, 10, 0, nil)
+	if err != nil || total != 1 || len(queue) != 1 {
+		t.Fatalf("quality queue total=%d items=%#v err=%v", total, queue, err)
+	}
+	clear := true
+	if _, err := SaveJavQualityReviewDecision(ctx, work.ID, candidates[0].ID, attemptID, JavMagnetReviewInput{Accepted: true, QualityClear: &clear}); err != nil {
+		t.Fatalf("save quality review decision: %v", err)
+	}
+	queue, total, err = ListJavQualityReviewQueue(ctx, 10, 0, nil)
+	if err != nil || total != 1 || len(queue) != 1 || queue[0].QualityReview == nil || queue[0].QualityReview.Decision != models.JavQualityReviewDecisionAccepted {
+		t.Fatalf("quality queue decision total=%d items=%#v err=%v", total, queue, err)
+	}
+	submissions, err := ListJavQualityReviewSubmissions(ctx, []int64{attemptID})
+	if err != nil || len(submissions) != 1 || submissions[0].Decision != models.JavQualityReviewDecisionAccepted {
+		t.Fatalf("quality review submissions=%#v err=%v", submissions, err)
+	}
+
+	formalPath := "/115/正式作品库/STAGED-001"
+	approved, err := ApproveJavDownloadedWorkWithReview(ctx, work.ID, candidates[0].ID, attemptID, []string{formalPath}, JavMagnetReviewInput{Accepted: true, Notes: "人工确认清晰"})
+	if err != nil {
+		t.Fatalf("approve staged download: %v", err)
+	}
+	if approved.Status != models.JavDownloadAttemptAwaitingScan || len(approved.ResultPaths) != 1 || approved.ResultPaths[0] != formalPath {
+		t.Fatalf("approved attempt=%#v", approved)
+	}
+	var acceptanceCount int64
+	if err := database.Model(&models.JavQualityAcceptance{}).Where("jav_id = ?", work.ID).Count(&acceptanceCount).Error; err != nil {
+		t.Fatalf("count pre-scan acceptances: %v", err)
+	}
+	if acceptanceCount != 0 {
+		t.Fatalf("formal acceptance existed before scan: %d", acceptanceCount)
+	}
+
+	directory := models.Directory{Path: "/formal-library"}
+	video := models.Video{Fingerprint: "staged-video", DurationSec: 3600}
+	if err := database.Create(&directory).Error; err != nil {
+		t.Fatalf("create directory: %v", err)
+	}
+	if err := database.Create(&video).Error; err != nil {
+		t.Fatalf("create video: %v", err)
+	}
+	location, err := UpsertVideoLocation(ctx, video.ID, directory.ID, "STAGED-001.mp4", time.Now().UTC())
+	if err != nil {
+		t.Fatalf("create scanned location: %v", err)
+	}
+	if err := SetVideoLocationJavIDForVideo(ctx, location.ID, video.ID, work.ID, location.UpdatedAt); err != nil {
+		t.Fatalf("link scanned location: %v", err)
+	}
+	var acceptance models.JavQualityAcceptance
+	if err := database.Where("jav_id = ?", work.ID).First(&acceptance).Error; err != nil {
+		t.Fatalf("load finalized acceptance: %v", err)
+	}
+	if acceptance.AttemptID == nil || *acceptance.AttemptID != attemptID || acceptance.LocationID == nil || *acceptance.LocationID != location.ID {
+		t.Fatalf("finalized acceptance=%#v", acceptance)
+	}
+	var acquisition models.JavAcquisition
+	if err := database.First(&acquisition, work.ID).Error; err != nil {
+		t.Fatalf("load finalized acquisition: %v", err)
+	}
+	if acquisition.Stage != models.JavAcquisitionStageImported {
+		t.Fatalf("finalized stage=%q", acquisition.Stage)
+	}
+}
+
+func TestJavMagnetCollectionRejectsStaleCode(t *testing.T) {
+	database := openTestDB(t)
+	ctx := context.Background()
+	work := models.Jav{Code: "STALE-001", NormalizedCode: "STALE001"}
+	if err := database.Create(&work).Error; err != nil {
+		t.Fatalf("create JAV: %v", err)
+	}
+	if err := database.Model(&models.Jav{}).Where("id = ?", work.ID).Updates(map[string]any{
+		"code": "STALE-002", "normalized_code": "STALE002",
+	}).Error; err != nil {
+		t.Fatalf("change identity: %v", err)
+	}
+	if _, err := UpsertJavMagnetCandidatesForCode(ctx, work.ID, "STALE-001", []jav.JavDBAppMagnet{{Hash: "old-hash"}}); !errors.Is(err, ErrJavIdentityChanged) {
+		t.Fatalf("stale magnet error = %v", err)
+	}
+	var count int64
+	if err := database.Model(&models.JavMagnetCandidate{}).Where("jav_id = ?", work.ID).Count(&count).Error; err != nil {
+		t.Fatalf("count stale candidates: %v", err)
+	}
+	if count != 0 {
+		t.Fatalf("stale candidate count = %d", count)
+	}
+}
+
 func TestJavDownloadBatchStatusIsDerivedFromAttempts(t *testing.T) {
 	database := openTestDB(t)
 	ctx := context.Background()

@@ -13,6 +13,30 @@ import (
 	"gorm.io/gorm"
 )
 
+func TestCreateJavInputBatchPreservesExplicitTwoDigitCode(t *testing.T) {
+	database := openTestDB(t)
+	ctx := context.Background()
+
+	batch, err := CreateJavInputBatch(ctx, "CWPBD-52")
+	if err != nil {
+		t.Fatalf("create short-code batch: %v", err)
+	}
+	if len(batch.Items) != 1 {
+		t.Fatalf("items = %#v", batch.Items)
+	}
+	item := batch.Items[0]
+	if item.Code != "CWPBD-52" || item.NormalizedCode != "CWPBD52" {
+		t.Fatalf("short code was padded: code=%q normalized=%q", item.Code, item.NormalizedCode)
+	}
+	var stored models.Jav
+	if err := database.First(&stored, *item.JavID).Error; err != nil {
+		t.Fatalf("load short-code JAV: %v", err)
+	}
+	if stored.Code != "CWPBD-52" || stored.NormalizedCode != "CWPBD52" {
+		t.Fatalf("stored short code = code=%q normalized=%q", stored.Code, stored.NormalizedCode)
+	}
+}
+
 func TestCreateJavInputBatchPreservesOriginalLinesAndExplainsBothDedupStages(t *testing.T) {
 	database, err := Open(filepath.Join(t.TempDir(), "jav-input.db"))
 	if err != nil {

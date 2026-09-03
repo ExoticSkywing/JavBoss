@@ -388,7 +388,10 @@ func parseJavDBMovieInfo(root *html.Node) *JavInfo {
 	fields := extractJavDBMovieFields(root)
 	title := strings.TrimSpace(fields.Title)
 	if title == "" {
-		title = cleanJavDBMoviePageTitle(strings.TrimSpace(firstTextByTag(root, "title")))
+		pageTitle := cleanJavDBMoviePageTitle(strings.TrimSpace(firstTextByTag(root, "title")))
+		if !IsPlaceholderJavTitle(pageTitle) {
+			title = pageTitle
+		}
 	}
 
 	actorIdentities := collectJavDBActorIdentities(root)

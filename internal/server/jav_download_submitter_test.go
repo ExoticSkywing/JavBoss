@@ -72,6 +72,27 @@ func TestConfiguredJavDownloadSubmitterRejectsInvalidURL(t *testing.T) {
 	}
 }
 
+func TestConfiguredJavDownloadControllerDerivesReviewEndpoints(t *testing.T) {
+	t.Setenv("JAVBOSS_CLOUD_DOWNLOAD_URL", "http://127.0.0.1:18081/v1/javboss/download-batches")
+	t.Setenv("JAVBOSS_CLOUD_DOWNLOAD_REVIEW_URL", "")
+	t.Setenv("JAVBOSS_CLOUD_DOWNLOAD_REVIEW_BATCH_URL", "")
+
+	controller, configured, err := configuredJavDownloadController()
+	if err != nil || !configured {
+		t.Fatalf("configured=%v err=%v", configured, err)
+	}
+	resolved, ok := controller.(*httpJavDownloadController)
+	if !ok {
+		t.Fatalf("controller type=%T, want *httpJavDownloadController", controller)
+	}
+	if resolved.endpointTemplate != "http://127.0.0.1:18081/v1/javboss/download-attempts/{attempt_id}/review" {
+		t.Fatalf("review endpoint=%q", resolved.endpointTemplate)
+	}
+	if resolved.batchEndpoint != "http://127.0.0.1:18081/v1/javboss/download-attempts/review-batch" {
+		t.Fatalf("batch endpoint=%q", resolved.batchEndpoint)
+	}
+}
+
 func TestExternalRejectedStatusIsTransportFailureNotQualityVerdict(t *testing.T) {
 	if status := normalizeExternalJavDownloadStatus("rejected"); status != models.JavDownloadAttemptFailed {
 		t.Fatalf("normalized status=%q, want transport failure", status)

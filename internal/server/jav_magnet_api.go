@@ -1,21 +1,20 @@
 package server
 
 import (
-	"crypto/subtle"
 	"errors"
 	"fmt"
 	"net/http"
-	"os"
 	"strconv"
 	"strings"
 
 	"github.com/gin-gonic/gin"
 	"gorm.io/gorm"
 
+	"javboss/internal/common/logging"
 	"javboss/internal/db"
 	"javboss/internal/jav"
 	"javboss/internal/models"
-	"javboss/internal/util"
+	"javboss/internal/service"
 )
 
 type javMagnetReviewRequest struct {
@@ -31,6 +30,10 @@ type javMagnetReviewRequest struct {
 	DeleteFile     *bool    `json:"delete_file"`
 }
 
+type javQualityReviewBatchRequest struct {
+	AttemptIDs []int64 `json:"attempt_ids"`
+}
+
 type javMagnetSelectionRequest struct {
 	CandidateID int64 `json:"candidate_id"`
 }
@@ -40,33 +43,18 @@ type javDownloadBatchRequest struct {
 }
 
 type javDownloadAttemptUpdateRequest struct {
-	Status         string `json:"status"`
-	ExternalTaskID string `json:"external_task_id"`
-	Error          string
+	Status         string   `json:"status"`
+	ExternalTaskID string   `json:"external_task_id"`
+	Error          string   `json:"error"`
+	ResultPaths    []string `json:"result_paths"`
 }
 
 func registerJavDownloadCallbackRoutes(router gin.IRoutes) {
-	router.PATCH("/jav/magnet-queue/attempts/:attempt_id", requireJavDownloadCallbackToken(), updateJavDownloadAttempt)
-}
-
-func requireJavDownloadCallbackToken() gin.HandlerFunc {
-	return func(c *gin.Context) {
-		expected := strings.TrimSpace(os.Getenv("JAVBOSS_CLOUD_DOWNLOAD_CALLBACK_TOKEN"))
-		if expected == "" {
-			abortLocalizedError(c, http.StatusServiceUnavailable, "尚未配置云下载回调密钥", "Cloud download callback token is not configured")
-			return
-		}
-		provided := ""
-		parts := strings.Fields(c.GetHeader("Authorization"))
-		if len(parts) == 2 && strings.EqualFold(parts[0], "Bearer") {
-			provided = parts[1]
-		}
-		if len(provided) != len(expected) || subtle.ConstantTimeCompare([]byte(provided), []byte(expected)) != 1 {
-			abortLocalizedError(c, http.StatusUnauthorized, "云下载回调密钥无效", "Invalid cloud download callback token")
-			return
-		}
-		c.Next()
-	}
+	router.PATCH(
+		"/jav/magnet-queue/attempts/:attempt_id",
+		requireBearerEnv("JAVBOSS_CLOUD_DOWNLOAD_CALLBACK_TOKEN", "云下载回调密钥"),
+		updateJavDownloadAttempt,
+	)
 }
 
 // collectJavMagnets fetches JavDB candidates and persists them on the
@@ -91,7 +79,11 @@ func collectJavMagnets(c *gin.Context) {
 		respondLocalizedError(c, http.StatusBadGateway, resolved.Error, "JavDB magnet lookup failed")
 		return
 	}
-	candidates, err := db.UpsertJavMagnetCandidates(c.Request.Context(), id, resolved.Magnets)
+	if resolved.Movie == nil || models.NormalizeJavCode(resolved.Movie.Number) != models.NormalizeJavCode(item.Code) {
+		respondLocalizedError(c, http.StatusBadGateway, "JavDB 返回了不匹配的作品", "JavDB returned a mismatched work")
+		return
+	}
+	candidates, err := db.UpsertJavMagnetCandidatesForCode(c.Request.Context(), id, item.Code, resolved.Magnets)
 	if err != nil {
 		writeJavMagnetError(c, err, "保存磁链候选失败", "Failed to save magnet candidates")
 		return
@@ -154,6 +146,129 @@ func listJavQualityReviewQueue(c *gin.Context) {
 	c.JSON(http.StatusOK, gin.H{"items": items, "total": total})
 }
 
+// saveJavQualityReviewDecision records the human decision only. Files stay in
+// the CloudDrive2 staging directory until the queue's batch action is run.
+func saveJavQualityReviewDecision(c *gin.Context) {
+	javID, ok := parsePositiveID(c.Param("id"), c, "JAV 作品 ID 无效", "Invalid JAV item ID")
+	if !ok {
+		return
+	}
+	candidateID, ok := parsePositiveID(c.Param("candidate_id"), c, "磁链候选 ID 无效", "Invalid magnet candidate ID")
+	if !ok {
+		return
+	}
+	var request javMagnetReviewRequest
+	if err := c.ShouldBindJSON(&request); err != nil {
+		respondLocalizedError(c, http.StatusBadRequest, "磁链验收请求无效", "Invalid magnet review request")
+		return
+	}
+	attempt, err := db.GetJavDownloadAttemptForReview(c.Request.Context(), javID, candidateID)
+	if err != nil {
+		writeJavReviewError(c, err, "找不到待验收下载任务", "No download attempt is awaiting quality review")
+		return
+	}
+	saved, err := db.SaveJavQualityReviewDecision(c.Request.Context(), javID, candidateID, attempt.ID, db.JavMagnetReviewInput{
+		QualityClear: request.QualityClear, Confirmed1080P: request.Confirmed1080P,
+		HasIntroAd: request.HasIntroAd, HasWatermark: request.HasWatermark,
+		HasMarquee: request.HasMarquee, IsUncensored: request.IsUncensored,
+		Reasons: request.Reasons, Notes: request.Notes, Accepted: request.Accepted,
+	})
+	if err != nil {
+		writeJavReviewError(c, err, "保存验收决定失败", "Failed to save quality review decision")
+		return
+	}
+	c.JSON(http.StatusOK, saved)
+}
+
+// executeJavQualityReviewBatch performs the physical operations in as few
+// CloudDrive2 calls as possible: one MoveFile for approvals and one DeleteFiles
+// for rejections. Each item still receives its own durable JavBoss state.
+func executeJavQualityReviewBatch(c *gin.Context) {
+	var request javQualityReviewBatchRequest
+	if err := c.ShouldBindJSON(&request); err != nil || len(request.AttemptIDs) == 0 {
+		respondLocalizedError(c, http.StatusBadRequest, "至少选择一项已保存的验收决定", "Select at least one saved review decision")
+		return
+	}
+	if len(request.AttemptIDs) > 100 {
+		respondLocalizedError(c, http.StatusBadRequest, "单次最多执行 100 项验收", "A review batch is limited to 100 items")
+		return
+	}
+	logging.Info("JAV quality review batch started: attempts=%v", request.AttemptIDs)
+	submissions, err := db.ListJavQualityReviewSubmissions(c.Request.Context(), request.AttemptIDs)
+	if err != nil {
+		writeJavReviewError(c, err, "读取验收决定失败", "Failed to load saved review decisions")
+		return
+	}
+	controller, configured, configErr := configuredJavDownloadController()
+	if configErr != nil {
+		respondLocalizedError(c, http.StatusInternalServerError, "云下载验收地址配置无效："+configErr.Error(), "Cloud download review URL is invalid: "+configErr.Error())
+		return
+	}
+	if !configured {
+		respondLocalizedError(c, http.StatusServiceUnavailable, "尚未配置云下载验收服务", "Cloud download review service is not configured")
+		return
+	}
+	reviewResult, err := controller.ReviewBatch(c.Request.Context(), submissions)
+	if err != nil {
+		respondLocalizedError(c, http.StatusBadGateway, "云下载批量验收失败："+err.Error(), "Cloud download batch review failed: "+err.Error())
+		return
+	}
+	byAttempt := make(map[int64]javDownloadSubmissionTask, len(reviewResult.Tasks))
+	for _, result := range reviewResult.Tasks {
+		byAttempt[result.AttemptID] = result
+	}
+	completed := make([]gin.H, 0, len(submissions))
+	acceptedCount := 0
+	for _, submission := range submissions {
+		controlled, exists := byAttempt[submission.AttemptID]
+		if !exists {
+			respondLocalizedError(c, http.StatusBadGateway, fmt.Sprintf("云下载验收结果缺少任务 %d", submission.AttemptID), "Cloud download batch review omitted an attempt")
+			return
+		}
+		status := strings.TrimSpace(controlled.Status)
+		if submission.Decision == models.JavQualityReviewDecisionAccepted {
+			acceptedCount++
+			if status != models.JavDownloadAttemptAwaitingScan {
+				respondLocalizedError(c, http.StatusBadGateway, "文件尚未成功移入正式作品库", "The file was not promoted to the formal library")
+				return
+			}
+			if submission.Status != models.JavDownloadAttemptAwaitingScan {
+				if _, err := db.ApproveJavDownloadedWorkWithReview(c.Request.Context(), submission.JavID, submission.CandidateID, submission.AttemptID, controlled.ResultPaths, db.JavMagnetReviewInput{
+					QualityClear: submission.QualityClear, Confirmed1080P: submission.Confirmed1080P,
+					HasIntroAd: submission.HasIntroAd, HasWatermark: submission.HasWatermark,
+					HasMarquee: submission.HasMarquee, IsUncensored: submission.IsUncensored,
+					Accepted: true, Notes: submission.Notes,
+				}); err != nil {
+					writeJavReviewError(c, err, "保存质量通过结论失败", "Failed to save the accepted quality review")
+					return
+				}
+			}
+		} else {
+			if status != models.JavDownloadAttemptRejected {
+				respondLocalizedError(c, http.StatusBadGateway, "暂存文件尚未成功删除", "The staged file was not deleted")
+				return
+			}
+			if submission.Status != models.JavDownloadAttemptRejected {
+				if _, err := db.RejectJavDownloadedWorkWithReview(c.Request.Context(), submission.JavID, submission.CandidateID, submission.AttemptID, db.JavMagnetReviewInput{
+					QualityClear: submission.QualityClear, Confirmed1080P: submission.Confirmed1080P,
+					HasIntroAd: submission.HasIntroAd, HasWatermark: submission.HasWatermark,
+					HasMarquee: submission.HasMarquee, IsUncensored: submission.IsUncensored,
+					Reasons: submission.Reasons, Notes: submission.Notes,
+				}); err != nil {
+					writeJavReviewError(c, err, "保存磁链不合格结论失败", "Failed to save rejected magnet review")
+					return
+				}
+			}
+		}
+		completed = append(completed, gin.H{"attempt_id": submission.AttemptID, "jav_id": submission.JavID, "decision": submission.Decision, "status": status})
+	}
+	if acceptedCount > 0 {
+		service.RequestJavLibraryIncrementalScan()
+	}
+	logging.Info("JAV quality review batch completed: attempts=%d cleanup=%v", len(completed), reviewResult.Cleanup)
+	c.JSON(http.StatusOK, gin.H{"items": completed, "count": len(completed), "cleanup": reviewResult.Cleanup})
+}
+
 func submitJavDownloadBatch(c *gin.Context) {
 	var request javDownloadBatchRequest
 	if err := c.ShouldBindJSON(&request); err != nil || len(request.JavIDs) == 0 {
@@ -196,7 +311,7 @@ func submitJavDownloadBatch(c *gin.Context) {
 	for _, item := range items {
 		task := findJavSubmissionTask(result.Tasks, item)
 		status := normalizeExternalJavDownloadStatus(task.Status)
-		if _, err := db.MarkJavDownloadAttempt(c.Request.Context(), item.AttemptID, status, task.ExternalTaskID, task.Error); err != nil {
+		if _, err := db.MarkJavDownloadAttemptWithResultPaths(c.Request.Context(), item.AttemptID, status, task.ExternalTaskID, task.Error, task.ResultPaths); err != nil {
 			writeJavMagnetError(c, err, "保存云下载任务状态失败", "Failed to save cloud download task status")
 			return
 		}
@@ -233,6 +348,8 @@ func normalizeExternalJavDownloadStatus(raw string) string {
 		return "awaiting_quality"
 	case "failed":
 		return "failed"
+	case "uncertain":
+		return "uncertain"
 	case "rejected":
 		// A downloader may reject a hand-off, but it cannot make JavBoss's
 		// human quality decision. Treat this as a transport failure so the
@@ -289,11 +406,11 @@ func updateJavDownloadAttempt(c *gin.Context) {
 		return
 	}
 	status := strings.ToLower(strings.TrimSpace(request.Status))
-	if status != "submitted" && status != "downloaded" && status != "awaiting_quality" && status != "failed" {
-		respondLocalizedError(c, http.StatusBadRequest, "外部服务只能更新提交、下载、待验收或失败状态", "External services may only report submitted, downloaded, awaiting_quality, or failed")
+	if status != "submitted" && status != "downloaded" && status != "awaiting_quality" && status != "uncertain" && status != "failed" {
+		respondLocalizedError(c, http.StatusBadRequest, "外部服务只能更新提交、下载、待验收、不确定或失败状态", "External services may only report submitted, downloaded, awaiting_quality, uncertain, or failed")
 		return
 	}
-	attempt, err := db.MarkJavDownloadAttempt(c.Request.Context(), id, status, request.ExternalTaskID, request.Error)
+	attempt, err := db.MarkJavDownloadAttemptWithResultPaths(c.Request.Context(), id, status, request.ExternalTaskID, request.Error, request.ResultPaths)
 	if err != nil {
 		writeJavMagnetError(c, err, "更新下载状态失败", "Failed to update download status")
 		return
@@ -315,21 +432,68 @@ func reviewJavMagnet(c *gin.Context) {
 		respondLocalizedError(c, http.StatusBadRequest, "磁链验收请求无效", "Invalid magnet review request")
 		return
 	}
+	attempt, err := db.GetJavDownloadAttemptForReview(c.Request.Context(), javID, candidateID)
+	if err != nil {
+		writeJavReviewError(c, err, "找不到待验收下载任务", "No download attempt is awaiting quality review")
+		return
+	}
+	if request.Accepted && attempt.Status == models.JavDownloadAttemptAwaitingScan {
+		c.JSON(http.StatusOK, attempt)
+		return
+	}
+	if !request.Accepted && attempt.Status == models.JavDownloadAttemptRejected {
+		c.JSON(http.StatusOK, attempt)
+		return
+	}
+	if attempt.Status != models.JavDownloadAttemptAwaitingQuality {
+		writeJavReviewError(c, db.ErrJavDownloadNotAwaitingQuality, "当前下载任务不在待验收状态", "The download attempt is not awaiting quality review")
+		return
+	}
+	controller, configured, configErr := configuredJavDownloadController()
+	if configErr != nil {
+		respondLocalizedError(c, http.StatusInternalServerError, "云下载验收地址配置无效："+configErr.Error(), "Cloud download review URL is invalid: "+configErr.Error())
+		return
+	}
+	if !configured {
+		respondLocalizedError(c, http.StatusServiceUnavailable, "尚未配置云下载验收服务", "Cloud download review service is not configured")
+		return
+	}
+	decision := "rejected"
 	if request.Accepted {
-		acceptance, err := db.AcceptJavDownloadedWorkWithReview(c.Request.Context(), javID, candidateID, 0, db.JavMagnetReviewInput{
+		decision = "accepted"
+	}
+	controlled, err := controller.Review(c.Request.Context(), attempt.ID, decision)
+	if err != nil {
+		respondLocalizedError(c, http.StatusBadGateway, "云下载验收操作失败："+err.Error(), "Cloud download review operation failed: "+err.Error())
+		return
+	}
+	if controlled.AttemptID != 0 && controlled.AttemptID != attempt.ID {
+		respondLocalizedError(c, http.StatusBadGateway, "云下载验收服务返回了错误的任务 ID", "Cloud download review returned a mismatched attempt id")
+		return
+	}
+	if request.Accepted {
+		if strings.TrimSpace(controlled.Status) != models.JavDownloadAttemptAwaitingScan {
+			respondLocalizedError(c, http.StatusBadGateway, "文件尚未成功移入正式作品库", "The file was not promoted to the formal library")
+			return
+		}
+		approved, err := db.ApproveJavDownloadedWorkWithReview(c.Request.Context(), javID, candidateID, attempt.ID, controlled.ResultPaths, db.JavMagnetReviewInput{
 			QualityClear: request.QualityClear, Confirmed1080P: request.Confirmed1080P,
 			HasIntroAd: request.HasIntroAd, HasWatermark: request.HasWatermark,
 			HasMarquee: request.HasMarquee, IsUncensored: request.IsUncensored,
 			Reasons: request.Reasons, Notes: request.Notes, Accepted: true,
 		})
 		if err != nil {
-			writeJavReviewError(c, err, "确认作品入库失败", "Failed to accept downloaded work")
+			writeJavReviewError(c, err, "保存质量通过结论失败", "Failed to save the accepted quality review")
 			return
 		}
-		c.JSON(http.StatusOK, acceptance)
+		c.JSON(http.StatusOK, approved)
 		return
 	}
-	candidate, err := db.RejectJavDownloadedWorkWithReview(c.Request.Context(), javID, candidateID, 0, db.JavMagnetReviewInput{
+	if strings.TrimSpace(controlled.Status) != models.JavDownloadAttemptRejected {
+		respondLocalizedError(c, http.StatusBadGateway, "暂存文件尚未成功删除", "The staged file was not deleted")
+		return
+	}
+	candidate, err := db.RejectJavDownloadedWorkWithReview(c.Request.Context(), javID, candidateID, attempt.ID, db.JavMagnetReviewInput{
 		QualityClear: request.QualityClear, Confirmed1080P: request.Confirmed1080P,
 		HasIntroAd: request.HasIntroAd, HasWatermark: request.HasWatermark,
 		HasMarquee: request.HasMarquee, IsUncensored: request.IsUncensored,
@@ -338,16 +502,6 @@ func reviewJavMagnet(c *gin.Context) {
 	if err != nil {
 		writeJavReviewError(c, err, "保存磁链不合格结论失败", "Failed to save rejected magnet review")
 		return
-	}
-	deleteFile := true
-	if request.DeleteFile != nil {
-		deleteFile = *request.DeleteFile
-	}
-	if deleteFile {
-		if err := deleteLatestJavReviewLocation(c, javID); err != nil {
-			writeJavMagnetError(c, err, "磁链已标记不合格，但删除落盘文件失败", "Magnet was rejected, but deleting the downloaded file failed")
-			return
-		}
 	}
 	c.JSON(http.StatusOK, candidate)
 }
@@ -359,44 +513,15 @@ func writeJavReviewError(c *gin.Context, err error, zh, en string) {
 		status = http.StatusNotFound
 	case errors.Is(err, db.ErrJavDownloadNoFile),
 		errors.Is(err, db.ErrJavDownloadAttemptRequired),
+		errors.Is(err, db.ErrJavDownloadNotAwaitingQuality),
 		errors.Is(err, db.ErrJavDownloadAmbiguousFile),
 		errors.Is(err, db.ErrJavMagnetAlreadyRejected),
 		errors.Is(err, db.ErrJavDownloadCandidateMismatch),
+		errors.Is(err, db.ErrJavQualityReviewDecisionRequired),
 		errors.Is(err, db.ErrJavAlreadyQualityAccepted):
 		status = http.StatusConflict
 	}
 	writeJavMagnetErrorStatus(c, status, err, zh, en)
-}
-
-func deleteLatestJavReviewLocation(c *gin.Context, javID int64) error {
-	item, err := db.GetJav(c.Request.Context(), javID, nil)
-	if err != nil {
-		return fmt.Errorf("load downloaded JAV locations: %w", err)
-	}
-	if len(item.Videos) == 0 {
-		return nil
-	}
-	if len(item.Videos) != 1 {
-		return fmt.Errorf("refuse to guess among %d active file locations", len(item.Videos))
-	}
-	latest := item.Videos[0]
-	if latest.LocationID <= 0 || latest.Path == "" || latest.DirectoryRef.Path == "" {
-		return nil
-	}
-	if latest.DirectoryRef.Missing {
-		return errors.New("refuse to remove a file while its storage directory is offline")
-	}
-	fullPath, _, err := resolveVideoPath(latest.Path, latest.DirectoryRef.Path)
-	if err != nil {
-		return fmt.Errorf("resolve downloaded JAV path: %w", err)
-	}
-	if err := util.MoveFileToTrash(fullPath); err != nil && !os.IsNotExist(err) {
-		return fmt.Errorf("move rejected JAV file to trash: %w", err)
-	}
-	if err := db.HideVideoLocationsByIDs(c.Request.Context(), []int64{latest.LocationID}); err != nil {
-		return fmt.Errorf("hide rejected JAV location: %w", err)
-	}
-	return nil
 }
 
 func writeJavMagnetError(c *gin.Context, err error, zh, en string) {

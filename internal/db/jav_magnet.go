@@ -2,6 +2,7 @@ package db
 
 import (
 	"context"
+	"encoding/json"
 	"errors"
 	"fmt"
 	"net/url"
@@ -17,16 +18,18 @@ import (
 )
 
 var (
-	ErrJavMagnetNotFound            = errors.New("JAV magnet candidate not found")
-	ErrJavMagnetAlreadyRejected     = errors.New("JAV magnet candidate is rejected")
-	ErrJavMagnetNoSelection         = errors.New("JAV magnet selection is required")
-	ErrJavDownloadNoFile            = errors.New("JAV download has no active file to review")
-	ErrJavDownloadAttemptRequired   = errors.New("JAV quality acceptance requires a download attempt")
-	ErrJavDownloadCandidateMismatch = errors.New("JAV magnet does not match the active download attempt")
-	ErrJavAlreadyQualityAccepted    = errors.New("JAV work already has a formal quality acceptance")
-	ErrJavDownloadAlreadyActive     = errors.New("JAV work already has an active download attempt")
-	ErrJavAlreadyHasFile            = errors.New("JAV work already has an active file")
-	ErrJavDownloadAmbiguousFile     = errors.New("JAV download has multiple active file locations")
+	ErrJavMagnetNotFound                = errors.New("JAV magnet candidate not found")
+	ErrJavMagnetAlreadyRejected         = errors.New("JAV magnet candidate is rejected")
+	ErrJavMagnetNoSelection             = errors.New("JAV magnet selection is required")
+	ErrJavDownloadNoFile                = errors.New("JAV download has no active file to review")
+	ErrJavDownloadAttemptRequired       = errors.New("JAV quality acceptance requires a download attempt")
+	ErrJavDownloadCandidateMismatch     = errors.New("JAV magnet does not match the active download attempt")
+	ErrJavAlreadyQualityAccepted        = errors.New("JAV work already has a formal quality acceptance")
+	ErrJavDownloadAlreadyActive         = errors.New("JAV work already has an active download attempt")
+	ErrJavAlreadyHasFile                = errors.New("JAV work already has an active file")
+	ErrJavDownloadAmbiguousFile         = errors.New("JAV download has multiple active file locations")
+	ErrJavDownloadNotAwaitingQuality    = errors.New("JAV download is not awaiting quality review")
+	ErrJavQualityReviewDecisionRequired = errors.New("JAV quality review decision has not been saved")
 )
 
 func javDownloadAttemptAwaitingResolutionStatuses() []string {
@@ -35,6 +38,7 @@ func javDownloadAttemptAwaitingResolutionStatuses() []string {
 		models.JavDownloadAttemptSubmitted,
 		models.JavDownloadAttemptDownloaded,
 		models.JavDownloadAttemptAwaitingQuality,
+		models.JavDownloadAttemptAwaitingScan,
 		models.JavDownloadAttemptUncertain,
 	}
 }
@@ -104,6 +108,7 @@ func javDownloadAttemptActiveStatuses() []string {
 		models.JavDownloadAttemptSubmitted,
 		models.JavDownloadAttemptDownloaded,
 		models.JavDownloadAttemptAwaitingQuality,
+		models.JavDownloadAttemptAwaitingScan,
 		models.JavDownloadAttemptUncertain,
 	}
 }
@@ -143,8 +148,10 @@ func javDownloadAttemptTransitionAllowed(current, next string) bool {
 			next == models.JavDownloadAttemptAccepted ||
 			next == models.JavDownloadAttemptRejected
 	case models.JavDownloadAttemptAwaitingQuality:
-		return next == models.JavDownloadAttemptAccepted ||
+		return next == models.JavDownloadAttemptAwaitingScan ||
 			next == models.JavDownloadAttemptRejected
+	case models.JavDownloadAttemptAwaitingScan:
+		return next == models.JavDownloadAttemptAccepted
 	default:
 		return true
 	}
@@ -167,10 +174,9 @@ type JavImportDaySummary struct {
 	Items  []models.Jav `json:"items"`
 }
 
-// ListJavQualityReviewQueue returns cloud-downloaded works that already have a
-// physical file but still lack formal quality acceptance. Keeping this query
-// separate from inventory=imported makes the suspended state directly
-// discoverable without creating a second work entity.
+// ListJavQualityReviewQueue returns works downloaded into the CloudDrive2
+// staging directory. That directory is deliberately outside JavBoss scanning,
+// so an active VideoLocation must not be required before human review.
 func ListJavQualityReviewQueue(ctx context.Context, limit, offset int, directoryIDs []int64) ([]models.Jav, int64, error) {
 	if limit <= 0 {
 		limit = 50
@@ -178,26 +184,12 @@ func ListJavQualityReviewQueue(ctx context.Context, limit, offset int, directory
 	if offset < 0 {
 		offset = 0
 	}
-	activeLocation := common.DB.WithContext(ctx).
-		Table("video_location vl_quality_queue").
-		Select("1").
-		Joins("JOIN directory d_quality_queue ON d_quality_queue.id = vl_quality_queue.directory_id").
-		Where("vl_quality_queue.jav_id = a.jav_id").
-		Where(activeLocationWhereSQL("vl_quality_queue", "d_quality_queue"))
-	activeLocation = applyDirectoryFilter(activeLocation, "vl_quality_queue", directoryIDs)
-
+	_ = directoryIDs
 	base := common.DB.WithContext(ctx).
 		Table("jav_download_attempt a").
 		Where("a.id = (SELECT MAX(a_latest.id) FROM jav_download_attempt a_latest WHERE a_latest.jav_id = a.jav_id)").
-		Where("a.status IN ?", []string{
-			models.JavDownloadAttemptPending,
-			models.JavDownloadAttemptSubmitted,
-			models.JavDownloadAttemptDownloaded,
-			models.JavDownloadAttemptAwaitingQuality,
-			models.JavDownloadAttemptUncertain,
-		}).
-		Where("NOT EXISTS (SELECT 1 FROM jav_quality_acceptance qa_quality_queue WHERE qa_quality_queue.jav_id = a.jav_id)").
-		Where("EXISTS (?)", activeLocation)
+		Where("a.status = ?", models.JavDownloadAttemptAwaitingQuality).
+		Where("NOT EXISTS (SELECT 1 FROM jav_quality_acceptance qa_quality_queue WHERE qa_quality_queue.jav_id = a.jav_id)")
 	var total int64
 	if err := base.Count(&total).Error; err != nil {
 		return nil, 0, fmt.Errorf("count JAV quality review queue: %w", err)
@@ -210,9 +202,26 @@ func ListJavQualityReviewQueue(ctx context.Context, limit, offset int, directory
 	if err != nil {
 		return nil, 0, err
 	}
+	var attempts []models.JavDownloadAttempt
+	if err := common.DB.WithContext(ctx).
+		Where("jav_id IN ?", ids).
+		Where("status = ?", models.JavDownloadAttemptAwaitingQuality).
+		Where("id IN (SELECT MAX(a_latest.id) FROM jav_download_attempt a_latest GROUP BY a_latest.jav_id)").
+		Find(&attempts).Error; err != nil {
+		return nil, 0, fmt.Errorf("load JAV quality review states: %w", err)
+	}
+	reviewByJavID := make(map[int64]models.JavQualityReviewSummary, len(attempts))
+	for _, attempt := range attempts {
+		reviewByJavID[attempt.JavID] = models.JavQualityReviewSummary{
+			AttemptID: attempt.ID, CandidateID: attempt.CandidateID, Decision: attempt.ReviewDecision,
+		}
+	}
 	items := make([]models.Jav, 0, len(ids))
 	for _, id := range ids {
 		if item, ok := itemsByID[id]; ok {
+			if review, exists := reviewByJavID[id]; exists {
+				item.QualityReview = &review
+			}
 			items = append(items, item)
 		}
 	}
@@ -365,11 +374,22 @@ func ListJavMagnetCandidates(ctx context.Context, javID int64, includeRejected b
 // UpsertJavMagnetCandidates persists the objective fields returned by JavDB.
 // The unique (jav_id, info_hash) key makes repeated collection idempotent.
 func UpsertJavMagnetCandidates(ctx context.Context, javID int64, magnets []jav.JavDBAppMagnet) ([]models.JavMagnetCandidate, error) {
+	return UpsertJavMagnetCandidatesForCode(ctx, javID, "", magnets)
+}
+
+func UpsertJavMagnetCandidatesForCode(ctx context.Context, javID int64, expectedCode string, magnets []jav.JavDBAppMagnet) ([]models.JavMagnetCandidate, error) {
 	if javID <= 0 {
 		return nil, errors.New("jav id must be positive")
 	}
 	now := time.Now().UTC()
 	err := withSQLiteTransactionRetry(ctx, common.DB, func(tx *gorm.DB) error {
+		var work models.Jav
+		if err := tx.Select("id", "code", "normalized_code").Where("id = ?", javID).First(&work).Error; err != nil {
+			return fmt.Errorf("load JAV for magnet collection: %w", err)
+		}
+		if err := ensureExpectedJavIdentity(&work, expectedCode); err != nil {
+			return err
+		}
 		for _, magnet := range magnets {
 			hash := normalizeJavMagnetHash(magnet.Hash)
 			if hash == "" {
@@ -421,13 +441,21 @@ func UpsertJavMagnetCandidates(ctx context.Context, javID int64, magnets []jav.J
 // external adapter can call this after accepting or completing a task without
 // needing to know any UI details.
 func MarkJavDownloadAttempt(ctx context.Context, attemptID int64, status, externalTaskID, errText string) (*models.JavDownloadAttempt, error) {
+	return MarkJavDownloadAttemptWithResultPaths(ctx, attemptID, status, externalTaskID, errText, nil)
+}
+
+// MarkJavDownloadAttemptWithResultPaths also persists CloudDrive2's exact
+// result paths. These paths are opaque audit/control data and never become
+// JavBoss inventory until a later formal-library scan finds the real file.
+func MarkJavDownloadAttemptWithResultPaths(ctx context.Context, attemptID int64, status, externalTaskID, errText string, resultPaths []string) (*models.JavDownloadAttempt, error) {
 	if attemptID <= 0 || strings.TrimSpace(status) == "" {
 		return nil, errors.New("attempt id and status are required")
 	}
 	allowed := map[string]struct{}{
 		models.JavDownloadAttemptPending: {}, models.JavDownloadAttemptSubmitted: {},
 		models.JavDownloadAttemptDownloaded: {}, models.JavDownloadAttemptAwaitingQuality: {},
-		models.JavDownloadAttemptAccepted: {}, models.JavDownloadAttemptRejected: {},
+		models.JavDownloadAttemptAwaitingScan: {},
+		models.JavDownloadAttemptAccepted:     {}, models.JavDownloadAttemptRejected: {},
 		models.JavDownloadAttemptFailed: {}, models.JavDownloadAttemptUncertain: {},
 	}
 	if _, ok := allowed[status]; !ok {
@@ -447,6 +475,9 @@ func MarkJavDownloadAttempt(ctx context.Context, attemptID int64, status, extern
 		}
 		now := time.Now().UTC()
 		updates := map[string]any{"status": status, "external_task_id": strings.TrimSpace(externalTaskID), "error": strings.TrimSpace(errText)}
+		if resultPaths != nil {
+			updates["result_paths"] = encodeJavResultPaths(resultPaths)
+		}
 		if status == models.JavDownloadAttemptSubmitted && attempt.SubmittedAt == nil {
 			updates["submitted_at"] = now
 		}
@@ -466,6 +497,9 @@ func MarkJavDownloadAttempt(ctx context.Context, attemptID int64, status, extern
 		if status == models.JavDownloadAttemptDownloaded || status == models.JavDownloadAttemptAwaitingQuality {
 			stage = models.JavAcquisitionStageQualityReview
 		}
+		if status == models.JavDownloadAttemptAwaitingScan {
+			stage = models.JavAcquisitionStageAwaitingScan
+		}
 		if status == models.JavDownloadAttemptFailed || status == models.JavDownloadAttemptRejected {
 			stage = models.JavAcquisitionStageMagnetReview
 		}
@@ -481,6 +515,31 @@ func MarkJavDownloadAttempt(ctx context.Context, attemptID int64, status, extern
 		return nil, err
 	}
 	return &attempt, nil
+}
+
+func cleanJavResultPaths(values []string) []string {
+	result := make([]string, 0, len(values))
+	seen := make(map[string]struct{}, len(values))
+	for _, value := range values {
+		value = strings.TrimSpace(value)
+		if value == "" {
+			continue
+		}
+		if _, exists := seen[value]; exists {
+			continue
+		}
+		seen[value] = struct{}{}
+		result = append(result, value)
+	}
+	return result
+}
+
+func encodeJavResultPaths(values []string) string {
+	encoded, err := json.Marshal(cleanJavResultPaths(values))
+	if err != nil {
+		return "[]"
+	}
+	return string(encoded)
 }
 
 // JavDownloadSubmissionItem is the transport-neutral payload handed to an
@@ -562,7 +621,7 @@ func aggregateJavDownloadBatchTx(tx *gorm.DB, batchID int64) error {
 		switch attempt.Status {
 		case models.JavDownloadAttemptPending:
 			pending++
-		case models.JavDownloadAttemptSubmitted, models.JavDownloadAttemptDownloaded, models.JavDownloadAttemptAwaitingQuality:
+		case models.JavDownloadAttemptSubmitted, models.JavDownloadAttemptDownloaded, models.JavDownloadAttemptAwaitingQuality, models.JavDownloadAttemptAwaitingScan:
 			active++
 		case models.JavDownloadAttemptAccepted:
 			accepted++
@@ -596,6 +655,95 @@ func aggregateJavDownloadBatchTx(tx *gorm.DB, batchID int64) error {
 		}
 	}
 	return tx.Model(&models.JavDownloadBatch{}).Where("id = ?", batchID).Updates(updates).Error
+}
+
+// GetJavDownloadAttemptForReview resolves the latest attempt without relying
+// on a scanned VideoLocation. The physical file is still in CloudDrive2's
+// staging directory at this point.
+func GetJavDownloadAttemptForReview(ctx context.Context, javID, candidateID int64) (*models.JavDownloadAttempt, error) {
+	if javID <= 0 || candidateID <= 0 {
+		return nil, errors.New("jav id and candidate id are required")
+	}
+	var attempt models.JavDownloadAttempt
+	err := common.DB.WithContext(ctx).
+		Where("jav_id = ?", javID).
+		Order("id DESC").
+		First(&attempt).Error
+	if errors.Is(err, gorm.ErrRecordNotFound) {
+		return nil, ErrJavDownloadAttemptRequired
+	}
+	if err != nil {
+		return nil, fmt.Errorf("find JAV download attempt for quality review: %w", err)
+	}
+	if attempt.CandidateID != candidateID {
+		return nil, ErrJavDownloadCandidateMismatch
+	}
+	return &attempt, nil
+}
+
+// ApproveJavDownloadedWorkWithReview records the human quality decision after
+// the controller has moved the staged file into the formal library. It does
+// not create JavQualityAcceptance: only the later scan can prove that the
+// formal library contains and linked the expected real file.
+func ApproveJavDownloadedWorkWithReview(ctx context.Context, javID, candidateID, attemptID int64, resultPaths []string, input JavMagnetReviewInput) (*models.JavDownloadAttempt, error) {
+	if javID <= 0 || candidateID <= 0 || attemptID <= 0 {
+		return nil, errors.New("jav id, candidate id and attempt id are required")
+	}
+	var attempt models.JavDownloadAttempt
+	err := withSQLiteTransactionRetry(ctx, common.DB, func(tx *gorm.DB) error {
+		if err := tx.Where("id = ? AND jav_id = ? AND candidate_id = ?", attemptID, javID, candidateID).First(&attempt).Error; err != nil {
+			if errors.Is(err, gorm.ErrRecordNotFound) {
+				return ErrJavDownloadAttemptRequired
+			}
+			return fmt.Errorf("load JAV download attempt for approval: %w", err)
+		}
+		var candidate models.JavMagnetCandidate
+		if err := tx.Where("id = ? AND jav_id = ?", candidateID, javID).First(&candidate).Error; err != nil {
+			if errors.Is(err, gorm.ErrRecordNotFound) {
+				return ErrJavMagnetNotFound
+			}
+			return fmt.Errorf("load approved JAV magnet: %w", err)
+		}
+		if attempt.Status == models.JavDownloadAttemptAwaitingScan && candidate.ReviewStatus == models.JavMagnetReviewAccepted {
+			return nil
+		}
+		if attempt.Status != models.JavDownloadAttemptAwaitingQuality {
+			return ErrJavDownloadNotAwaitingQuality
+		}
+		if candidate.ReviewStatus == models.JavMagnetReviewRejected {
+			return ErrJavMagnetAlreadyRejected
+		}
+		now := time.Now().UTC()
+		if err := tx.Model(&candidate).Updates(map[string]any{
+			"review_status": models.JavMagnetReviewAccepted, "quality_clear": input.QualityClear,
+			"confirmed1080_p": input.Confirmed1080P, "has_intro_ad": input.HasIntroAd,
+			"has_watermark": input.HasWatermark, "has_marquee": input.HasMarquee,
+			"is_uncensored": input.IsUncensored, "review_reasons": "",
+			"review_notes": strings.TrimSpace(input.Notes), "reviewed_at": now, "updated_at": now,
+		}).Error; err != nil {
+			return fmt.Errorf("save approved JAV magnet review: %w", err)
+		}
+		updates := map[string]any{
+			"status": models.JavDownloadAttemptAwaitingScan,
+			"error":  "", "result_paths": encodeJavResultPaths(resultPaths), "completed_at": nil,
+		}
+		if err := tx.Model(&attempt).Updates(updates).Error; err != nil {
+			return fmt.Errorf("mark JAV download awaiting scan: %w", err)
+		}
+		if err := tx.Model(&models.JavAcquisition{}).Where("jav_id = ?", javID).Updates(map[string]any{
+			"stage": models.JavAcquisitionStageAwaitingScan, "updated_at": now,
+		}).Error; err != nil {
+			return fmt.Errorf("mark JAV acquisition awaiting scan: %w", err)
+		}
+		if err := aggregateJavDownloadBatchTx(tx, attempt.BatchID); err != nil {
+			return err
+		}
+		return tx.First(&attempt, attemptID).Error
+	})
+	if err != nil {
+		return nil, err
+	}
+	return &attempt, nil
 }
 
 // RejectJavDownloadedWork records a failed quality decision and moves the
@@ -768,7 +916,7 @@ func CreateJavDownloadBatch(ctx context.Context, javIDs []int64) (*models.JavDow
 				attempt = previous
 				if updateErr := tx.Model(&attempt).Updates(map[string]any{
 					"batch_id": batch.ID, "status": models.JavDownloadAttemptPending,
-					"error": "", "external_task_id": "", "submitted_at": nil, "completed_at": nil,
+					"error": "", "external_task_id": "", "result_paths": "[]", "submitted_at": nil, "completed_at": nil,
 				}).Error; updateErr != nil {
 					return fmt.Errorf("reset failed JAV download attempt: %w", updateErr)
 				}
@@ -816,6 +964,7 @@ func ListJavDownloadQueue(ctx context.Context, limit, offset int) ([]JavMagnetQu
 			models.JavDownloadAttemptSubmitted,
 			models.JavDownloadAttemptDownloaded,
 			models.JavDownloadAttemptAwaitingQuality,
+			models.JavDownloadAttemptAwaitingScan,
 			models.JavDownloadAttemptAccepted,
 		})
 	var total int64
@@ -860,6 +1009,137 @@ type JavMagnetReviewInput struct {
 	Reasons        []string
 	Notes          string
 	Accepted       bool
+}
+
+// JavQualityReviewSubmission is a saved human decision waiting for the
+// physical CloudDrive2 operation. Keeping it on the download attempt makes
+// the decision durable while the file remains in the staging directory.
+type JavQualityReviewSubmission struct {
+	AttemptID      int64
+	JavID          int64
+	CandidateID    int64
+	Status         string
+	Decision       string
+	QualityClear   *bool
+	Confirmed1080P *bool
+	HasIntroAd     *bool
+	HasWatermark   *bool
+	HasMarquee     *bool
+	IsUncensored   *bool
+	Reasons        []string
+	Notes          string
+	ResultPaths    []string
+}
+
+// SaveJavQualityReviewDecision records the human verdict without moving or
+// deleting any file. The batch execution endpoint performs that side effect
+// later, after the user has reviewed as many works as desired.
+func SaveJavQualityReviewDecision(ctx context.Context, javID, candidateID, attemptID int64, input JavMagnetReviewInput) (*models.JavDownloadAttempt, error) {
+	if javID <= 0 || candidateID <= 0 || attemptID <= 0 {
+		return nil, errors.New("jav id, candidate id and attempt id are required")
+	}
+	var attempt models.JavDownloadAttempt
+	err := withSQLiteTransactionRetry(ctx, common.DB, func(tx *gorm.DB) error {
+		if err := tx.Where("id = ? AND jav_id = ? AND candidate_id = ?", attemptID, javID, candidateID).First(&attempt).Error; err != nil {
+			if errors.Is(err, gorm.ErrRecordNotFound) {
+				return ErrJavDownloadAttemptRequired
+			}
+			return fmt.Errorf("load JAV download attempt for review decision: %w", err)
+		}
+		if attempt.Status != models.JavDownloadAttemptAwaitingQuality {
+			return ErrJavDownloadNotAwaitingQuality
+		}
+		var candidate models.JavMagnetCandidate
+		if err := tx.Where("id = ? AND jav_id = ?", candidateID, javID).First(&candidate).Error; err != nil {
+			if errors.Is(err, gorm.ErrRecordNotFound) {
+				return ErrJavMagnetNotFound
+			}
+			return fmt.Errorf("load JAV candidate for review decision: %w", err)
+		}
+		if candidate.ReviewStatus == models.JavMagnetReviewAccepted {
+			return ErrJavAlreadyQualityAccepted
+		}
+		decision := models.JavQualityReviewDecisionRejected
+		if input.Accepted {
+			decision = models.JavQualityReviewDecisionAccepted
+		}
+		now := time.Now().UTC()
+		updates := map[string]any{
+			"review_decision":        decision,
+			"review_quality_clear":   input.QualityClear,
+			"review_confirmed_1080p": input.Confirmed1080P,
+			"review_has_intro_ad":    input.HasIntroAd,
+			"review_has_watermark":   input.HasWatermark,
+			"review_has_marquee":     input.HasMarquee,
+			"review_is_uncensored":   input.IsUncensored,
+			"review_reasons":         strings.Join(uniqueStrings(input.Reasons), ","),
+			"review_notes":           strings.TrimSpace(input.Notes),
+			"reviewed_at":            now,
+		}
+		if err := tx.Model(&attempt).Updates(updates).Error; err != nil {
+			return fmt.Errorf("save JAV quality review decision: %w", err)
+		}
+		return tx.First(&attempt, attemptID).Error
+	})
+	if err != nil {
+		return nil, err
+	}
+	return &attempt, nil
+}
+
+// ListJavQualityReviewSubmissions loads only attempts with a saved decision.
+// It is intentionally strict: an execute request cannot accidentally operate
+// on an unreviewed work or an attempt that has already left staging.
+func ListJavQualityReviewSubmissions(ctx context.Context, attemptIDs []int64) ([]JavQualityReviewSubmission, error) {
+	ids := uniqueInt64s(attemptIDs)
+	if len(ids) == 0 {
+		return nil, errors.New("at least one review attempt is required")
+	}
+	var attempts []models.JavDownloadAttempt
+	if err := common.DB.WithContext(ctx).Where("id IN ?", ids).Find(&attempts).Error; err != nil {
+		return nil, fmt.Errorf("load JAV quality review attempts: %w", err)
+	}
+	byID := make(map[int64]models.JavDownloadAttempt, len(attempts))
+	for _, attempt := range attempts {
+		byID[attempt.ID] = attempt
+	}
+	result := make([]JavQualityReviewSubmission, 0, len(ids))
+	for _, id := range ids {
+		attempt, ok := byID[id]
+		if !ok {
+			return nil, ErrJavDownloadAttemptRequired
+		}
+		if attempt.Status != models.JavDownloadAttemptAwaitingQuality &&
+			attempt.Status != models.JavDownloadAttemptAwaitingScan &&
+			attempt.Status != models.JavDownloadAttemptRejected {
+			return nil, ErrJavDownloadNotAwaitingQuality
+		}
+		if attempt.ReviewDecision != models.JavQualityReviewDecisionAccepted && attempt.ReviewDecision != models.JavQualityReviewDecisionRejected {
+			return nil, ErrJavQualityReviewDecisionRequired
+		}
+		result = append(result, JavQualityReviewSubmission{
+			AttemptID:      attempt.ID,
+			JavID:          attempt.JavID,
+			CandidateID:    attempt.CandidateID,
+			Status:         attempt.Status,
+			Decision:       attempt.ReviewDecision,
+			QualityClear:   attempt.ReviewQualityClear,
+			Confirmed1080P: attempt.ReviewConfirmed1080P,
+			HasIntroAd:     attempt.ReviewHasIntroAd,
+			HasWatermark:   attempt.ReviewHasWatermark,
+			HasMarquee:     attempt.ReviewHasMarquee,
+			IsUncensored:   attempt.ReviewIsUncensored,
+			Reasons:        splitReviewReasons(attempt.ReviewReasons),
+			Notes:          attempt.ReviewNotes,
+			ResultPaths:    append([]string(nil), attempt.ResultPaths...),
+		})
+	}
+	return result, nil
+}
+
+func splitReviewReasons(value string) []string {
+	parts := strings.Split(value, ",")
+	return uniqueStrings(parts)
 }
 
 // ReviewJavMagnet stores the structured quality verdict without deleting the

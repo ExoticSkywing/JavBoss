@@ -360,6 +360,10 @@ func lookupAndLinkVideoLocationJav(ctx context.Context, v *db.JavScanVideo, file
 		if info == nil {
 			continue
 		}
+		if responseCode := models.NormalizeJavCode(info.Code); responseCode != "" && responseCode != models.NormalizeJavCode(code) {
+			logging.Error("ignore mismatched JAV metadata provider=%s location=%s requested=%s response=%s", provider.String(), filename, code, strings.TrimSpace(info.Code))
+			continue
+		}
 
 		if _, err := db.SaveJavInfoAndLinkLocationForVideo(ctx, info, v.LocationID, v.VideoID, v.UpdatedAt); err != nil {
 			logging.Error("link video location->jav failed provider=%s location=%s code=%s err=%v", provider.String(), filename, info.Code, err)

@@ -20,12 +20,14 @@ const (
 var lookupJavCacheKeyVersionByProvider = map[Provider]string{
 	ProviderJavBus:      "v5",
 	ProviderJavDatabase: "v4",
-	ProviderJavDB:       "v4",
-	ProviderAvmoo:       "v6",
-	ProviderAvsox:       "v3",
-	ProviderJavMenu:     "v2",
-	ProviderThePornDB:   "v2",
-	ProviderJavDBApp:    "v1",
+	// v5 invalidates entries parsed from JavDB's login/challenge shell pages,
+	// which used to be cached as a real title such as “登入”.
+	ProviderJavDB:     "v5",
+	ProviderAvmoo:     "v6",
+	ProviderAvsox:     "v3",
+	ProviderJavMenu:   "v2",
+	ProviderThePornDB: "v2",
+	ProviderJavDBApp:  "v1",
 }
 
 var lookupActressNameCacheKeyVersionByProvider = map[Provider]string{

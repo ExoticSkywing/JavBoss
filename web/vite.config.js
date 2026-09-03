@@ -15,6 +15,10 @@ export default defineConfig({
   },
   server: {
     port: frontendPort,
+    // Keep the development URL stable for VS Code remote forwarding. Vite's
+    // default fallback to 5174/5175 makes it easy to open a second, stale
+    // frontend by accident when 5173 is already occupied.
+    strictPort: true,
     proxy: {
       '/healthz': backendProxy(),
       '/auth': backendProxy(),

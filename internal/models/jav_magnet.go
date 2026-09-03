@@ -3,6 +3,9 @@ package models
 import "time"
 
 const (
+	JavQualityReviewDecisionAccepted = "accepted"
+	JavQualityReviewDecisionRejected = "rejected"
+
 	JavMagnetReviewPending  = "pending"
 	JavMagnetReviewAccepted = "accepted"
 	JavMagnetReviewRejected = "rejected"
@@ -17,6 +20,7 @@ const (
 	JavDownloadAttemptSubmitted       = "submitted"
 	JavDownloadAttemptDownloaded      = "downloaded"
 	JavDownloadAttemptAwaitingQuality = "awaiting_quality"
+	JavDownloadAttemptAwaitingScan    = "awaiting_scan"
 	JavDownloadAttemptAccepted        = "accepted"
 	JavDownloadAttemptRejected        = "rejected"
 	JavDownloadAttemptFailed          = "failed"
@@ -53,6 +57,15 @@ type JavMagnetCandidate struct {
 	UpdatedAt       time.Time  `json:"updated_at"`
 }
 
+// JavQualityReviewSummary is the compact review state attached to queue
+// cards. It is derived from the latest download attempt and is not persisted
+// as a separate table.
+type JavQualityReviewSummary struct {
+	AttemptID   int64  `json:"attempt_id"`
+	CandidateID int64  `json:"candidate_id"`
+	Decision    string `json:"decision,omitempty"`
+}
+
 // JavMagnetSelection is the one currently selected candidate for a work.
 // Selecting a candidate means “ready for a later send”, never “best forever”.
 type JavMagnetSelection struct {
@@ -79,17 +92,28 @@ type JavDownloadBatch struct {
 // JavDownloadAttempt is the durable hand-off record for one work/candidate.
 // ExternalTaskID and IdempotencyKey let a future cloud service safely retry.
 type JavDownloadAttempt struct {
-	ID             int64      `json:"id" gorm:"primaryKey"`
-	BatchID        int64      `json:"batch_id" gorm:"not null;index:idx_jav_download_attempt_batch_id"`
-	JavID          int64      `json:"jav_id" gorm:"not null;index:idx_jav_download_attempt_jav_id"`
-	CandidateID    int64      `json:"candidate_id" gorm:"not null;index"`
-	IdempotencyKey string     `json:"idempotency_key" gorm:"not null;uniqueIndex:idx_jav_download_attempt_idempotency_key"`
-	ExternalTaskID string     `json:"external_task_id,omitempty" gorm:"type:text;not null;default:''"`
-	Status         string     `json:"status" gorm:"not null;default:pending;index"`
-	Error          string     `json:"error,omitempty" gorm:"type:text;not null;default:''"`
-	CreatedAt      time.Time  `json:"created_at"`
-	SubmittedAt    *time.Time `json:"submitted_at,omitempty"`
-	CompletedAt    *time.Time `json:"completed_at,omitempty"`
+	ID                   int64      `json:"id" gorm:"primaryKey"`
+	BatchID              int64      `json:"batch_id" gorm:"not null;index:idx_jav_download_attempt_batch_id"`
+	JavID                int64      `json:"jav_id" gorm:"not null;index:idx_jav_download_attempt_jav_id"`
+	CandidateID          int64      `json:"candidate_id" gorm:"not null;index"`
+	IdempotencyKey       string     `json:"idempotency_key" gorm:"not null;uniqueIndex:idx_jav_download_attempt_idempotency_key"`
+	ExternalTaskID       string     `json:"external_task_id,omitempty" gorm:"type:text;not null;default:''"`
+	Status               string     `json:"status" gorm:"not null;default:pending;index"`
+	Error                string     `json:"error,omitempty" gorm:"type:text;not null;default:''"`
+	CreatedAt            time.Time  `json:"created_at"`
+	SubmittedAt          *time.Time `json:"submitted_at,omitempty"`
+	CompletedAt          *time.Time `json:"completed_at,omitempty"`
+	ResultPaths          []string   `json:"result_paths,omitempty" gorm:"serializer:json;type:text;not null;default:[]"`
+	ReviewDecision       string     `json:"review_decision,omitempty" gorm:"not null;default:'';index:idx_jav_download_attempt_review_decision"`
+	ReviewQualityClear   *bool      `json:"review_quality_clear,omitempty"`
+	ReviewConfirmed1080P *bool      `json:"review_confirmed_1080p,omitempty" gorm:"column:review_confirmed_1080p"`
+	ReviewHasIntroAd     *bool      `json:"review_has_intro_ad,omitempty"`
+	ReviewHasWatermark   *bool      `json:"review_has_watermark,omitempty"`
+	ReviewHasMarquee     *bool      `json:"review_has_marquee,omitempty"`
+	ReviewIsUncensored   *bool      `json:"review_is_uncensored,omitempty"`
+	ReviewReasons        string     `json:"review_reasons,omitempty" gorm:"type:text;not null;default:''"`
+	ReviewNotes          string     `json:"review_notes,omitempty" gorm:"type:text;not null;default:''"`
+	ReviewedAt           *time.Time `json:"reviewed_at,omitempty"`
 }
 
 // JavQualityAcceptance records the irreversible business decision that makes

@@ -29,10 +29,11 @@ import {
   fetchJavStudioPreview,
   fetchJavStudios,
   getResolvedJavSampleImages,
+  javSampleImageURL,
   resolveJavSampleImages,
   updateJavItem,
 } from '@/api'
-import JavDetailModal from '@/components/JavDetailModal'
+import JavDetailModal, { JavCodeCorrectionModal } from '@/components/JavDetailModal'
 import AppModal from '@/components/AppModal'
 import JavIdolCoverModal from '@/components/JavIdolCoverModal'
 import { IdolCard, JavIdolEditModal, getIdolCardLayoutProps } from '@/components/JavIdolGrid'
@@ -54,6 +55,11 @@ const acquisitionStageIndicatorTone = {
     border: 'border-slate-300',
     dot: 'bg-slate-400',
     ring: 'ring-slate-100',
+  },
+  code_review: {
+    border: 'border-amber-500',
+    dot: 'bg-amber-500',
+    ring: 'ring-amber-100',
   },
   magnet_collecting: {
     border: 'border-sky-500',
@@ -80,6 +86,11 @@ const acquisitionStageIndicatorTone = {
     dot: 'bg-rose-500',
     ring: 'ring-rose-100',
   },
+  awaiting_scan: {
+    border: 'border-stone-600',
+    dot: 'bg-stone-600',
+    ring: 'ring-stone-200',
+  },
   imported: {
     border: 'border-emerald-600',
     dot: 'bg-emerald-600',
@@ -93,7 +104,12 @@ const defaultAcquisitionStageIndicatorTone = {
   ring: 'ring-stone-100',
 }
 
-const acquisitionAttentionStages = new Set(['magnet_review', 'ready_to_download', 'quality_review'])
+const acquisitionAttentionStages = new Set([
+  'magnet_review',
+  'ready_to_download',
+  'quality_review',
+  'awaiting_scan',
+])
 
 function DurationIcon() {
   return (
@@ -176,6 +192,7 @@ function JavGrid({
   onManageVideoRename,
   onManageVideoDelete,
   onManageVideoTagClick,
+  onAcquisitionUpdated,
 }) {
   const directoryIds = useStore(directoryQueryIds)
   const preferChineseName = useStore((state) =>
@@ -379,6 +396,7 @@ function JavGrid({
             hideTags={hideTags}
             hideActions={hideActions}
             showFullFavoriteRating={showFullFavoriteRating}
+            onAcquisitionUpdated={onAcquisitionUpdated}
           />
         ))}
       </div>
@@ -1803,7 +1821,7 @@ const JAV_COVER_PREVIEW_INTERVAL_MS = 1100
 function normalizeJavCardSampleImages(images) {
   if (!Array.isArray(images)) return []
   const seen = new Set()
-  return images.flatMap((image) => {
+  return images.flatMap((image, sourceIndex) => {
     const thumbnailURL = String(image?.thumbnail_url || image?.detail_url || '').trim()
     const detailURL = String(image?.detail_url || image?.thumbnail_url || '').trim()
     if (
@@ -1815,7 +1833,7 @@ function normalizeJavCardSampleImages(images) {
       return []
     }
     seen.add(detailURL)
-    return [{ thumbnail_url: thumbnailURL, detail_url: detailURL }]
+    return [{ thumbnail_url: thumbnailURL, detail_url: detailURL, source_index: sourceIndex }]
   })
 }
 
@@ -1884,57 +1902,62 @@ function JavCoverHoverPreview({ src, alt, itemId, sampleImages, directoryIds }) 
     return cancelPreview
   }, [cancelPreview, itemId, sampleImages, stableDirectoryIds])
 
-  const beginRotation = useCallback((images, hoverGeneration) => {
-    if (!hoverActiveRef.current || hoverGenerationRef.current !== hoverGeneration) return
-    availableImagesRef.current = images
-    const failedURLs = new Set()
-    const reduceMotion = window.matchMedia?.('(prefers-reduced-motion: reduce)').matches
-
-    const nextAvailableIndex = (currentIndex) => {
-      for (let step = 1; step <= images.length; step += 1) {
-        const candidateIndex = (currentIndex + step) % images.length
-        if (!failedURLs.has(images[candidateIndex]?.detail_url)) return candidateIndex
-      }
-      return -1
-    }
-
-    const revealImage = (index) => {
+  const beginRotation = useCallback(
+    (images, hoverGeneration) => {
       if (!hoverActiveRef.current || hoverGenerationRef.current !== hoverGeneration) return
-      const candidate = images[index]
-      const detailURL = candidate?.detail_url
-      if (!detailURL) return
-      const frameGeneration = (frameGenerationRef.current += 1)
-      const image = new Image()
-      image.decoding = 'async'
-      image.referrerPolicy = 'no-referrer'
-      image.onload = () => {
-        if (
-          !hoverActiveRef.current ||
-          hoverGenerationRef.current !== hoverGeneration ||
-          frameGenerationRef.current !== frameGeneration
-        ) {
-          return
-        }
-        setPreview({ src: detailURL, index })
-        if (images.length < 2 || reduceMotion) return
-        const nextIndex = nextAvailableIndex(index)
-        if (nextIndex < 0 || nextIndex === index) return
-        rotationTimerRef.current = window.setTimeout(
-          () => revealImage(nextIndex),
-          JAV_COVER_PREVIEW_INTERVAL_MS
-        )
-      }
-      image.onerror = () => {
-        if (!hoverActiveRef.current || hoverGenerationRef.current !== hoverGeneration) return
-        failedURLs.add(detailURL)
-        const nextIndex = nextAvailableIndex(index)
-        if (nextIndex >= 0 && nextIndex !== index) revealImage(nextIndex)
-      }
-      image.src = detailURL
-    }
+      availableImagesRef.current = images
+      const failedIndexes = new Set()
+      const reduceMotion = window.matchMedia?.('(prefers-reduced-motion: reduce)').matches
 
-    revealImage(0)
-  }, [])
+      const nextAvailableIndex = (currentIndex) => {
+        for (let step = 1; step <= images.length; step += 1) {
+          const candidateIndex = (currentIndex + step) % images.length
+          if (!failedIndexes.has(candidateIndex)) return candidateIndex
+        }
+        return -1
+      }
+
+      const revealImage = (index) => {
+        if (!hoverActiveRef.current || hoverGenerationRef.current !== hoverGeneration) return
+        const sourceIndex = Number(images[index]?.source_index)
+        const previewURL = javSampleImageURL(itemId, sourceIndex, {
+          variant: 'detail',
+          directoryIds: stableDirectoryIds,
+        })
+        if (!previewURL) return
+        const frameGeneration = (frameGenerationRef.current += 1)
+        const image = new Image()
+        image.decoding = 'async'
+        image.onload = () => {
+          if (
+            !hoverActiveRef.current ||
+            hoverGenerationRef.current !== hoverGeneration ||
+            frameGenerationRef.current !== frameGeneration
+          ) {
+            return
+          }
+          setPreview({ src: previewURL, index })
+          if (images.length < 2 || reduceMotion) return
+          const nextIndex = nextAvailableIndex(index)
+          if (nextIndex < 0 || nextIndex === index) return
+          rotationTimerRef.current = window.setTimeout(
+            () => revealImage(nextIndex),
+            JAV_COVER_PREVIEW_INTERVAL_MS
+          )
+        }
+        image.onerror = () => {
+          if (!hoverActiveRef.current || hoverGenerationRef.current !== hoverGeneration) return
+          failedIndexes.add(index)
+          const nextIndex = nextAvailableIndex(index)
+          if (nextIndex >= 0 && nextIndex !== index) revealImage(nextIndex)
+        }
+        image.src = previewURL
+      }
+
+      revealImage(0)
+    },
+    [itemId, stableDirectoryIds]
+  )
 
   const handlePointerEnter = useCallback(
     (event) => {
@@ -2360,13 +2383,20 @@ function JavTagList({ tags, maxRows, buildTagFilterHref, onTagClick, onFilterLin
   )
 }
 
-function JavCompactCardSummary({ code, title, fullTitle, pending }) {
+function JavCompactCardSummary({
+  code,
+  title,
+  fullTitle,
+  pending,
+  needsCodeCorrection = false,
+  onCorrectCode,
+}) {
   const displayTitle = title && title !== code ? title : zh('标题待补全', 'Title pending')
   const statusLabel = pending ? zh('未入库', 'Pending') : zh('已入库', 'Imported')
 
   return (
     <>
-      <div className="flex min-w-0 items-center gap-2">
+      <div className="flex min-w-0 flex-wrap items-center gap-1.5">
         <span className="min-w-0 flex-1 truncate text-[13px] font-bold text-slate-900" title={code}>
           {code || zh('未知番号', 'Unknown code')}
         </span>
@@ -2377,6 +2407,21 @@ function JavCompactCardSummary({ code, title, fullTitle, pending }) {
         >
           {statusLabel}
         </span>
+        {needsCodeCorrection ? (
+          <>
+            <span className="inline-flex shrink-0 items-center gap-1 rounded-md border border-amber-300 bg-amber-50 px-1.5 py-0.5 text-[11px] font-semibold leading-none text-amber-800">
+              <span aria-hidden="true" className="h-1.5 w-1.5 rounded-full bg-amber-500" />
+              {zh('待核对番号', 'Code needs review')}
+            </span>
+            <button
+              type="button"
+              className="inline-flex min-h-6 shrink-0 items-center rounded-md border border-amber-400 bg-white px-2 py-0.5 text-[11px] font-semibold leading-none text-amber-900 transition-[background-color,transform] hover:bg-amber-100 active:scale-[0.96]"
+              onClick={onCorrectCode}
+            >
+              {zh('修正番号', 'Correct code')}
+            </button>
+          </>
+        ) : null}
       </div>
       <div className="truncate text-xs font-medium text-slate-500" title={fullTitle}>
         {displayTitle}
@@ -2413,6 +2458,7 @@ function JavCard({
   onManageVideoRename,
   onManageVideoDelete,
   onManageVideoTagClick,
+  onAcquisitionUpdated,
   loadIdolPreview,
   loadStudioPreview,
   loadSeriesPreview,
@@ -2435,6 +2481,7 @@ function JavCard({
   const [coverVersion, setCoverVersion] = useState(0)
   const [editorOpen, setEditorOpen] = useState(false)
   const [customTagEditorOpen, setCustomTagEditorOpen] = useState(false)
+  const [codeCorrectionOpen, setCodeCorrectionOpen] = useState(false)
   const [detailOpen, setDetailOpen] = useState(false)
   const coverBase = code ? `/jav/${encodeURIComponent(code)}/cover` : null
   const cover = coverBase ? `${coverBase}${coverVersion ? `?v=${coverVersion}` : ''}` : null
@@ -2478,19 +2525,34 @@ function JavCard({
   const acquisitionStage = String(item?.acquisition_stage || '')
     .trim()
     .toLowerCase()
-  const acquisitionStageLabel =
-    {
-      metadata_pending: zh('正在补全元数据', 'Collecting metadata'),
-      magnet_collecting: zh('正在收集磁链', 'Collecting magnets'),
-      magnet_review: zh('待筛选磁链', 'Magnet review'),
-      ready_to_download: zh('等待提交下载', 'Ready to download'),
-      download_submitted: zh('已提交下载', 'Download submitted'),
-      quality_review: zh('待质量验收', 'Quality review'),
-      imported: zh('已确认入库', 'Accepted import'),
-    }[acquisitionStage] || zh('等待处理', 'Awaiting processing')
-  const acquisitionIndicatorTone =
-    acquisitionStageIndicatorTone[acquisitionStage] || defaultAcquisitionStageIndicatorTone
-  const acquisitionNeedsAttention = acquisitionAttentionStages.has(acquisitionStage)
+  const codeCorrectionAvailable =
+    acquisitionStage === 'code_review' ||
+    (acquisitionStage === 'magnet_collecting' && String(item?.title || '').trim() === '')
+  const acquisitionStageLabel = codeCorrectionAvailable
+    ? zh('待核对番号', 'Code needs review')
+    : {
+        metadata_pending: zh('正在补全元数据', 'Collecting metadata'),
+        code_review: zh('待核对番号', 'Code needs review'),
+        magnet_collecting: zh('正在收集磁链', 'Collecting magnets'),
+        magnet_review: zh('待筛选磁链', 'Magnet review'),
+        ready_to_download: zh('等待提交下载', 'Ready to download'),
+        download_submitted: zh('已提交下载', 'Download submitted'),
+        quality_review: zh('暂存待验收', 'Staged for review'),
+        awaiting_scan: zh('质量通过 · 等待扫盘', 'Approved · Awaiting scan'),
+        imported: zh('已确认入库', 'Accepted import'),
+      }[acquisitionStage] || zh('等待处理', 'Awaiting processing')
+  const acquisitionIndicatorTone = codeCorrectionAvailable
+    ? { border: 'border-amber-500', dot: 'bg-amber-500', ring: 'ring-amber-100' }
+    : acquisitionStageIndicatorTone[acquisitionStage] || defaultAcquisitionStageIndicatorTone
+  const acquisitionNeedsAttention =
+    codeCorrectionAvailable || acquisitionAttentionStages.has(acquisitionStage)
+  const qualityReviewDecision = String(item?.quality_review?.decision || '').trim()
+  const qualityReviewDecisionLabel =
+    qualityReviewDecision === 'accepted'
+      ? zh('已记录通过 · 待执行', 'Approval saved · pending execution')
+      : qualityReviewDecision === 'rejected'
+        ? zh('已记录不合格 · 待执行', 'Rejection saved · pending execution')
+        : ''
   const encodedCode = code ? encodeURIComponent(code) : ''
   const javdbSearchURL = encodedCode ? `https://javdb.com/search?q=${encodedCode}&f=all` : ''
   const favoriteCount = Number(item?.favorite_count) || 0
@@ -2543,6 +2605,19 @@ function JavCard({
             name: 'AVSOX',
             href: `/jav/avsox-redirect?code=${encodedCode}`,
             icon: '/ico/avsox.ico',
+          },
+          {
+            key: 'javdb',
+            name: 'JavDB',
+            href: javdbSearchURL,
+            icon: '/ico/javdb.png',
+            onClick: handleOpenJavDB,
+          },
+          {
+            key: 'missav',
+            name: 'MissAV',
+            href: `https://missav.ws/${encodedCode}`,
+            icon: '/ico/missav.ico',
           },
         ]
       : [
@@ -2623,6 +2698,12 @@ function JavCard({
     event.preventDefault()
     event.stopPropagation()
     setCustomTagEditorOpen(true)
+  }
+
+  const handleOpenCodeCorrection = (event) => {
+    event?.preventDefault()
+    event?.stopPropagation()
+    setCodeCorrectionOpen(true)
   }
 
   const handleFavoriteRatingChange = async (event, value) => {
@@ -2709,6 +2790,12 @@ function JavCard({
         ),
       }
     })
+    onAcquisitionUpdated?.(updated, item)
+  }
+
+  const handleCodeCorrectionSaved = (updated) => {
+    handleAcquisitionUpdated(updated)
+    setCodeCorrectionOpen(false)
   }
 
   const canPlay = Boolean(playableVideo?.id)
@@ -3251,6 +3338,8 @@ function JavCard({
             title={mainTitle}
             fullTitle={titleText}
             pending={isPending}
+            needsCodeCorrection={codeCorrectionAvailable}
+            onCorrectCode={handleOpenCodeCorrection}
           />
         </div>
         <div className="jav-card-detailed-content flex flex-1 flex-col gap-2 p-3">
@@ -3278,6 +3367,22 @@ function JavCard({
                 {acquisitionStageLabel}
               </span>
             </span>
+            {qualityReviewDecisionLabel ? (
+              <span
+                className={`inline-flex min-h-6 items-center rounded-md border px-2 py-0.5 text-[11px] font-semibold leading-4 ${qualityReviewDecision === 'accepted' ? 'border-emerald-300 bg-emerald-50 text-emerald-800' : 'border-rose-300 bg-rose-50 text-rose-800'}`}
+              >
+                {qualityReviewDecisionLabel}
+              </span>
+            ) : null}
+            {codeCorrectionAvailable ? (
+              <button
+                type="button"
+                className="inline-flex min-h-6 shrink-0 items-center rounded-md border border-amber-400 bg-amber-50 px-2 py-0.5 text-[11px] font-semibold leading-none text-amber-900 transition-[background-color,transform] hover:bg-amber-100 active:scale-[0.96]"
+                onClick={handleOpenCodeCorrection}
+              >
+                {zh('修正番号', 'Correct code')}
+              </button>
+            ) : null}
           </div>
           <div className="text-sm leading-tight" title={titleText} style={titleClampStyle}>
             {codeText ? <span className="font-semibold text-gray-800">{codeText}</span> : null}
@@ -3585,6 +3690,13 @@ function JavCard({
         directoryIds={directoryIds}
         onClose={() => setCustomTagEditorOpen(false)}
         onSaved={handleCustomTagsSaved}
+      />
+      <JavCodeCorrectionModal
+        open={codeCorrectionOpen}
+        item={item}
+        directoryIds={directoryIds}
+        onClose={() => setCodeCorrectionOpen(false)}
+        onSaved={handleCodeCorrectionSaved}
       />
       {detailOpen ? (
         <JavDetailModal

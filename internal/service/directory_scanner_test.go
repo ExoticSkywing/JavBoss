@@ -341,6 +341,23 @@ func TestIsAutomaticDirectoryScanDue(t *testing.T) {
 	}
 }
 
+func TestSelectJavLibraryDirectories(t *testing.T) {
+	directories := []models.Directory{
+		{ID: 1, Path: "/mnt/movies"},
+		{ID: 2, Path: "/root/data/docker_data/cd2/CloudNAS/神圣美感极度续命"},
+	}
+	selected := selectJavLibraryDirectories(directories, "/115/钻石圣殿/神圣美感极度续命")
+	if len(selected) != 1 || selected[0].ID != 2 {
+		t.Fatalf("selected directories = %#v, want directory 2", selected)
+	}
+	if got := selectJavLibraryDirectories(directories, "/115/unknown"); got != nil {
+		t.Fatalf("ambiguous library mapping selected %#v, want nil", got)
+	}
+	if got := selectJavLibraryDirectories(directories[:1], "/115/unknown"); len(got) != 1 || got[0].ID != 1 {
+		t.Fatalf("single directory fallback = %#v, want directory 1", got)
+	}
+}
+
 func TestLoadDirectoryIfAutomaticScanDueRechecksLatestState(t *testing.T) {
 	gdb, err := db.Open(filepath.Join(t.TempDir(), "scan-recheck.db"))
 	if err != nil {

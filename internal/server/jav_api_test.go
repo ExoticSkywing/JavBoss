@@ -1,6 +1,7 @@
 package server
 
 import (
+	"bytes"
 	"context"
 	"encoding/json"
 	"errors"
@@ -9,6 +10,7 @@ import (
 	"net/url"
 	"path/filepath"
 	"reflect"
+	"strconv"
 	"strings"
 	"testing"
 	"time"
@@ -20,6 +22,49 @@ import (
 
 	"github.com/gin-gonic/gin"
 )
+
+func TestCorrectJavCodeAPI(t *testing.T) {
+	database, err := dbpkg.Open(filepath.Join(t.TempDir(), "jav-code-correction-api.db"))
+	if err != nil {
+		t.Fatalf("open database: %v", err)
+	}
+	previousDB := common.DB
+	common.DB = database
+	t.Cleanup(func() {
+		common.DB = previousDB
+		if sqlDB, dbErr := database.DB(); dbErr == nil {
+			_ = sqlDB.Close()
+		}
+	})
+	now := time.Now().UTC()
+	work := models.Jav{Code: "BAD-001", CreatedAt: now, UpdatedAt: now}
+	if err := database.Create(&work).Error; err != nil {
+		t.Fatalf("create JAV: %v", err)
+	}
+	if err := database.Create(&models.JavAcquisition{
+		JavID: work.ID, Stage: models.JavAcquisitionStageMagnetCollecting, CreatedAt: now, UpdatedAt: now,
+	}).Error; err != nil {
+		t.Fatalf("create acquisition: %v", err)
+	}
+
+	gin.SetMode(gin.TestMode)
+	router := gin.New()
+	router.PATCH("/jav/items/:id/code", correctJavCode)
+	recorder := httptest.NewRecorder()
+	request := httptest.NewRequest(http.MethodPatch, "/jav/items/"+strconv.FormatInt(work.ID, 10)+"/code", bytes.NewBufferString(`{"code":"CWPBD-052"}`))
+	request.Header.Set("Content-Type", "application/json")
+	router.ServeHTTP(recorder, request)
+	if recorder.Code != http.StatusOK {
+		t.Fatalf("status = %d, body = %s", recorder.Code, recorder.Body.String())
+	}
+	var response models.Jav
+	if err := json.Unmarshal(recorder.Body.Bytes(), &response); err != nil {
+		t.Fatalf("decode response: %v", err)
+	}
+	if response.Code != "CWPBD-052" || response.NormalizedCode != "CWPBD052" || response.AcquisitionStage != models.JavAcquisitionStageMetadataPending {
+		t.Fatalf("response = %#v", response)
+	}
+}
 
 func TestParseJavFilterQueryInventory(t *testing.T) {
 	gin.SetMode(gin.TestMode)
@@ -243,6 +288,8 @@ func TestLookupJavSampleImagesByProviderFallsBackFromJavMenuToJavBus(t *testing.
 		}
 		calls = append(calls, provider)
 		switch provider {
+		case jav.ProviderJavDBApp:
+			return &jav.JavInfo{Code: code, Provider: provider}, nil
 		case jav.ProviderJavMenu:
 			return &jav.JavInfo{Code: code, Provider: provider}, nil
 		case jav.ProviderJavBus:
@@ -264,7 +311,7 @@ func TestLookupJavSampleImagesByProviderFallsBackFromJavMenuToJavBus(t *testing.
 	if err != nil {
 		t.Fatalf("lookup sample images: %v", err)
 	}
-	if !reflect.DeepEqual(calls, []jav.Provider{jav.ProviderJavMenu, jav.ProviderJavBus}) {
+	if !reflect.DeepEqual(calls, []jav.Provider{jav.ProviderJavDBApp, jav.ProviderJavMenu, jav.ProviderJavBus}) {
 		t.Fatalf("provider calls = %#v", calls)
 	}
 	want := models.JavSampleImages{
@@ -282,6 +329,9 @@ func TestLookupJavSampleImagesByProviderStopsAfterJavMenuSuccess(t *testing.T) {
 	var calls []jav.Provider
 	images, err := lookupJavSampleImagesByProvider(context.Background(), "IPX-228", func(_ string, provider jav.Provider) (*jav.JavInfo, error) {
 		calls = append(calls, provider)
+		if provider == jav.ProviderJavDBApp {
+			return &jav.JavInfo{Code: "IPX-228", Provider: provider}, nil
+		}
 		if provider != jav.ProviderJavMenu {
 			return nil, errors.New("JavBus must not be called after JavMenu succeeds")
 		}
@@ -297,7 +347,7 @@ func TestLookupJavSampleImagesByProviderStopsAfterJavMenuSuccess(t *testing.T) {
 	if len(images) != 1 {
 		t.Fatalf("sample image count = %d, want 1", len(images))
 	}
-	if !reflect.DeepEqual(calls, []jav.Provider{jav.ProviderJavMenu}) {
+	if !reflect.DeepEqual(calls, []jav.Provider{jav.ProviderJavDBApp, jav.ProviderJavMenu}) {
 		t.Fatalf("provider calls = %#v", calls)
 	}
 }
@@ -306,6 +356,8 @@ func TestLookupJavSampleImagesByProviderPreservesTemporaryErrors(t *testing.T) {
 	temporaryErr := errors.New("network timeout")
 	images, err := lookupJavSampleImagesByProvider(context.Background(), "IPX-228", func(_ string, provider jav.Provider) (*jav.JavInfo, error) {
 		switch provider {
+		case jav.ProviderJavDBApp:
+			return nil, jav.ResourceNotFonud
 		case jav.ProviderJavMenu:
 			return nil, temporaryErr
 		case jav.ProviderJavBus:
@@ -356,10 +408,10 @@ func TestLookupJavSampleImagesByProviderValidatesLastDetailURLAndFallsBack(t *te
 	if err != nil {
 		t.Fatalf("lookup sample images: %v", err)
 	}
-	if !reflect.DeepEqual(calls, []jav.Provider{jav.ProviderJavMenu, jav.ProviderJavBus}) {
+	if !reflect.DeepEqual(calls, []jav.Provider{jav.ProviderJavDBApp, jav.ProviderJavMenu, jav.ProviderJavBus}) {
 		t.Fatalf("provider calls = %#v", calls)
 	}
-	if !reflect.DeepEqual(validated, []string{"javmenu-detail-10", "javbus-detail-10"}) {
+	if !reflect.DeepEqual(validated, []string{"javdb_app-detail-10", "javmenu-detail-10", "javbus-detail-10"}) {
 		t.Fatalf("validated URLs = %#v", validated)
 	}
 	if len(images) != 2 || images[1].DetailURL != "javbus-detail-10" {
@@ -416,6 +468,7 @@ func TestAllowedJavSampleImageHost(t *testing.T) {
 		{name: "JavDB CDN", raw: "https://c0.jdbstatic.com/samples/a.jpg", want: true},
 		{name: "DMM CDN", raw: "https://pics.dmm.co.jp/mono/movie/a.jpg", want: true},
 		{name: "subdomain of allowed CDN", raw: "https://img.mgstage.com/a.jpg", want: true},
+		{name: "1Pondo official gallery", raw: "https://www.1pondo.tv/assets/sample/062913_618/popu/1.jpg", want: true},
 		{name: "lookalike domain", raw: "https://jdbstatic.com.evil.example/a.jpg", want: false},
 		{name: "localhost", raw: "http://127.0.0.1/a.jpg", want: false},
 		{name: "non-http scheme", raw: "file:///etc/passwd", want: false},

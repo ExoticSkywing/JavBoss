@@ -19,6 +19,24 @@ import (
 )
 
 var ErrJavMediaConflict = errors.New("JAV already has a different active media asset")
+var ErrJavCodeCorrectionInvalid = errors.New("JAV correction code is invalid")
+var ErrJavCodeCorrectionConflict = errors.New("JAV correction code already exists")
+var ErrJavCodeCorrectionNotAllowed = errors.New("JAV code correction is not allowed for this work")
+var ErrJavIdentityChanged = errors.New("JAV identity changed while background work was running")
+
+// JavCodeCorrectionConflictError identifies the canonical work that already
+// owns either the requested code or one of its durable historical aliases.
+type JavCodeCorrectionConflictError struct {
+	JavID int64
+}
+
+func (err *JavCodeCorrectionConflictError) Error() string {
+	return fmt.Sprintf("%s: jav_id=%d", ErrJavCodeCorrectionConflict, err.JavID)
+}
+
+func (err *JavCodeCorrectionConflictError) Unwrap() error {
+	return ErrJavCodeCorrectionConflict
+}
 
 // JavTagCount represents a JAV tag with associated work count.
 type JavTagCount struct {
@@ -659,6 +677,194 @@ func UpdateJav(ctx context.Context, javID int64, input JavUpdateInput, directory
 		return nil, err
 	}
 	return GetJav(ctx, javID, directoryIDs)
+}
+
+// CorrectJavCode replaces the canonical code of a work that could not be
+// matched to metadata. The original input receipt remains untouched so the
+// global de-duplication history is still auditable. Code correction is
+// deliberately limited to works without any file location, download attempt,
+// quality decision, or magnet candidates; changing identity after any of those
+// facts exist would silently attach them to the wrong work.
+func CorrectJavCode(ctx context.Context, javID int64, rawCode string, directoryIDs []int64) (*models.Jav, error) {
+	if javID <= 0 {
+		return nil, errors.New("jav id must be positive")
+	}
+	code, normalizedCode, valid := normalizeJavCodeCorrection(rawCode)
+	if !valid {
+		return nil, ErrJavCodeCorrectionInvalid
+	}
+
+	err := withSQLiteTransactionRetry(ctx, common.DB, func(tx *gorm.DB) error {
+		var javRec models.Jav
+		if err := tx.Select("id", "code", "normalized_code", "title", "fetched_at").
+			Where("id = ?", javID).First(&javRec).Error; err != nil {
+			return fmt.Errorf("find jav for code correction: %w", err)
+		}
+
+		// A code correction is an identity repair for an unresolved work, not a
+		// way to rename an imported or already reviewed work.
+		if strings.TrimSpace(javRec.Title) != "" && !jav.IsPlaceholderJavTitle(javRec.Title) {
+			return ErrJavCodeCorrectionNotAllowed
+		}
+
+		var acquisition models.JavAcquisition
+		if err := tx.Where("jav_id = ?", javID).First(&acquisition).Error; err != nil {
+			return fmt.Errorf("find JAV acquisition for code correction: %w", err)
+		}
+		if acquisition.Stage != models.JavAcquisitionStageMetadataPending &&
+			acquisition.Stage != models.JavAcquisitionStageMagnetCollecting &&
+			acquisition.Stage != models.JavAcquisitionStageCodeReview {
+			return ErrJavCodeCorrectionNotAllowed
+		}
+		if models.NormalizeJavCode(javRec.NormalizedCode) == normalizedCode {
+			// Saving the spelling already in use is a harmless no-op. In
+			// particular, do not erase metadata merely because the modal was
+			// opened with the current value prefilled.
+			return nil
+		}
+
+		// Hidden/deleted locations retain their jav_id and can become active again.
+		// Treat every location as identity-bearing instead of only checking the
+		// currently visible inventory.
+		var locations int64
+		if err := tx.Model(&models.VideoLocation{}).
+			Where("jav_id = ?", javID).
+			Count(&locations).Error; err != nil {
+			return fmt.Errorf("check JAV files for code correction: %w", err)
+		}
+		if locations > 0 {
+			return ErrJavCodeCorrectionNotAllowed
+		}
+
+		var candidates int64
+		if err := tx.Model(&models.JavMagnetCandidate{}).Where("jav_id = ?", javID).Count(&candidates).Error; err != nil {
+			return fmt.Errorf("check JAV magnets for code correction: %w", err)
+		}
+		if candidates > 0 {
+			return ErrJavCodeCorrectionNotAllowed
+		}
+		var attempts int64
+		if err := tx.Model(&models.JavDownloadAttempt{}).
+			Where("jav_id = ?", javID).
+			Count(&attempts).Error; err != nil {
+			return fmt.Errorf("check JAV downloads for code correction: %w", err)
+		}
+		if attempts > 0 {
+			return ErrJavCodeCorrectionNotAllowed
+		}
+		var acceptances int64
+		if err := tx.Model(&models.JavQualityAcceptance{}).Where("jav_id = ?", javID).Count(&acceptances).Error; err != nil {
+			return fmt.Errorf("check JAV quality decisions for code correction: %w", err)
+		}
+		if acceptances > 0 {
+			return ErrJavCodeCorrectionNotAllowed
+		}
+
+		var conflict models.Jav
+		if err := tx.Select("id").Where("normalized_code = ?", normalizedCode).First(&conflict).Error; err == nil {
+			if conflict.ID != javID {
+				return &JavCodeCorrectionConflictError{JavID: conflict.ID}
+			}
+		} else if !errors.Is(err, gorm.ErrRecordNotFound) {
+			return fmt.Errorf("check duplicate JAV code: %w", err)
+		}
+		var aliasConflict models.JavCodeAlias
+		if err := tx.Where("normalized_code = ?", normalizedCode).First(&aliasConflict).Error; err == nil {
+			if aliasConflict.JavID != javID {
+				return &JavCodeCorrectionConflictError{JavID: aliasConflict.JavID}
+			}
+		} else if !errors.Is(err, gorm.ErrRecordNotFound) {
+			return fmt.Errorf("check duplicate JAV code alias: %w", err)
+		}
+
+		now := time.Now().UTC()
+		oldNormalizedCode := strings.TrimSpace(javRec.NormalizedCode)
+		oldCode := strings.TrimSpace(javRec.Code)
+		// Reversing A -> B -> A must promote A back to canonical identity rather
+		// than leave it simultaneously stored as its own alias.
+		if err := tx.Where("jav_id = ? AND normalized_code = ?", javID, normalizedCode).
+			Delete(&models.JavCodeAlias{}).Error; err != nil {
+			return fmt.Errorf("promote JAV code alias: %w", err)
+		}
+		if err := tx.Model(&models.Jav{}).Where("id = ?", javID).Updates(map[string]any{
+			"code":                       code,
+			"normalized_code":            normalizedCode,
+			"title":                      "",
+			"studio_id":                  nil,
+			"series_id":                  nil,
+			"series_en_id":               nil,
+			"release_unix":               0,
+			"duration_min":               0,
+			"fetched_at":                 time.Time{},
+			"is_uncensored":              nil,
+			"sample_images":              models.JavSampleImages{},
+			"jav_db_idols_reconciled_at": nil,
+			"updated_at":                 now,
+		}).Error; err != nil {
+			return fmt.Errorf("update JAV code: %w", err)
+		}
+		if oldNormalizedCode != "" && oldNormalizedCode != normalizedCode {
+			alias := models.JavCodeAlias{
+				JavID:          javID,
+				NormalizedCode: oldNormalizedCode,
+				Code:           oldCode,
+				CreatedAt:      now,
+			}
+			if err := tx.Create(&alias).Error; err != nil {
+				return fmt.Errorf("save old JAV code alias: %w", err)
+			}
+		}
+		if err := tx.Where("jav_id = ?", javID).Delete(&models.JavIdolMap{}).Error; err != nil {
+			return fmt.Errorf("clear old JAV idols after code correction: %w", err)
+		}
+		if err := tx.Where("jav_id = ? AND provider <> ?", javID, int(jav.ProviderUser)).
+			Delete(&models.JavTagMap{}).Error; err != nil {
+			return fmt.Errorf("clear old JAV tags after code correction: %w", err)
+		}
+		if err := tx.Model(&models.JavAcquisition{}).Where("jav_id = ?", javID).Updates(map[string]any{
+			"stage":      models.JavAcquisitionStageMetadataPending,
+			"updated_at": now,
+		}).Error; err != nil {
+			return fmt.Errorf("reset JAV acquisition after code correction: %w", err)
+		}
+		return nil
+	})
+	if err != nil {
+		return nil, err
+	}
+	return GetJav(ctx, javID, directoryIDs)
+}
+
+// normalizeJavCodeCorrection validates a user-confirmed standalone code. It
+// deliberately does not use the filename extractor's canonical display code:
+// that extractor may generate padded alternatives for short numbers (for
+// example PT-82 and PT-082). A correction is an explicit identity decision,
+// so separators may be normalized by the durable key while every digit in
+// the displayed code, including leading zeroes, is preserved.
+func normalizeJavCodeCorrection(rawCode string) (string, string, bool) {
+	code := strings.ToUpper(strings.TrimSpace(rawCode))
+	if code == "" || len(code) > 64 {
+		return "", "", false
+	}
+	normalizedCode := models.NormalizeJavCode(code)
+	if normalizedCode == "" {
+		return "", "", false
+	}
+
+	// Confirm that the complete value is recognized as one JAV code. Matching
+	// by normalized identity lets explicit short codes such as PT-82 pass even
+	// when the filename extractor also offers its padded PT-082 alternative.
+	matched := false
+	for _, candidate := range util.ExtractCodeFromName(code) {
+		if models.NormalizeJavCode(candidate) == normalizedCode {
+			matched = true
+			break
+		}
+	}
+	if !matched {
+		return "", "", false
+	}
+	return code, normalizedCode, true
 }
 
 // ListJavTags returns JAV tags with the number of works for each tag.
@@ -1327,7 +1533,10 @@ func buildJavFilter(ctx context.Context, idolIDs []int64, tagIDs []int64, search
 	}
 	if search != "" {
 		like := fmt.Sprintf("%%%s%%", search)
-		q = q.Where("code LIKE ? OR title LIKE ?", like, like)
+		q = q.Where(`code LIKE ? OR title LIKE ? OR EXISTS (
+			SELECT 1 FROM jav_code_alias jca_search
+			WHERE jca_search.jav_id = jav.id AND jca_search.code LIKE ?
+		)`, like, like, like)
 	}
 	if filters.StudioID == 0 {
 		q = q.Where("studio_id IS NULL")
@@ -3170,19 +3379,7 @@ func videosForJavScanQuery(ctx context.Context) *gorm.DB {
 
 // GetJavByCode fetches a jav record by code.
 func GetJavByCode(ctx context.Context, code string) (*models.Jav, error) {
-	normalizedCode := models.NormalizeJavCode(code)
-	if normalizedCode == "" {
-		return nil, nil
-	}
-	var javRec models.Jav
-	err := common.DB.WithContext(ctx).Where("normalized_code = ?", normalizedCode).First(&javRec).Error
-	if err != nil {
-		if errors.Is(err, gorm.ErrRecordNotFound) {
-			return nil, nil
-		}
-		return nil, fmt.Errorf("get jav by code: %w", err)
-	}
-	return &javRec, nil
+	return findJavByAnyCode(common.DB.WithContext(ctx), code, false)
 }
 
 // SetVideoLocationJavID links a file location to a jav record, guarding against stale updates when expectedUpdatedAt is provided.
@@ -3575,7 +3772,8 @@ func ListJavsMissingPrimaryMetadata(ctx context.Context) ([]JavMetadataScanItem,
 		Model(&models.Jav{}).
 		Select("id, code, title, release_unix, duration_min, studio_id, series_id, (SELECT COUNT(*) FROM jav_idol_map jim_primary_count WHERE jim_primary_count.jav_id = jav.id) AS idol_count").
 		Where("TRIM(COALESCE(code, '')) <> ''").
-		Where("TRIM(COALESCE(title, '')) = '' OR NOT EXISTS (?)", idolMap).
+		Where("TRIM(COALESCE(title, '')) = '' OR LOWER(TRIM(COALESCE(title, ''))) IN ('登入', '登录', 'login', 'sign in', 'signin', 'register', 'age verification', 'driver verification', 'verification required', 'just a moment', 'access denied', 'captcha') OR NOT EXISTS (?)", idolMap).
+		Where("NOT EXISTS (SELECT 1 FROM jav_acquisition ja_primary_metadata WHERE ja_primary_metadata.jav_id = jav.id AND ja_primary_metadata.stage = ?)", models.JavAcquisitionStageCodeReview).
 		Order("created_at ASC, id ASC").
 		Find(&items).Error; err != nil {
 		return nil, fmt.Errorf("list javs missing primary metadata: %w", err)
@@ -3603,6 +3801,51 @@ func ListJavsPendingJavDBIdolReconciliation(ctx context.Context, limit int) ([]J
 		return nil, fmt.Errorf("list JAVs pending JavDB idol reconciliation: %w", err)
 	}
 	return items, nil
+}
+
+// MarkJavMetadataNeedsCodeReview records a completed exact-match pass that
+// found no usable title. The expected code makes the write harmless when a
+// user corrects the work while provider requests are still in flight.
+func MarkJavMetadataNeedsCodeReview(ctx context.Context, javID int64, expectedCode string) (bool, error) {
+	if javID <= 0 {
+		return false, errors.New("jav id must be positive")
+	}
+	expectedNormalized := models.NormalizeJavCode(expectedCode)
+	if expectedNormalized == "" {
+		return false, models.ErrInvalidJavCode
+	}
+	now := time.Now().UTC()
+	var marked bool
+	err := withSQLiteTransactionRetry(ctx, common.DB, func(tx *gorm.DB) error {
+		result := tx.Model(&models.JavAcquisition{}).
+			Where("jav_id = ? AND stage IN ?", javID, []string{
+				models.JavAcquisitionStageMetadataPending,
+				models.JavAcquisitionStageMagnetCollecting,
+			}).
+			Where(`EXISTS (
+				SELECT 1 FROM jav j_code_review
+				WHERE j_code_review.id = jav_acquisition.jav_id
+				  AND j_code_review.normalized_code = ?
+				  AND (TRIM(COALESCE(j_code_review.title, '')) = '' OR LOWER(TRIM(COALESCE(j_code_review.title, ''))) IN ('登入', '登录', 'login', 'sign in', 'signin', 'register', 'age verification', 'driver verification', 'verification required', 'just a moment', 'access denied', 'captcha'))
+			)`, expectedNormalized).
+			Where("NOT EXISTS (SELECT 1 FROM video_location vl_code_review WHERE vl_code_review.jav_id = jav_acquisition.jav_id)").
+			Where("NOT EXISTS (SELECT 1 FROM jav_magnet_candidate mc_code_review WHERE mc_code_review.jav_id = jav_acquisition.jav_id)").
+			Where("NOT EXISTS (SELECT 1 FROM jav_download_attempt da_code_review WHERE da_code_review.jav_id = jav_acquisition.jav_id)").
+			Where("NOT EXISTS (SELECT 1 FROM jav_quality_acceptance qa_code_review WHERE qa_code_review.jav_id = jav_acquisition.jav_id)").
+			Updates(map[string]any{
+				"stage":      models.JavAcquisitionStageCodeReview,
+				"updated_at": now,
+			})
+		if result.Error != nil {
+			return fmt.Errorf("mark JAV metadata for code review: %w", result.Error)
+		}
+		marked = result.RowsAffected > 0
+		return nil
+	})
+	if err != nil {
+		return false, err
+	}
+	return marked, nil
 }
 
 // MarkJavDBIdolsReconciled records that JavDB has no usable actress metadata
@@ -3840,6 +4083,12 @@ func UpdateJavStudio(ctx context.Context, javID int64, studio string) error {
 
 // UpdateJavStudioIfMissing records the studio lookup result without overwriting an existing studio.
 func UpdateJavStudioIfMissing(ctx context.Context, javID int64, studio string) (bool, error) {
+	return UpdateJavStudioIfMissingForCode(ctx, javID, "", studio)
+}
+
+// UpdateJavStudioIfMissingForCode also verifies that an asynchronous lookup
+// still belongs to the same canonical identity.
+func UpdateJavStudioIfMissingForCode(ctx context.Context, javID int64, expectedCode, studio string) (bool, error) {
 	if javID == 0 {
 		return false, errors.New("jav id cannot be zero")
 	}
@@ -3848,13 +4097,16 @@ func UpdateJavStudioIfMissing(ctx context.Context, javID int64, studio string) (
 		return false, nil
 	}
 	var updated bool
-	err := common.DB.WithContext(ctx).Transaction(func(tx *gorm.DB) error {
+	err := withSQLiteTransactionRetry(ctx, common.DB, func(tx *gorm.DB) error {
 		var javRec models.Jav
 		if err := tx.Clauses(clause.Locking{Strength: "UPDATE"}).
-			Select("id", "studio_id").
+			Select("id", "normalized_code", "studio_id").
 			Where("id = ?", javID).
 			First(&javRec).Error; err != nil {
 			return fmt.Errorf("get jav studio: %w", err)
+		}
+		if err := ensureExpectedJavIdentity(&javRec, expectedCode); err != nil {
+			return err
 		}
 		if javRec.StudioID != nil {
 			return nil
@@ -3907,16 +4159,24 @@ func UpdateJavSeries(ctx context.Context, javID int64, series string) error {
 
 // UpdateJavSeriesIfMissing records the series lookup result without overwriting an existing series.
 func UpdateJavSeriesIfMissing(ctx context.Context, javID int64, series string) (bool, error) {
-	return updateJavSeriesIfMissing(ctx, javID, series, false)
+	return updateJavSeriesIfMissing(ctx, javID, "", series, false)
+}
+
+func UpdateJavSeriesIfMissingForCode(ctx context.Context, javID int64, expectedCode, series string) (bool, error) {
+	return updateJavSeriesIfMissing(ctx, javID, expectedCode, series, false)
 }
 
 // UpdateJavEnglishSeriesIfMissing records the internal JavDatabase series hint
 // used to decide which rows need the slow Avmoo localized-series lookup.
 func UpdateJavEnglishSeriesIfMissing(ctx context.Context, javID int64, series string) (bool, error) {
-	return updateJavSeriesIfMissing(ctx, javID, series, true)
+	return updateJavSeriesIfMissing(ctx, javID, "", series, true)
 }
 
-func updateJavSeriesIfMissing(ctx context.Context, javID int64, series string, isEnglish bool) (bool, error) {
+func UpdateJavEnglishSeriesIfMissingForCode(ctx context.Context, javID int64, expectedCode, series string) (bool, error) {
+	return updateJavSeriesIfMissing(ctx, javID, expectedCode, series, true)
+}
+
+func updateJavSeriesIfMissing(ctx context.Context, javID int64, expectedCode, series string, isEnglish bool) (bool, error) {
 	if javID == 0 {
 		return false, errors.New("jav id cannot be zero")
 	}
@@ -3925,13 +4185,16 @@ func updateJavSeriesIfMissing(ctx context.Context, javID int64, series string, i
 		return false, nil
 	}
 	var updated bool
-	err := common.DB.WithContext(ctx).Transaction(func(tx *gorm.DB) error {
+	err := withSQLiteTransactionRetry(ctx, common.DB, func(tx *gorm.DB) error {
 		var javRec models.Jav
 		if err := tx.Clauses(clause.Locking{Strength: "UPDATE"}).
-			Select("id", "studio_id", "series_id", "series_en_id").
+			Select("id", "normalized_code", "studio_id", "series_id", "series_en_id").
 			Where("id = ?", javID).
 			First(&javRec).Error; err != nil {
 			return fmt.Errorf("get jav studio for series: %w", err)
+		}
+		if err := ensureExpectedJavIdentity(&javRec, expectedCode); err != nil {
+			return err
 		}
 		if isEnglish && javRec.SeriesEnID != nil {
 			return nil
@@ -3964,10 +4227,14 @@ func updateJavSeriesIfMissing(ctx context.Context, javID int64, series string, i
 
 // AppendJavIdolsIfMissingForProvider appends idol mappings when none exist yet.
 func AppendJavIdolsIfMissingForProvider(ctx context.Context, javID int64, names []string, provider jav.Provider) (bool, error) {
+	return AppendJavIdolsIfMissingForProviderAndCode(ctx, javID, "", names, provider)
+}
+
+func AppendJavIdolsIfMissingForProviderAndCode(ctx context.Context, javID int64, expectedCode string, names []string, provider jav.Provider) (bool, error) {
 	if javID == 0 {
 		return false, errors.New("jav id cannot be zero")
 	}
-	return appendJavIdolsIfMissingForProvider(ctx, javID, names, provider)
+	return appendJavIdolsIfMissingForProvider(ctx, javID, expectedCode, names, provider)
 }
 
 // JavHasIdols reports whether a canonical work has at least one linked idol.
@@ -4005,6 +4272,7 @@ func saveJavInfoTx(tx *gorm.DB, info *jav.JavInfo, now ...time.Time) (*models.Ja
 	if err != nil {
 		return nil, err
 	}
+	existingIdentity := javRec != nil
 	if javRec == nil {
 		javRec = &models.Jav{Code: info.Code, NormalizedCode: normalizedCode}
 	}
@@ -4012,8 +4280,13 @@ func saveJavInfoTx(tx *gorm.DB, info *jav.JavInfo, now ...time.Time) (*models.Ja
 	if provider == jav.ProviderJavDatabase || provider == jav.ProviderThePornDB {
 		return nil, errors.New("english JAV metadata cannot be persisted")
 	}
-	javRec.Code = info.Code
-	javRec.NormalizedCode = normalizedCode
+	// A provider may have been queried with a durable historical alias. Merge
+	// its metadata into the owning work without ever reverting the user's
+	// corrected canonical code back to that alias.
+	if !existingIdentity {
+		javRec.Code = info.Code
+		javRec.NormalizedCode = normalizedCode
+	}
 	// Providers are allowed to return partial records. Never erase a value
 	// already collected merely because a fallback response omitted it; missing
 	// fields are retried by the corresponding metadata scanner.
@@ -4098,7 +4371,7 @@ func advanceJavAcquisitionAfterMetadataTx(tx *gorm.DB, javID int64, updatedAt ti
 			(typeof(j_metadata.fetched_at) IN ('integer', 'real') AND
 				CAST(j_metadata.fetched_at AS REAL) > 0)`)
 	if err := tx.Model(&models.JavAcquisition{}).
-		Where("jav_id = ? AND stage = ?", javID, models.JavAcquisitionStageMetadataPending).
+		Where("jav_id = ? AND stage IN ?", javID, []string{models.JavAcquisitionStageMetadataPending, models.JavAcquisitionStageCodeReview}).
 		Where("EXISTS (?)", metadata).
 		Updates(map[string]any{
 			"stage":      models.JavAcquisitionStageMagnetCollecting,
@@ -4111,6 +4384,10 @@ func advanceJavAcquisitionAfterMetadataTx(tx *gorm.DB, javID int64, updatedAt ti
 
 // SetJavSampleImagesIfEmpty stores sample images without replacing an existing list.
 func SetJavSampleImagesIfEmpty(ctx context.Context, javID int64, images models.JavSampleImages) (models.JavSampleImages, error) {
+	return SetJavSampleImagesIfEmptyForCode(ctx, javID, "", images)
+}
+
+func SetJavSampleImagesIfEmptyForCode(ctx context.Context, javID int64, expectedCode string, images models.JavSampleImages) (models.JavSampleImages, error) {
 	if javID <= 0 {
 		return nil, errors.New("jav id must be positive")
 	}
@@ -4119,21 +4396,28 @@ func SetJavSampleImagesIfEmpty(ctx context.Context, javID int64, images models.J
 		return models.JavSampleImages{}, nil
 	}
 
-	result := common.DB.WithContext(ctx).
-		Model(&models.Jav{}).
-		Where("id = ?", javID).
-		Where(`TRIM(COALESCE(sample_images, '')) IN ('', '[]', 'null')`).
-		UpdateColumn("sample_images", images)
-	if result.Error != nil {
-		return nil, fmt.Errorf("update JAV sample images: %w", result.Error)
-	}
-
 	var stored models.Jav
-	if err := common.DB.WithContext(ctx).
-		Select("id", "sample_images").
-		Where("id = ?", javID).
-		First(&stored).Error; err != nil {
-		return nil, fmt.Errorf("load JAV sample images: %w", err)
+	err := withSQLiteTransactionRetry(ctx, common.DB, func(tx *gorm.DB) error {
+		stored = models.Jav{}
+		if err := tx.Select("id", "code", "normalized_code", "sample_images").
+			Where("id = ?", javID).
+			First(&stored).Error; err != nil {
+			return fmt.Errorf("load JAV sample images: %w", err)
+		}
+		if err := ensureExpectedJavIdentity(&stored, expectedCode); err != nil {
+			return err
+		}
+		if len(stored.SampleImages) > 0 {
+			return nil
+		}
+		if err := tx.Model(&models.Jav{}).Where("id = ?", javID).UpdateColumn("sample_images", images).Error; err != nil {
+			return fmt.Errorf("update JAV sample images: %w", err)
+		}
+		stored.SampleImages = images
+		return nil
+	})
+	if err != nil {
+		return nil, err
 	}
 	if stored.SampleImages == nil {
 		stored.SampleImages = models.JavSampleImages{}
@@ -4143,17 +4427,33 @@ func SetJavSampleImagesIfEmpty(ctx context.Context, javID int64, images models.J
 
 // MarkJavSampleImagesNotFound stores a sentinel without replacing an existing result.
 func MarkJavSampleImagesNotFound(ctx context.Context, javID int64) error {
+	return MarkJavSampleImagesNotFoundForCode(ctx, javID, "")
+}
+
+func MarkJavSampleImagesNotFoundForCode(ctx context.Context, javID int64, expectedCode string) error {
 	if javID <= 0 {
 		return errors.New("jav id must be positive")
 	}
-	if err := common.DB.WithContext(ctx).
-		Model(&models.Jav{}).
-		Where("id = ?", javID).
-		Where(`TRIM(COALESCE(sample_images, '')) IN ('', '[]', 'null')`).
-		UpdateColumn("sample_images", models.NewJavSampleImagesNotFound()).Error; err != nil {
-		return fmt.Errorf("mark JAV sample images not found: %w", err)
-	}
-	return nil
+	return withSQLiteTransactionRetry(ctx, common.DB, func(tx *gorm.DB) error {
+		var stored models.Jav
+		if err := tx.Select("id", "code", "normalized_code", "sample_images").
+			Where("id = ?", javID).
+			First(&stored).Error; err != nil {
+			return fmt.Errorf("load JAV for sample image miss: %w", err)
+		}
+		if err := ensureExpectedJavIdentity(&stored, expectedCode); err != nil {
+			return err
+		}
+		if len(stored.SampleImages) > 0 {
+			return nil
+		}
+		if err := tx.Model(&models.Jav{}).
+			Where("id = ?", javID).
+			UpdateColumn("sample_images", models.NewJavSampleImagesNotFound()).Error; err != nil {
+			return fmt.Errorf("mark JAV sample images not found: %w", err)
+		}
+		return nil
+	})
 }
 
 func normalizeJavSampleImages(images models.JavSampleImages) models.JavSampleImages {
@@ -4187,16 +4487,28 @@ func normalizeJavSampleImages(images models.JavSampleImages) models.JavSampleIma
 // UpdateJavIsUncensoredIfUnknown records an uncensored/censored classification
 // without overwriting an existing explicit value.
 func UpdateJavIsUncensoredIfUnknown(ctx context.Context, javID int64, isUncensored bool) error {
+	return UpdateJavIsUncensoredIfUnknownForCode(ctx, javID, "", isUncensored)
+}
+
+func UpdateJavIsUncensoredIfUnknownForCode(ctx context.Context, javID int64, expectedCode string, isUncensored bool) error {
 	if javID == 0 {
 		return errors.New("jav id cannot be zero")
 	}
-	if err := common.DB.WithContext(ctx).
-		Model(&models.Jav{}).
-		Where("id = ? AND is_uncensored IS NULL", javID).
-		Update("is_uncensored", isUncensored).Error; err != nil {
-		return fmt.Errorf("update jav is_uncensored: %w", err)
-	}
-	return nil
+	return withSQLiteTransactionRetry(ctx, common.DB, func(tx *gorm.DB) error {
+		var javRec models.Jav
+		if err := tx.Select("id", "code", "normalized_code").Where("id = ?", javID).First(&javRec).Error; err != nil {
+			return fmt.Errorf("get jav for uncensored update: %w", err)
+		}
+		if err := ensureExpectedJavIdentity(&javRec, expectedCode); err != nil {
+			return err
+		}
+		if err := tx.Model(&models.Jav{}).
+			Where("id = ? AND is_uncensored IS NULL", javID).
+			Update("is_uncensored", isUncensored).Error; err != nil {
+			return fmt.Errorf("update jav is_uncensored: %w", err)
+		}
+		return nil
+	})
 }
 
 func normalizeJavTagProvider(provider jav.Provider) jav.Provider {
@@ -4208,19 +4520,62 @@ func normalizeJavTagProvider(provider jav.Provider) jav.Provider {
 }
 
 func lockJavByCodeTx(tx *gorm.DB, code string) (*models.Jav, error) {
+	return findJavByAnyCode(tx, code, true)
+}
+
+func findJavByAnyCode(tx *gorm.DB, code string, lock bool) (*models.Jav, error) {
+	if tx == nil {
+		return nil, errors.New("db is nil")
+	}
 	normalizedCode := models.NormalizeJavCode(code)
 	if normalizedCode == "" {
 		return nil, nil
 	}
 	var javRec models.Jav
-	err := tx.Clauses(clause.Locking{Strength: "UPDATE"}).Where("normalized_code = ?", normalizedCode).First(&javRec).Error
+	query := tx
+	if lock {
+		query = query.Clauses(clause.Locking{Strength: "UPDATE"})
+	}
+	err := query.Where("normalized_code = ?", normalizedCode).First(&javRec).Error
+	if err == nil {
+		return &javRec, nil
+	}
+	if !errors.Is(err, gorm.ErrRecordNotFound) {
+		return nil, fmt.Errorf("get jav by canonical code: %w", err)
+	}
+
+	query = tx.Table("jav j_alias_lookup").
+		Select("j_alias_lookup.*").
+		Joins("JOIN jav_code_alias jca_alias_lookup ON jca_alias_lookup.jav_id = j_alias_lookup.id")
+	if lock {
+		query = query.Clauses(clause.Locking{Strength: "UPDATE"})
+	}
+	err = query.Where("jca_alias_lookup.normalized_code = ?", normalizedCode).First(&javRec).Error
 	if err != nil {
 		if errors.Is(err, gorm.ErrRecordNotFound) {
 			return nil, nil
 		}
-		return nil, fmt.Errorf("get jav by code: %w", err)
+		return nil, fmt.Errorf("get jav by code alias: %w", err)
 	}
 	return &javRec, nil
+}
+
+func ensureExpectedJavIdentity(javRec *models.Jav, expectedCode string) error {
+	expectedNormalized := models.NormalizeJavCode(expectedCode)
+	if expectedNormalized == "" {
+		return nil
+	}
+	if javRec == nil || javRec.ID <= 0 {
+		return gorm.ErrRecordNotFound
+	}
+	currentNormalized := models.NormalizeJavCode(javRec.NormalizedCode)
+	if currentNormalized == "" {
+		currentNormalized = models.NormalizeJavCode(javRec.Code)
+	}
+	if currentNormalized != expectedNormalized {
+		return fmt.Errorf("%w: jav_id=%d expected=%s current=%s", ErrJavIdentityChanged, javRec.ID, expectedNormalized, currentNormalized)
+	}
+	return nil
 }
 
 func ensureStudioTx(tx *gorm.DB, name string) (*models.JavStudio, error) {
@@ -4727,7 +5082,7 @@ func javDBProfileURL(provider jav.Provider, externalID string) string {
 	return "https://javdb.com/actors/" + strings.Trim(strings.TrimSpace(externalID), "/")
 }
 
-func appendJavIdolsIfMissingForProvider(ctx context.Context, javID int64, names []string, provider jav.Provider) (bool, error) {
+func appendJavIdolsIfMissingForProvider(ctx context.Context, javID int64, expectedCode string, names []string, provider jav.Provider) (bool, error) {
 	provider = jav.ParseProvider(int(provider))
 	if provider == jav.ProviderJavDatabase || provider == jav.ProviderThePornDB {
 		return false, errors.New("english JAV idols cannot be persisted")
@@ -4738,10 +5093,13 @@ func appendJavIdolsIfMissingForProvider(ctx context.Context, javID int64, names 
 	}
 
 	var updated bool
-	err := common.DB.WithContext(ctx).Transaction(func(tx *gorm.DB) error {
+	err := withSQLiteTransactionRetry(ctx, common.DB, func(tx *gorm.DB) error {
 		var javRec models.Jav
-		if err := tx.Select("id").Where("id = ?", javID).First(&javRec).Error; err != nil {
+		if err := tx.Select("id", "normalized_code").Where("id = ?", javID).First(&javRec).Error; err != nil {
 			return fmt.Errorf("get jav for idol append: %w", err)
+		}
+		if err := ensureExpectedJavIdentity(&javRec, expectedCode); err != nil {
+			return err
 		}
 		var existingCount int64
 		if err := tx.Model(&models.JavIdolMap{}).

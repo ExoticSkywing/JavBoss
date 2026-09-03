@@ -21,6 +21,7 @@ func NewRouter(staticDir string, auth *AuthService) *gin.Engine {
 	router.GET("/healthz", handleHealth)
 	registerAuthRoutes(router, auth)
 	registerJavDownloadCallbackRoutes(router)
+	registerJavTelegramInputRoutes(router)
 	protected := router.Group("/")
 	protected.Use(auth.requireAuth())
 	registerProtectedAuthRoutes(protected, auth)
@@ -78,6 +79,7 @@ func isAPIPath(path string) bool {
 		"/config",
 		"/directories",
 		"/healthz",
+		"/integrations",
 		"/jav",
 		"/sync",
 		"/tags",

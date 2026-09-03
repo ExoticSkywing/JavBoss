@@ -12,6 +12,7 @@ import { IconButton, Popper, Rating, Tooltip } from '@mui/material'
 
 import {
   deleteVideoScreenshot,
+  correctJavCode,
   collectJavMagnets,
   fetchJavItem,
   fetchJavTrailer,
@@ -19,7 +20,7 @@ import {
   getResolvedJavSampleImages,
   javSampleImageURL,
   resolveJavSampleImages,
-  reviewJavMagnet,
+  saveJavQualityReviewDecision,
   selectJavMagnet,
   submitJavDownloadBatch,
 } from '@/api'
@@ -111,19 +112,27 @@ function magnetStageLabel(stage) {
   return (
     {
       metadata_pending: zh('正在补全元数据', 'Collecting metadata'),
+      code_review: zh('待核对番号', 'Code needs review'),
       magnet_collecting: zh('正在收集磁链', 'Collecting magnets'),
       magnet_review: zh('待筛选磁链', 'Magnet review'),
       ready_to_download: zh('等待提交下载', 'Ready to download'),
       download_submitted: zh('已提交下载', 'Download submitted'),
-      quality_review: zh('待验收', 'Quality review'),
+      quality_review: zh('暂存待验收', 'Staged for review'),
+      awaiting_scan: zh('质量通过 · 等待扫盘', 'Approved · Awaiting scan'),
       imported: zh('已确认入库', 'Accepted import'),
     }[String(stage || '').trim()] || zh('等待处理', 'Awaiting processing')
   )
 }
 
+function needsJavCodeCorrection(item) {
+  const stage = String(item?.acquisition_stage || '').trim()
+  return (
+    stage === 'code_review' || (stage === 'magnet_collecting' && !String(item?.title || '').trim())
+  )
+}
+
 const magnetReviewFacts = [
   { key: 'qualityClear', label: zh('清晰度达标', 'Clear quality') },
-  { key: 'confirmed1080P', label: zh('确认 1080P', 'Confirmed 1080P') },
   { key: 'hasIntroAd', label: zh('片头广告', 'Intro ad') },
   { key: 'hasWatermark', label: zh('水印', 'Watermark') },
   { key: 'hasMarquee', label: zh('跑马灯', 'Marquee') },
@@ -131,14 +140,28 @@ const magnetReviewFacts = [
 ]
 
 const magnetRejectionReasons = [
-  { value: 'not_1080p', label: zh('不是 1080P', 'Not 1080P') },
-  { value: 'low_clarity', label: zh('清晰度不足', 'Low clarity') },
+  { value: 'low_clarity', label: zh('清晰度不达标', 'Clarity below standard') },
   { value: 'intro_ad', label: zh('片头广告', 'Intro ad') },
   { value: 'watermark', label: zh('水印', 'Watermark') },
   { value: 'marquee', label: zh('跑马灯', 'Marquee') },
   { value: 'too_large', label: zh('体积过大', 'Too large') },
   { value: 'too_small', label: zh('体积过小', 'Too small') },
 ]
+
+const rejectionReasonLabels = new Map([
+  ...magnetRejectionReasons.map((reason) => [reason.value, reason.label]),
+  // Keep historical records readable after the duplicate 1080P label is removed.
+  ['not_1080p', zh('清晰度不达标', 'Clarity below standard')],
+])
+
+function formatRejectionReasons(value) {
+  const reasons = String(value || '')
+    .split(',')
+    .map((reason) => reason.trim())
+    .filter(Boolean)
+  if (reasons.length === 0) return zh('未填写原因', 'No reason recorded')
+  return reasons.map((reason) => rejectionReasonLabels.get(reason) || reason).join('、')
+}
 
 function reviewFactValue(value) {
   if (value === true) return 'yes'
@@ -152,6 +175,133 @@ function parseReviewFact(value) {
   return null
 }
 
+export function JavCodeCorrectionModal({ open, item, directoryIds, onClose, onSaved }) {
+  const [code, setCode] = useState('')
+  const [saving, setSaving] = useState(false)
+  const [error, setError] = useState('')
+  const savingRef = useRef(false)
+
+  useEffect(() => {
+    if (!open) return
+    setCode(String(item?.code || ''))
+    setSaving(false)
+    savingRef.current = false
+    setError('')
+  }, [item?.code, open])
+
+  if (!open) return null
+
+  const handleSave = async () => {
+    if (savingRef.current) return
+    const nextCode = code.trim()
+    if (!nextCode) {
+      setError(zh('请输入番号', 'Enter a JAV code'))
+      return
+    }
+    savingRef.current = true
+    setSaving(true)
+    setError('')
+    try {
+      const updated = await correctJavCode(item.id, nextCode, { directoryIds })
+      onSaved?.(updated)
+    } catch (requestError) {
+      const conflictingJavID = Number(requestError?.payload?.conflicting_jav_id)
+      const suffix =
+        Number.isFinite(conflictingJavID) && conflictingJavID > 0
+          ? `（作品 #${conflictingJavID}）`
+          : ''
+      setError(`${getErrorMessage(requestError)}${suffix}`)
+    } finally {
+      savingRef.current = false
+      setSaving(false)
+    }
+  }
+
+  return (
+    <AppModal
+      ariaLabel={zh('修正番号', 'Correct JAV code')}
+      className="p-4"
+      closeDisabled={saving}
+      contentClassName="w-full max-w-md rounded-lg bg-white shadow-2xl"
+      onClose={onClose}
+      zIndex={1700}
+    >
+      <div className="flex items-start justify-between gap-3 px-5 pt-5">
+        <div>
+          <h2 className="text-base font-semibold text-gray-900">
+            {zh('修正番号', 'Correct JAV code')}
+          </h2>
+          <p className="mt-1 text-xs leading-5 text-gray-500">
+            {zh(
+              '只修改这部作品的番号，原始输入记录会保留。保存后会重新开始资料匹配。',
+              'Only this work code will change. The original input receipt stays intact, and metadata matching starts again after saving.'
+            )}
+          </p>
+        </div>
+        <button
+          type="button"
+          className="-mr-2 -mt-1 rounded px-2 py-1 text-xl leading-none text-gray-400 hover:bg-gray-100 hover:text-gray-800"
+          onClick={onClose}
+          disabled={saving}
+          aria-label={zh('关闭', 'Close')}
+        >
+          ×
+        </button>
+      </div>
+      <div className="px-5 py-5">
+        <label
+          htmlFor={`jav-code-correction-${item?.id || 'item'}`}
+          className="block text-sm font-medium text-gray-700"
+        >
+          {zh('正确番号', 'Correct code')}
+        </label>
+        <input
+          id={`jav-code-correction-${item?.id || 'item'}`}
+          type="text"
+          value={code}
+          onChange={(event) => {
+            setCode(event.target.value)
+            if (error) setError('')
+          }}
+          onKeyDown={(event) => {
+            if (event.key === 'Enter' && !event.nativeEvent.isComposing) {
+              event.preventDefault()
+              void handleSave()
+            }
+          }}
+          spellCheck="false"
+          placeholder="例如：IPX-001"
+          className="mt-2 w-full rounded-md border border-gray-300 px-3 py-2 font-mono text-sm uppercase text-gray-900 outline-none transition-[border-color,box-shadow] focus:border-stone-500 focus:ring-2 focus:ring-stone-100"
+          disabled={saving}
+        />
+        {error ? (
+          <div role="alert" className="mt-2 text-xs leading-5 text-rose-700">
+            {error}
+          </div>
+        ) : null}
+      </div>
+      <div className="flex justify-end gap-2 border-t border-gray-200 px-5 py-4">
+        <button
+          type="button"
+          className="rounded-md border border-gray-300 px-3 py-1.5 text-xs font-medium text-gray-700 hover:bg-gray-50 disabled:opacity-50"
+          onClick={onClose}
+          disabled={saving}
+        >
+          {zh('取消', 'Cancel')}
+        </button>
+        <button
+          type="button"
+          className="rounded-md bg-stone-800 px-3 py-1.5 text-xs font-medium text-white transition hover:bg-stone-900 active:scale-[0.96] disabled:cursor-wait disabled:opacity-50"
+          onClick={() => void handleSave()}
+          disabled={saving}
+        >
+          {saving ? zh('保存中…', 'Saving…') : zh('保存并重新匹配', 'Save and rematch')}
+        </button>
+      </div>
+    </AppModal>
+  )
+}
+
 function JavMagnetSection({ item, directoryIds, onAcquisitionUpdated }) {
   const [detail, setDetail] = useState(item)
   const [loading, setLoading] = useState(true)
@@ -160,11 +310,9 @@ function JavMagnetSection({ item, directoryIds, onAcquisitionUpdated }) {
   const [submitting, setSubmitting] = useState(false)
   const [reviewing, setReviewing] = useState(false)
   const [reviewReason, setReviewReason] = useState('')
-  const [deleteRejectedFile, setDeleteRejectedFile] = useState(true)
   const [selectedReasons, setSelectedReasons] = useState([])
   const [reviewFacts, setReviewFacts] = useState({
     qualityClear: null,
-    confirmed1080P: null,
     hasIntroAd: null,
     hasWatermark: null,
     hasMarquee: null,
@@ -252,18 +400,22 @@ function JavMagnetSection({ item, directoryIds, onAcquisitionUpdated }) {
     (candidate) => Number(candidate?.id) === selectedID
   )
   const stage = String(detail?.acquisition_stage || item?.acquisition_stage || '').trim()
-  const selectionLocked = ['download_submitted', 'quality_review', 'imported'].includes(stage)
+  const selectionLocked = [
+    'download_submitted',
+    'quality_review',
+    'awaiting_scan',
+    'imported',
+  ].includes(stage)
   const savedSelectionID = Number(detail?.magnet_selection?.candidate_id) || 0
   const reviewAttemptCandidateID = Number(detail?.download_attempt?.candidate_id) || 0
-  const hasPhysicalFile =
-    String(detail?.inventory_state || '').toLowerCase() === 'imported' ||
-    (Array.isArray(detail?.videos) && detail.videos.length > 0)
+  const codeCorrectionAvailable = needsJavCodeCorrection(detail || item) && candidates.length === 0
 
   useEffect(() => {
     if (!selectedCandidate) return
     setReviewFacts({
-      qualityClear: selectedCandidate.quality_clear ?? null,
-      confirmed1080P: selectedCandidate.confirmed_1080p ?? null,
+      // confirmed_1080p is a legacy fact. Use it only as a fallback so old
+      // reviews remain visible after the duplicate field is removed.
+      qualityClear: selectedCandidate.quality_clear ?? selectedCandidate.confirmed_1080p ?? null,
       hasIntroAd: selectedCandidate.has_intro_ad ?? null,
       hasWatermark: selectedCandidate.has_watermark ?? null,
       hasMarquee: selectedCandidate.has_marquee ?? null,
@@ -274,6 +426,7 @@ function JavMagnetSection({ item, directoryIds, onAcquisitionUpdated }) {
         .split(',')
         .map((reason) => reason.trim())
         .filter(Boolean)
+        .map((reason) => (reason === 'not_1080p' ? 'low_clarity' : reason))
     )
     setReviewReason(String(selectedCandidate.review_notes || ''))
   }, [selectedCandidate])
@@ -393,18 +546,14 @@ function JavMagnetSection({ item, directoryIds, onAcquisitionUpdated }) {
     }
   }
 
-  const reviewDownloaded = async (accepted) => {
+  const saveReviewDecision = async (accepted) => {
     if (!selectedCandidate) return
     setReviewing(true)
     setError('')
     setMessage('')
     setSelectionMessage('')
     try {
-      const savedSelectionID = Number(detail?.magnet_selection?.candidate_id) || 0
-      const nextSelectionID =
-        !accepted && savedSelectionID !== Number(selectedCandidate.id) ? savedSelectionID : 0
       const inferredReasons = [
-        reviewFacts.confirmed1080P === false ? 'not_1080p' : '',
         reviewFacts.qualityClear === false ? 'low_clarity' : '',
         reviewFacts.hasIntroAd === true ? 'intro_ad' : '',
         reviewFacts.hasWatermark === true ? 'watermark' : '',
@@ -412,36 +561,31 @@ function JavMagnetSection({ item, directoryIds, onAcquisitionUpdated }) {
       ].filter(Boolean)
       const rejectedReasons = [...new Set([...selectedReasons, ...inferredReasons])]
       const reasons = accepted ? [] : rejectedReasons.length > 0 ? rejectedReasons : ['other']
-      await reviewJavMagnet(item.id, selectedCandidate.id, {
+      const reviewResult = await saveJavQualityReviewDecision(item.id, selectedCandidate.id, {
         accepted,
         quality_clear: reviewFacts.qualityClear,
-        confirmed_1080p: reviewFacts.confirmed1080P,
+        // Keep the legacy API field empty; clarity is the single displayed
+        // quality judgment going forward.
+        confirmed_1080p: null,
         has_intro_ad: reviewFacts.hasIntroAd,
         has_watermark: reviewFacts.hasWatermark,
         has_marquee: reviewFacts.hasMarquee,
         is_uncensored: reviewFacts.isUncensored,
         reasons,
         notes: reviewReason.trim(),
-        delete_file: accepted ? false : deleteRejectedFile,
       })
       setDetail((current) => ({
         ...current,
-        acquisition_stage: accepted ? 'imported' : 'magnet_review',
-        magnet_selection: accepted
-          ? current?.magnet_selection
-          : Number(current?.magnet_selection?.candidate_id) === Number(selectedCandidate.id)
-            ? null
-            : current?.magnet_selection,
-        download_attempt: null,
+        acquisition_stage: 'quality_review',
+        download_attempt: { ...(current?.download_attempt || {}), ...reviewResult },
         magnet_candidates: (current?.magnet_candidates || []).map((candidate) =>
           Number(candidate.id) === Number(selectedCandidate.id)
             ? {
                 ...candidate,
-                review_status: accepted ? 'accepted' : 'rejected',
-                review_reasons: accepted ? '' : reasons.join(','),
+                review_status: candidate.review_status || 'pending',
+                review_reasons: reasons.join(','),
                 review_notes: reviewReason.trim(),
                 quality_clear: reviewFacts.qualityClear,
-                confirmed_1080p: reviewFacts.confirmed1080P,
                 has_intro_ad: reviewFacts.hasIntroAd,
                 has_watermark: reviewFacts.hasWatermark,
                 has_marquee: reviewFacts.hasMarquee,
@@ -450,25 +594,30 @@ function JavMagnetSection({ item, directoryIds, onAcquisitionUpdated }) {
             : candidate
         ),
       }))
-      onAcquisitionUpdated?.({ acquisition_stage: accepted ? 'imported' : 'magnet_review' })
+      onAcquisitionUpdated?.({
+        acquisition_stage: 'quality_review',
+        quality_review: {
+          decision: accepted ? 'accepted' : 'rejected',
+          attempt_id: reviewResult?.id,
+          candidate_id: selectedCandidate.id,
+        },
+      })
       setMessage(
         accepted
           ? zh(
-              '质量验收通过，作品已确认入库',
-              'Quality accepted; work is now confirmed in the library'
+              '已记录“通过”，文件仍留在待验收区；可在待验收入口统一执行',
+              'Approval saved; the file remains staged until batch execution'
             )
           : zh(
-              '已记录不合格磁链，可重新选择候选',
-              'Rejected magnet recorded; choose another candidate'
+              '已记录“不合格”，文件仍留在待验收区；可在待验收入口统一执行',
+              'Rejection saved; the file remains staged until batch execution'
             )
       )
-      if (!accepted) setSelectedID(nextSelectionID)
+      setSelectedID(selectedID)
     } catch (requestError) {
       const originalError = getErrorMessage(requestError)
       try {
-        // Rejection is persisted before an optional file removal. Reloading
-        // here prevents a trash/offline-storage failure from leaving the UI
-        // on the old, still-selectable candidate state.
+        // Reload the durable decision when the response is lost.
         const loaded = await fetchJavItem(item.id, { directoryIds })
         setDetail(loaded)
         setSelectedID(
@@ -500,8 +649,8 @@ function JavMagnetSection({ item, directoryIds, onAcquisitionUpdated }) {
           </h3>
           <p className="mt-1 text-xs text-gray-500">
             {zh(
-              '磁链会在后台自动收集；先保存选择，发送下载是下一步，下载完成后仍需人工验收。',
-              'Magnets are collected automatically. Save a choice first; submission is separate, and a downloaded file still needs quality review.'
+              '磁链会在后台自动收集；下载完成后先记录验收决定，再从“待验收”入口批量执行。',
+              'Magnets are collected automatically. After download, save a review decision first, then execute it from the quality queue in a batch.'
             )}
           </p>
         </div>
@@ -529,21 +678,43 @@ function JavMagnetSection({ item, directoryIds, onAcquisitionUpdated }) {
         </div>
       ) : null}
       {!loading && activeCandidates.length === 0 ? (
-        <div className="rounded-lg border border-dashed border-gray-200 px-4 py-6 text-center text-xs text-gray-500">
-          {stage === 'metadata_pending'
-            ? zh(
-                '元数据仍在补全，完成后会自动收集磁链。',
-                'Metadata is still being completed; magnet collection starts automatically afterward.'
-              )
-            : stage === 'magnet_collecting'
-              ? zh(
-                  '磁链正在后台收集，页面会自动刷新；也可以点击“重新采集”立即重试。',
-                  'Magnets are being collected in the background. This view refreshes automatically; “Collect again” retries immediately.'
-                )
-              : zh(
-                  '暂未保存候选磁链，可以点击“获取磁链”手动重试。',
-                  'No candidates are saved yet. Click “Collect magnets” to retry manually.'
+        <div
+          className={`rounded-lg border px-4 py-5 text-center text-xs ${
+            codeCorrectionAvailable
+              ? 'border-amber-200 bg-amber-50/70 text-amber-900'
+              : 'border-dashed border-gray-200 text-gray-500'
+          }`}
+        >
+          {codeCorrectionAvailable ? (
+            <>
+              <div className="font-semibold text-amber-900">
+                {zh('暂未匹配到作品资料', 'No work metadata matched this code')}
+              </div>
+              <p className="mt-1 leading-5 text-amber-800">
+                {zh(
+                  '多个资料来源都没有返回精确结果。请回到作品卡片，在“待核对番号”旁修正后重新匹配。',
+                  'No provider returned an exact result. Use “Correct code” beside the card status to rematch.'
                 )}
+              </p>
+            </>
+          ) : (
+            <>
+              {stage === 'metadata_pending'
+                ? zh(
+                    '元数据仍在补全，完成后会自动收集磁链。',
+                    'Metadata is still being completed; magnet collection starts automatically afterward.'
+                  )
+                : stage === 'magnet_collecting'
+                  ? zh(
+                      '磁链正在后台收集，页面会自动刷新；也可以点击“重新采集”立即重试。',
+                      'Magnets are being collected in the background. This view refreshes automatically; “Collect again” retries immediately.'
+                    )
+                  : zh(
+                      '暂未保存候选磁链，可以点击“获取磁链”手动重试。',
+                      'No candidates are saved yet. Click “Collect magnets” to retry manually.'
+                    )}
+            </>
+          )}
         </div>
       ) : null}
       {!loading && activeCandidates.length > 0 ? (
@@ -700,15 +871,10 @@ function JavMagnetSection({ item, directoryIds, onAcquisitionUpdated }) {
       {stage === 'quality_review' && selectedCandidate ? (
         <div className="mt-4 rounded-lg border border-amber-200 bg-amber-50/70 p-3">
           <div className="text-xs font-semibold text-amber-900">
-            {hasPhysicalFile
-              ? zh(
-                  '扫盘已确认文件落盘，等待质量验收',
-                  'The scanner confirmed the file; quality review is pending'
-                )
-              : zh(
-                  '云下载已进入待验收状态，仍在等待扫盘确认文件',
-                  'Cloud download is awaiting quality review; waiting for the scanner to confirm the file'
-                )}
+            {zh(
+              '文件位于 115 待验收区。这里先记录决定，不移动或删除文件；可在“待验收”入口统一执行。',
+              'The file is staged in 115. This step only records your decision; the quality queue performs the move or delete in a batch.'
+            )}
           </div>
           <div className="mt-3 grid gap-2 sm:grid-cols-2">
             {magnetReviewFacts.map((fact) => (
@@ -778,47 +944,49 @@ function JavMagnetSection({ item, directoryIds, onAcquisitionUpdated }) {
             onChange={(event) => setReviewReason(event.target.value)}
             rows={2}
             placeholder={zh(
-              '不合格时填写原因，例如：有水印、不是 1080P…',
-              'For a rejection, note the reason: watermark, not 1080P...'
+              '不合格时填写补充原因，例如：有水印、片头广告…',
+              'Add a rejection detail, for example: watermark or intro ad...'
             )}
             className="mt-2 w-full resize-y rounded border border-amber-200 bg-white px-2.5 py-2 text-xs text-gray-800 outline-none focus:border-amber-400"
           />
-          <label className="mt-2 inline-flex items-start gap-2 text-xs text-amber-950">
-            <input
-              type="checkbox"
-              checked={deleteRejectedFile}
-              onChange={(event) => setDeleteRejectedFile(event.target.checked)}
-              className="mt-0.5 h-3.5 w-3.5 accent-rose-600"
-            />
-            <span>
-              {zh(
-                '标记不合格时，同时从存储库移除这份文件（如果已手动删除，也保持勾选以清理库存记录）',
-                'When rejecting, also remove this file from storage (keep checked after manual deletion to clear its inventory record)'
-              )}
-            </span>
-          </label>
           <div className="mt-2 flex flex-wrap justify-end gap-2">
             <button
               type="button"
-              onClick={() => reviewDownloaded(false)}
+              onClick={() => saveReviewDecision(false)}
               disabled={reviewing}
               className="rounded-md border border-rose-200 bg-white px-3 py-1.5 text-xs font-medium text-rose-700 hover:bg-rose-50 disabled:opacity-50"
             >
-              {reviewing ? zh('保存中…', 'Saving…') : zh('标记不合格', 'Reject quality')}
+              {reviewing
+                ? zh('保存中…', 'Saving…')
+                : detail?.download_attempt?.review_decision === 'rejected'
+                  ? zh('已记录不合格', 'Rejection saved')
+                  : zh('记录不合格', 'Record rejection')}
             </button>
             <button
               type="button"
-              onClick={() => reviewDownloaded(true)}
-              disabled={reviewing || !hasPhysicalFile}
-              title={
-                hasPhysicalFile
-                  ? ''
-                  : zh('扫盘确认文件后才能正式入库', 'The scanner must confirm the file first')
-              }
+              onClick={() => saveReviewDecision(true)}
+              disabled={reviewing}
               className="rounded-md bg-emerald-600 px-3 py-1.5 text-xs font-medium text-white hover:bg-emerald-700 disabled:opacity-50"
             >
-              {reviewing ? zh('保存中…', 'Saving…') : zh('通过验收并入库', 'Accept and import')}
+              {reviewing
+                ? zh('保存中…', 'Saving…')
+                : detail?.download_attempt?.review_decision === 'accepted'
+                  ? zh('已记录通过', 'Approval saved')
+                  : zh('记录通过', 'Record approval')}
             </button>
+          </div>
+        </div>
+      ) : null}
+      {stage === 'awaiting_scan' ? (
+        <div className="mt-4 rounded-lg border border-stone-300 bg-stone-50 px-3 py-2.5 text-xs leading-5 text-stone-700">
+          <div className="font-semibold text-stone-900">
+            {zh('质量已通过，等待扫盘确认', 'Quality approved; awaiting scan')}
+          </div>
+          <div>
+            {zh(
+              '文件已经移入正式作品库。JavBoss 扫到真实文件并关联本作品后，会自动标记为正式入库。',
+              'The file is in the formal library. JavBoss will mark it imported after the scanner links the real file to this work.'
+            )}
           </div>
         </div>
       ) : null}
@@ -839,9 +1007,7 @@ function JavMagnetSection({ item, directoryIds, onAcquisitionUpdated }) {
                 <div className="font-medium text-gray-800">
                   {candidate.name || candidate.info_hash}
                 </div>
-                <div className="mt-1">
-                  {candidate.review_reasons || zh('未填写原因', 'No reason recorded')}
-                </div>
+                <div className="mt-1">{formatRejectionReasons(candidate.review_reasons)}</div>
                 {candidate.review_notes ? (
                   <div className="mt-1 text-gray-500">{candidate.review_notes}</div>
                 ) : null}
@@ -1312,6 +1478,9 @@ export default function JavDetailModal({
   const { coverAspectPercent } = useMemo(() => getIdolCardLayoutProps(), [])
   const [hoverPreview, setHoverPreview] = useState(null)
   const [sampleImages, setSampleImages] = useState(() => normalizeSampleImages(itemSampleImages))
+  const [sampleImagesMissing, setSampleImagesMissing] = useState(() =>
+    sampleImagesNotFound(itemSampleImages)
+  )
   const [sampleImagesLoading, setSampleImagesLoading] = useState(false)
   const [sampleImagesError, setSampleImagesError] = useState('')
   const [trailer, setTrailer] = useState(null)
@@ -1333,6 +1502,7 @@ export default function JavDetailModal({
     let cancelled = false
     const initialImages = normalizeSampleImages(itemSampleImages)
     setSampleImages(initialImages)
+    setSampleImagesMissing(sampleImagesNotFound(itemSampleImages))
     setSampleImagesError('')
     if (!itemId) {
       setSampleImagesLoading(false)
@@ -1353,6 +1523,7 @@ export default function JavDetailModal({
     const resolvedImages = getResolvedJavSampleImages(itemId, requestOptions)
     if (resolvedImages) {
       setSampleImages(normalizeSampleImages(resolvedImages))
+      setSampleImagesMissing(sampleImagesNotFound(resolvedImages))
       setSampleImagesLoading(false)
       return undefined
     }
@@ -1360,10 +1531,16 @@ export default function JavDetailModal({
     setSampleImagesLoading(true)
     void resolveJavSampleImages(itemId, requestOptions)
       .then((images) => {
-        if (!cancelled) setSampleImages(normalizeSampleImages(images))
+        if (!cancelled) {
+          setSampleImages(normalizeSampleImages(images))
+          setSampleImagesMissing(sampleImagesNotFound(images))
+        }
       })
       .catch((error) => {
-        if (!cancelled) setSampleImagesError(getErrorMessage(error))
+        if (!cancelled) {
+          setSampleImagesMissing(false)
+          setSampleImagesError(getErrorMessage(error))
+        }
       })
       .finally(() => {
         if (!cancelled) setSampleImagesLoading(false)
@@ -1372,7 +1549,7 @@ export default function JavDetailModal({
     return () => {
       cancelled = true
     }
-  }, [directoryIdentity, itemId, itemSampleImages])
+  }, [code, directoryIdentity, itemId, itemSampleImages])
 
   useEffect(() => {
     let cancelled = false
@@ -1401,7 +1578,7 @@ export default function JavDetailModal({
     return () => {
       cancelled = true
     }
-  }, [directoryIdentity, itemId])
+  }, [code, directoryIdentity, itemId])
 
   const clearHoverCloseTimer = () => {
     if (!hoverCloseTimerRef.current) return
@@ -1742,7 +1919,10 @@ export default function JavDetailModal({
             )}
           </section>
 
-          {sampleImagesLoading || sampleImagesError || sampleImages.length > 0 ? (
+          {sampleImagesLoading ||
+          sampleImagesError ||
+          sampleImagesMissing ||
+          sampleImages.length > 0 ? (
             <section
               className="border-t border-gray-200 pt-5"
               aria-labelledby={`${titleId}-sample-images`}
@@ -1765,7 +1945,11 @@ export default function JavDetailModal({
                 />
               ) : (
                 <div className="rounded border border-amber-200 bg-amber-50 px-3 py-2 text-xs text-amber-700">
-                  {sampleImagesError}
+                  {sampleImagesError ||
+                    zh(
+                      '资料来源确认暂无样品图像',
+                      'The providers confirmed that no sample images are available'
+                    )}
                 </div>
               )}
             </section>

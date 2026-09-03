@@ -1704,6 +1704,218 @@ func TestUpdateJavMetadataAdvancesBareAcquisition(t *testing.T) {
 	}
 }
 
+func TestCorrectJavCodeResetsUnresolvedWork(t *testing.T) {
+	database := openTestDB(t)
+	ctx := context.Background()
+
+	batch, err := CreateJavInputBatch(ctx, "CWPBD-052")
+	if err != nil {
+		t.Fatalf("create input batch: %v", err)
+	}
+	if len(batch.Items) != 1 || batch.Items[0].JavID == nil {
+		t.Fatalf("input batch items = %#v", batch.Items)
+	}
+	javID := *batch.Items[0].JavID
+	if err := MarkJavSampleImagesNotFound(ctx, javID); err != nil {
+		t.Fatalf("mark old code sample images not found: %v", err)
+	}
+
+	updated, err := CorrectJavCode(ctx, javID, "ipx-001", nil)
+	if err != nil {
+		t.Fatalf("correct JAV code: %v", err)
+	}
+	if updated.Code != "IPX-001" || updated.NormalizedCode != "IPX001" {
+		t.Fatalf("corrected identity = code=%q normalized=%q", updated.Code, updated.NormalizedCode)
+	}
+	if len(updated.SampleImages) != 0 {
+		t.Fatalf("corrected sample images = %#v, want empty lookup state", updated.SampleImages)
+	}
+	var acquisition models.JavAcquisition
+	if err := database.First(&acquisition, javID).Error; err != nil {
+		t.Fatalf("load corrected acquisition: %v", err)
+	}
+	if acquisition.Stage != models.JavAcquisitionStageMetadataPending {
+		t.Fatalf("corrected acquisition stage = %q, want metadata_pending", acquisition.Stage)
+	}
+
+	if _, err := CorrectJavCode(ctx, javID, "not-a-code", nil); !errors.Is(err, ErrJavCodeCorrectionInvalid) {
+		t.Fatalf("invalid correction error = %v, want ErrJavCodeCorrectionInvalid", err)
+	}
+	oldCodeBatch, err := CreateJavInputBatch(ctx, "CWPBD-052")
+	if err != nil {
+		t.Fatalf("re-enter old code: %v", err)
+	}
+	if oldCodeBatch.AcceptedCount != 0 || oldCodeBatch.HistoryDuplicateCount != 1 || len(oldCodeBatch.Items) != 1 || oldCodeBatch.Items[0].JavID == nil || *oldCodeBatch.Items[0].JavID != javID {
+		t.Fatalf("old code was not retained as a duplicate alias: %#v", oldCodeBatch)
+	}
+	if err := database.Delete(&models.JavInputBatch{}, batch.ID).Error; err != nil {
+		t.Fatalf("delete original input history: %v", err)
+	}
+	if err := database.Delete(&models.JavInputBatch{}, oldCodeBatch.ID).Error; err != nil {
+		t.Fatalf("delete duplicate input history: %v", err)
+	}
+	afterHistoryClear, err := CreateJavInputBatch(ctx, "CWPBD-052")
+	if err != nil {
+		t.Fatalf("re-enter old code after history clear: %v", err)
+	}
+	if afterHistoryClear.AcceptedCount != 0 || afterHistoryClear.HistoryDuplicateCount != 1 || afterHistoryClear.Items[0].JavID == nil || *afterHistoryClear.Items[0].JavID != javID {
+		t.Fatalf("durable code alias was released with input history: %#v", afterHistoryClear)
+	}
+}
+
+func TestNormalizeJavCodeCorrectionPreservesLeadingZeroes(t *testing.T) {
+	for _, input := range []string{"CWPBD-052", "CWPBD-52"} {
+		code, normalized, valid := normalizeJavCodeCorrection(input)
+		if !valid {
+			t.Fatalf("normalizeJavCodeCorrection(%q) was invalid", input)
+		}
+		if code != input || normalized != models.NormalizeJavCode(input) {
+			t.Fatalf("normalizeJavCodeCorrection(%q) = code=%q normalized=%q", input, code, normalized)
+		}
+	}
+}
+
+func TestCorrectJavCodeRejectsExistingIdentity(t *testing.T) {
+	database := openTestDB(t)
+	ctx := context.Background()
+	now := time.Now().UTC()
+
+	first := models.Jav{Code: "BAD-001", CreatedAt: now, UpdatedAt: now}
+	second := models.Jav{Code: "GOOD-002", CreatedAt: now, UpdatedAt: now}
+	if err := database.Create(&first).Error; err != nil {
+		t.Fatalf("create first JAV: %v", err)
+	}
+	if err := database.Create(&second).Error; err != nil {
+		t.Fatalf("create second JAV: %v", err)
+	}
+	if err := database.Create(&models.JavAcquisition{
+		JavID: first.ID, Stage: models.JavAcquisitionStageMetadataPending, CreatedAt: now, UpdatedAt: now,
+	}).Error; err != nil {
+		t.Fatalf("create first acquisition: %v", err)
+	}
+
+	if _, err := CorrectJavCode(ctx, first.ID, second.Code, nil); !errors.Is(err, ErrJavCodeCorrectionConflict) {
+		t.Fatalf("conflict correction error = %v, want ErrJavCodeCorrectionConflict", err)
+	}
+}
+
+func TestCorrectJavCodePromotesOwnedAliasWithoutSelfAlias(t *testing.T) {
+	database := openTestDB(t)
+	ctx := context.Background()
+	batch, err := CreateJavInputBatch(ctx, "ROUND-001")
+	if err != nil || len(batch.Items) != 1 || batch.Items[0].JavID == nil {
+		t.Fatalf("create input batch: batch=%#v err=%v", batch, err)
+	}
+	javID := *batch.Items[0].JavID
+	if _, err := CorrectJavCode(ctx, javID, "ROUND-002", nil); err != nil {
+		t.Fatalf("correct A -> B: %v", err)
+	}
+	updated, err := CorrectJavCode(ctx, javID, "ROUND-001", nil)
+	if err != nil {
+		t.Fatalf("correct B -> A: %v", err)
+	}
+	if updated.Code != "ROUND-001" {
+		t.Fatalf("canonical code = %q", updated.Code)
+	}
+	var aliases []models.JavCodeAlias
+	if err := database.Where("jav_id = ?", javID).Find(&aliases).Error; err != nil {
+		t.Fatalf("list aliases: %v", err)
+	}
+	if len(aliases) != 1 || aliases[0].NormalizedCode != "ROUND002" {
+		t.Fatalf("aliases after A -> B -> A = %#v", aliases)
+	}
+}
+
+func TestCorrectJavCodeRejectsHiddenLocation(t *testing.T) {
+	database := openTestDB(t)
+	ctx := context.Background()
+	batch, err := CreateJavInputBatch(ctx, "HIDDEN-001")
+	if err != nil || batch.Items[0].JavID == nil {
+		t.Fatalf("create input batch: batch=%#v err=%v", batch, err)
+	}
+	javID := *batch.Items[0].JavID
+	directory := models.Directory{Path: "/hidden-code-correction", IsDelete: true}
+	video := models.Video{Fingerprint: "hidden-code-correction-video"}
+	if err := database.Create(&directory).Error; err != nil {
+		t.Fatalf("create directory: %v", err)
+	}
+	if err := database.Create(&video).Error; err != nil {
+		t.Fatalf("create video: %v", err)
+	}
+	location := models.VideoLocation{
+		VideoID: video.ID, DirectoryID: directory.ID, RelativePath: "HIDDEN-001.mp4",
+		Filename: "HIDDEN-001.mp4", JavID: &javID, IsDelete: true,
+	}
+	if err := database.Create(&location).Error; err != nil {
+		t.Fatalf("create hidden location: %v", err)
+	}
+	if _, err := CorrectJavCode(ctx, javID, "HIDDEN-002", nil); !errors.Is(err, ErrJavCodeCorrectionNotAllowed) {
+		t.Fatalf("hidden location correction error = %v", err)
+	}
+}
+
+func TestCorrectJavCodeClearsProviderMetadata(t *testing.T) {
+	database := openTestDB(t)
+	ctx := context.Background()
+	batch, err := CreateJavInputBatch(ctx, "PARTIAL-001")
+	if err != nil || batch.Items[0].JavID == nil {
+		t.Fatalf("create input batch: batch=%#v err=%v", batch, err)
+	}
+	javID := *batch.Items[0].JavID
+	studio := models.JavStudio{Name: "Old studio"}
+	series := models.JavSeries{Name: "Old series"}
+	idol := models.JavIdol{Name: "Old idol"}
+	tag := models.JavTag{Name: "Old scraped tag"}
+	for name, value := range map[string]any{"studio": &studio, "series": &series, "idol": &idol, "tag": &tag} {
+		if err := database.Create(value).Error; err != nil {
+			t.Fatalf("create %s: %v", name, err)
+		}
+	}
+	uncensored := true
+	now := time.Now().UTC()
+	if err := database.Model(&models.Jav{}).Where("id = ?", javID).Updates(map[string]any{
+		"studio_id": studio.ID, "series_id": series.ID, "release_unix": int64(123),
+		"duration_min": 45, "fetched_at": now, "is_uncensored": uncensored,
+		"jav_db_idols_reconciled_at": now,
+	}).Error; err != nil {
+		t.Fatalf("seed partial metadata: %v", err)
+	}
+	if err := database.Create(&models.JavIdolMap{JavID: javID, JavIdolID: idol.ID}).Error; err != nil {
+		t.Fatalf("seed idol map: %v", err)
+	}
+	if err := database.Create(&models.JavTagMap{JavID: javID, JavTagID: tag.ID, Provider: int(jav.ProviderJavBus), CreatedAt: now}).Error; err != nil {
+		t.Fatalf("seed tag map: %v", err)
+	}
+	updated, err := CorrectJavCode(ctx, javID, "PARTIAL-002", nil)
+	if err != nil {
+		t.Fatalf("correct partial work: %v", err)
+	}
+	if updated.StudioID != nil || updated.SeriesID != nil || updated.ReleaseUnix != 0 || updated.DurationMin != 0 || !updated.FetchedAt.IsZero() || updated.IsUncensored != nil || len(updated.Idols) != 0 || len(updated.Tags) != 0 {
+		t.Fatalf("provider metadata survived correction: %#v", updated)
+	}
+}
+
+func TestJavCodeAliasResolvesGloballyAndCannotBecomeCanonical(t *testing.T) {
+	database := openTestDB(t)
+	ctx := context.Background()
+	batch, err := CreateJavInputBatch(ctx, "TYPO-001")
+	if err != nil || batch.Items[0].JavID == nil {
+		t.Fatalf("create input batch: batch=%#v err=%v", batch, err)
+	}
+	javID := *batch.Items[0].JavID
+	if _, err := CorrectJavCode(ctx, javID, "RIGHT-001", nil); err != nil {
+		t.Fatalf("correct code: %v", err)
+	}
+	resolved, err := GetJavByCode(ctx, "TYPO-001")
+	if err != nil || resolved == nil || resolved.ID != javID || resolved.Code != "RIGHT-001" {
+		t.Fatalf("resolve alias = %#v err=%v", resolved, err)
+	}
+	duplicate := models.Jav{Code: "TYPO-001", NormalizedCode: "TYPO001"}
+	if err := database.Create(&duplicate).Error; err == nil {
+		t.Fatal("database accepted an alias as a second canonical work")
+	}
+}
+
 func TestUpdateJavNonMetadataEditDoesNotAdvanceBareAcquisition(t *testing.T) {
 	db := openTestDB(t)
 	ctx := context.Background()

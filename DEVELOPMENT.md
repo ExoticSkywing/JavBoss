@@ -46,6 +46,12 @@ SKIP_RUNTIME_DOWNLOAD=1 ./scripts/cli.sh setup
 ./scripts/cli.sh dev both
 ```
 
+在本机联调环境中，该命令会自动读取
+`/root/data/docker_data/cd2_magnet_tgbot/.env`，并把下载网关地址、发送密钥和回调密钥传给
+JavBoss；不再需要每次手动执行多条 `export`。如果配置文件放在其它位置，可通过
+`JAVBOSS_ENV_FILE=/path/to/.env ./scripts/cli.sh dev both` 指定；设置
+`JAVBOSS_AUTO_ENV=0` 可关闭自动读取。
+
 - 前端运行在 <http://localhost:5173>，Vite 提供组件级热更新。
 - 后端运行在 <http://localhost:17654>。保存 `.go`、`go.mod` 或 `go.sum` 后，开发器使用
   `.gocache/` 做增量编译；只有新版本编译成功才替换并重启旧进程。编译失败时旧服务继续可用，修复后再次保存即可。

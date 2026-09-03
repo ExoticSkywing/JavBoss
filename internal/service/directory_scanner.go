@@ -4,7 +4,12 @@ import (
 	"context"
 	"errors"
 	"fmt"
+	"os"
+	"path"
+	"path/filepath"
+	"strings"
 	"sync"
+	"sync/atomic"
 	"time"
 
 	"javboss/internal/common"
@@ -17,6 +22,7 @@ var (
 	ErrDirectoryScanInProgress = errors.New("directory scan in progress")
 	dirScanMu                  sync.Mutex
 	dirScanActive              = map[int64]*directoryScanSession{}
+	javLibraryScanRunning      atomic.Bool
 )
 
 // directoryScanSession 表示一个正在运行或被目录更新操作暂时占用的扫描会话。
@@ -251,4 +257,63 @@ func StartAutomaticDirectoryScanScheduler(ctx context.Context, pollInterval time
 			}
 		}
 	}()
+}
+
+// RequestJavLibraryIncrementalScan schedules one scan of the configured local
+// library after a top-down acceptance moves files into the formal CloudNAS
+// directory. It deliberately bypasses AutoScanEnabled: accepting a download
+// is an explicit request to make that work discoverable immediately, while the
+// normal periodic scanner setting may remain disabled.
+func RequestJavLibraryIncrementalScan() {
+	if !javLibraryScanRunning.CompareAndSwap(false, true) {
+		return
+	}
+	go func() {
+		defer javLibraryScanRunning.Store(false)
+		// CloudNAS can expose a completed MoveFile a moment after the gRPC
+		// response. A short grace period avoids racing the mount refresh.
+		timer := time.NewTimer(2 * time.Second)
+		defer timer.Stop()
+		<-timer.C
+
+		ctx, cancel := context.WithTimeout(context.Background(), 15*time.Minute)
+		defer cancel()
+		directories, err := db.ListActiveDirectories(ctx)
+		if err != nil {
+			logging.Error("list directories for accepted JAV incremental scan failed: %v", err)
+			return
+		}
+		directories = selectJavLibraryDirectories(directories, os.Getenv("JAV_LIBRARY_PATH"))
+		for _, directory := range directories {
+			if _, err := ScanDirectory(ctx, directory); err != nil {
+				if !errors.Is(err, ErrDirectoryScanInProgress) && !errors.Is(err, context.Canceled) {
+					logging.Error("accepted JAV incremental scan failed id=%d path=%s err=%v", directory.ID, directory.Path, err)
+				}
+				continue
+			}
+			logging.Info("accepted JAV incremental scan completed id=%d path=%s", directory.ID, directory.Path)
+		}
+	}()
+}
+
+func selectJavLibraryDirectories(directories []models.Directory, configuredLibraryPath string) []models.Directory {
+	if len(directories) <= 1 {
+		return directories
+	}
+	base := path.Base(strings.TrimRight(strings.TrimSpace(filepath.ToSlash(configuredLibraryPath)), "/"))
+	if base == "" || base == "." || base == "/" {
+		return directories
+	}
+	matched := make([]models.Directory, 0, len(directories))
+	for _, directory := range directories {
+		if path.Base(filepath.ToSlash(filepath.Clean(directory.Path))) == base {
+			matched = append(matched, directory)
+		}
+	}
+	if len(matched) > 0 {
+		return matched
+	}
+	// With multiple unrelated directories, do not launch a broad scan when the
+	// CloudDrive library cannot be mapped unambiguously.
+	return nil
 }
