@@ -1,6 +1,6 @@
 import { zh } from '@/utils/i18n'
 import { getErrorMessage } from '@/utils/errors'
-import { normalizeJavInventory } from '@/constants/jav'
+import { JAV_INVENTORY_PENDING, normalizeJavInventory } from '@/constants/jav'
 
 const jsonHeaders = { 'Content-Type': 'application/json' }
 const javIdolResolveInFlight = new Map()
@@ -547,6 +547,7 @@ export async function fetchJavs({
   directoryIds = [],
   favoriteGroupId = null,
   inventory = 'all',
+  workflowStage = '',
 } = {}) {
   const params = new URLSearchParams()
   params.set('limit', String(limit))
@@ -566,7 +567,11 @@ export async function fetchJavs({
   if (seed != null) params.set('seed', String(seed))
   if (directoryIds.length) params.set('directory_ids', directoryIds.join(','))
   if (favoriteGroupId) params.set('favorite_group_id', String(favoriteGroupId))
-  params.set('inventory', normalizeJavInventory(inventory))
+  const normalizedInventory = normalizeJavInventory(inventory)
+  params.set('inventory', normalizedInventory)
+  if (workflowStage && normalizedInventory === JAV_INVENTORY_PENDING) {
+    params.set('workflow_stage', String(workflowStage))
+  }
   const res = await apiFetch(`/jav?${params.toString()}`)
   if (!res.ok) {
     throw await apiError(res)
@@ -594,6 +599,7 @@ export async function fetchJavFilterOptions({
   seriesSearch = '',
   optionLimit = 120,
   inventory = 'all',
+  workflowStage = '',
   signal,
 } = {}) {
   const params = new URLSearchParams()
@@ -615,7 +621,11 @@ export async function fetchJavFilterOptions({
   if (tagSearch) params.set('tag_search', tagSearch)
   if (studioSearch) params.set('studio_search', studioSearch)
   if (seriesSearch) params.set('series_search', seriesSearch)
-  params.set('inventory', normalizeJavInventory(inventory))
+  const normalizedInventory = normalizeJavInventory(inventory)
+  params.set('inventory', normalizedInventory)
+  if (workflowStage && normalizedInventory === JAV_INVENTORY_PENDING) {
+    params.set('workflow_stage', String(workflowStage))
+  }
   params.set('option_limit', String(optionLimit))
   const res = await apiFetch(`/jav/filter-options?${params.toString()}`, { signal })
   if (!res.ok) {
@@ -1478,11 +1488,42 @@ export async function fetchJavImportDays({ limit = 31, offset = 0, directoryIds 
   return parseJSONResponse(res)
 }
 
+export async function fetchJavMagnetSamples({
+  status = 'all',
+  search = '',
+  sort = 'accepted_at',
+  direction = 'desc',
+  limit = 40,
+  offset = 0,
+} = {}) {
+  const params = new URLSearchParams({
+    status: String(status || 'all'),
+    sort: String(sort || 'accepted_at'),
+    direction: String(direction || 'desc'),
+    page_size: String(limit),
+    offset: String(offset),
+  })
+  if (String(search || '').trim()) params.set('search', String(search).trim())
+  const res = await apiFetch(`/jav/magnet-samples?${params.toString()}`, { cache: 'no-store' })
+  if (!res.ok) throw await apiError(res)
+  return parseJSONResponse(res)
+}
+
 export async function submitJavDownloadBatch(javIds = []) {
   const res = await apiFetch('/jav/magnet-queue/submit', {
     method: 'POST',
     headers: jsonHeaders,
     body: JSON.stringify({ jav_ids: javIds }),
+  })
+  if (!res.ok) throw await apiError(res)
+  return parseJSONResponse(res)
+}
+
+export async function fetchJavDownloadBatch(batchID) {
+  const id = Number(batchID)
+  if (!Number.isFinite(id) || id <= 0) throw new Error('Invalid JAV download batch ID')
+  const res = await apiFetch(`/jav/magnet-queue/batches/${encodeURIComponent(id)}`, {
+    cache: 'no-store',
   })
   if (!res.ok) throw await apiError(res)
   return parseJSONResponse(res)

@@ -210,6 +210,18 @@ type JavSearchFilters struct {
 	FavoriteRatingMin *float64
 	FavoriteRatingMax *float64
 	Inventory         string
+	WorkflowStage     string
+}
+
+var pendingJavWorkflowStages = []string{
+	models.JavAcquisitionStageMetadataPending,
+	models.JavAcquisitionStageCodeReview,
+	models.JavAcquisitionStageMagnetCollecting,
+	models.JavAcquisitionStageMagnetReview,
+	models.JavAcquisitionStageReadyToDownload,
+	models.JavAcquisitionStageDownloadSubmitted,
+	models.JavAcquisitionStageQualityReview,
+	models.JavAcquisitionStageAwaitingScan,
 }
 
 // SearchJavWithPrefix lists Jav metadata filtered by an exact code prefix plus other filters.
@@ -323,6 +335,49 @@ func CountJavWithPrefixFilters(ctx context.Context, idolIDs []int64, tagIDs []in
 	search = strings.TrimSpace(search)
 	prefix = normalizeJavCodePrefix(prefix)
 	return countJavMatches(ctx, idolIDs, tagIDs, search, prefix, directoryIDs, filters)
+}
+
+// CountJavWorkflowStages returns the pending JAV count grouped by its durable
+// acquisition stage. Works without a stage row (or with a stale/unknown stage)
+// are kept visible in the first metadata bucket so the stage totals still cover
+// the complete pending collection.
+func CountJavWorkflowStages(ctx context.Context, idolIDs []int64, tagIDs []int64, search, prefix string, directoryIDs []int64, filters JavSearchFilters) (map[string]int64, error) {
+	idolIDs = uniqueInt64s(idolIDs)
+	tagIDs = uniqueInt64s(tagIDs)
+	search = strings.TrimSpace(search)
+	prefix = normalizeJavCodePrefix(prefix)
+	filters.Inventory = models.JavInventoryPending
+	filters.WorkflowStage = ""
+	matched := buildJavFilter(ctx, idolIDs, tagIDs, search, prefix, directoryIDs, filters).
+		Select("jav.id")
+	type workflowStageRow struct {
+		Stage string `gorm:"column:stage"`
+		Count int64  `gorm:"column:count"`
+	}
+	var rows []workflowStageRow
+	if err := common.DB.WithContext(ctx).
+		Table("(?) matched", matched).
+		Joins("LEFT JOIN jav_acquisition ja_stage ON ja_stage.jav_id = matched.id").
+		Select("ja_stage.stage AS stage, COUNT(DISTINCT matched.id) AS count").
+		Group("ja_stage.stage").
+		Scan(&rows).Error; err != nil {
+		return nil, fmt.Errorf("count JAV workflow stages: %w", err)
+	}
+	known := make(map[string]struct{}, len(pendingJavWorkflowStages))
+	for _, stage := range pendingJavWorkflowStages {
+		known[stage] = struct{}{}
+	}
+	counts := make(map[string]int64, len(known))
+	for _, row := range rows {
+		stage := strings.TrimSpace(row.Stage)
+		if _, ok := known[stage]; !ok {
+			stage = models.JavAcquisitionStageMetadataPending
+		}
+		if row.Count > 0 {
+			counts[stage] += row.Count
+		}
+	}
+	return counts, nil
 }
 
 func countJavMatches(ctx context.Context, idolIDs []int64, tagIDs []int64, search, prefix string, directoryIDs []int64, filters JavSearchFilters) (int64, error) {
@@ -1529,6 +1584,15 @@ func buildJavFilter(ctx context.Context, idolIDs []int64, tagIDs []int64, search
 		q = q.Where("EXISTS (?)", globalActiveLocation)
 		if len(directoryIDs) > 0 {
 			q = q.Where("EXISTS (?)", scopedActiveLocation)
+		}
+	}
+	if workflowStage := strings.TrimSpace(filters.WorkflowStage); workflowStage != "" {
+		if workflowStage == models.JavAcquisitionStageMetadataPending {
+			q = q.Where(`NOT EXISTS (SELECT 1 FROM jav_acquisition ja_stage WHERE ja_stage.jav_id = jav.id)
+				OR EXISTS (SELECT 1 FROM jav_acquisition ja_stage WHERE ja_stage.jav_id = jav.id
+					AND (ja_stage.stage = ? OR ja_stage.stage NOT IN ?))`, workflowStage, pendingJavWorkflowStages)
+		} else {
+			q = q.Where("EXISTS (SELECT 1 FROM jav_acquisition ja_stage WHERE ja_stage.jav_id = jav.id AND ja_stage.stage = ?)", workflowStage)
 		}
 	}
 	if search != "" {

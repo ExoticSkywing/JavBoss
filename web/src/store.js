@@ -24,12 +24,14 @@ import {
   IDOL_PROFILE_FILTER_DEFINITIONS,
   normalizeIdolSort,
   normalizeJavInventory,
+  normalizeJavWorkflowStage,
   normalizeIdolProfileFilters,
   normalizeJavSort,
   normalizeJavSortRules,
   normalizeJavViewPreset,
   resolveJavSort,
   JAV_VIEW_PRESET_DETAILED,
+  JAV_INVENTORY_PENDING,
 } from '@/constants/jav'
 import { normalizeVideoSort } from '@/constants/video'
 import { zh } from '@/utils/i18n'
@@ -182,6 +184,7 @@ const javListRequestKey = (state, directoryIds = directoryQueryIds(state)) => {
       : '',
     state.javFavoriteGroupId || '',
     state.javInventory,
+    state.javWorkflowStage,
     effectiveSort,
     state.javRandomMode ? state.javRandomSeed || '' : '',
     directoryIds.join(','),
@@ -285,6 +288,8 @@ export const useStore = create((set, get) => ({
   },
   javSearchTerm: '',
   javInventory: 'all',
+  javWorkflowStage: '',
+  javWorkflowStageCounts: {},
   javIdolIds: [],
   javTags: [],
   javStudioId: null,
@@ -299,7 +304,9 @@ export const useStore = create((set, get) => ({
   javFavoriteGroupId: null,
   javItems: [],
   javTotal: 0,
+  javAllTotal: 0,
   javPendingTotal: 0,
+  javImportedTotal: 0,
   javLoading: false,
   javLoadingMore: false,
   javError: null,
@@ -372,8 +379,22 @@ export const useStore = create((set, get) => ({
     set({ javFavoriteGroupId: next, javPage: 1, javRandomMode: false, javRandomSeed: null })
   },
   setJavInventory: (inventory) => {
+    const next = normalizeJavInventory(inventory)
     set({
-      javInventory: normalizeJavInventory(inventory),
+      javInventory: next,
+      javWorkflowStage: next === JAV_INVENTORY_PENDING ? get().javWorkflowStage : '',
+      javTempSort: '',
+      javRandomMode: false,
+      javRandomSeed: null,
+      javPage: 1,
+    })
+  },
+  setJavWorkflowStage: (stage) => {
+    set({
+      javWorkflowStage:
+        normalizeJavInventory(get().javInventory) === JAV_INVENTORY_PENDING
+          ? normalizeJavWorkflowStage(stage)
+          : '',
       javTempSort: '',
       javRandomMode: false,
       javRandomSeed: null,
@@ -914,6 +935,7 @@ export const useStore = create((set, get) => ({
       javFavoriteRatingMax,
       javFavoriteGroupId,
       javInventory,
+      javWorkflowStage,
       javRandomMode,
       javRandomSeed,
     } = get()
@@ -943,6 +965,7 @@ export const useStore = create((set, get) => ({
         favoriteRatingMax: javFavoriteRatingMax,
         favoriteGroupId: javFavoriteGroupId,
         inventory: javInventory,
+        workflowStage: javWorkflowStage,
         sort: effectiveSort,
         seed: javRandomMode ? javRandomSeed : null,
         directoryIds,
@@ -952,7 +975,13 @@ export const useStore = create((set, get) => ({
       set({
         javItems: items,
         javTotal: javRandomMode ? items.length : resp.total || 0,
+        javAllTotal: Math.max(0, Number(resp.all_total ?? resp.total) || 0),
         javPendingTotal: Math.max(0, Number(resp.pending_total) || 0),
+        javImportedTotal: Math.max(0, Number(resp.imported_total) || 0),
+        javWorkflowStageCounts:
+          resp.workflow_stage_counts && typeof resp.workflow_stage_counts === 'object'
+            ? resp.workflow_stage_counts
+            : {},
       })
     } catch (e) {
       if (reqId !== javLoadSeq || key !== javListRequestKey(get())) return
@@ -994,6 +1023,7 @@ export const useStore = create((set, get) => ({
         favoriteRatingMax: state.javFavoriteRatingMax,
         favoriteGroupId: state.javFavoriteGroupId,
         inventory: state.javInventory,
+        workflowStage: state.javWorkflowStage,
         sort: effectiveSort,
         directoryIds,
       })
@@ -1008,7 +1038,13 @@ export const useStore = create((set, get) => ({
       set({
         javItems: [...(get().javItems || []), ...items],
         javTotal: resp.total || total,
+        javAllTotal: Math.max(0, Number(resp.all_total ?? get().javAllTotal) || 0),
         javPendingTotal: Math.max(0, Number(resp.pending_total ?? state.javPendingTotal) || 0),
+        javImportedTotal: Math.max(0, Number(resp.imported_total ?? state.javImportedTotal) || 0),
+        javWorkflowStageCounts:
+          resp.workflow_stage_counts && typeof resp.workflow_stage_counts === 'object'
+            ? resp.workflow_stage_counts
+            : get().javWorkflowStageCounts,
       })
     } catch (e) {
       if (

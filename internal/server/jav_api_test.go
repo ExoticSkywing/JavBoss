@@ -72,6 +72,7 @@ func TestParseJavFilterQueryInventory(t *testing.T) {
 		name       string
 		query      string
 		want       string
+		wantStage  string
 		wantOK     bool
 		wantStatus int
 	}{
@@ -80,6 +81,8 @@ func TestParseJavFilterQueryInventory(t *testing.T) {
 		{name: "pending", query: "?inventory=pending", want: models.JavInventoryPending, wantOK: true},
 		{name: "imported", query: "?inventory=imported", want: models.JavInventoryImported, wantOK: true},
 		{name: "case insensitive", query: "?inventory=PENDING", want: models.JavInventoryPending, wantOK: true},
+		{name: "workflow stage", query: "?inventory=pending&workflow_stage=magnet_review", want: models.JavInventoryPending, wantStage: models.JavAcquisitionStageMagnetReview, wantOK: true},
+		{name: "invalid workflow stage", query: "?workflow_stage=unknown", wantOK: false, wantStatus: http.StatusBadRequest},
 		{name: "invalid", query: "?inventory=stored", wantOK: false, wantStatus: http.StatusBadRequest},
 	}
 	for _, test := range tests {
@@ -94,6 +97,9 @@ func TestParseJavFilterQueryInventory(t *testing.T) {
 			}
 			if test.wantOK && got.Inventory != test.want {
 				t.Fatalf("inventory = %q, want %q", got.Inventory, test.want)
+			}
+			if test.wantOK && got.WorkflowStage != test.wantStage {
+				t.Fatalf("workflow stage = %q, want %q", got.WorkflowStage, test.wantStage)
 			}
 			if !test.wantOK && recorder.Code != test.wantStatus {
 				t.Fatalf("status = %d, want %d", recorder.Code, test.wantStatus)
@@ -117,9 +123,13 @@ func TestSearchJavInventoryAPI(t *testing.T) {
 	})
 
 	pending := models.Jav{Code: "API-INV-001", Title: "Pending"}
+	pendingOther := models.Jav{Code: "API-INV-003", Title: "Pending magnet review"}
 	imported := models.Jav{Code: "API-INV-002", Title: "Imported"}
 	if err := database.Create(&pending).Error; err != nil {
 		t.Fatalf("create pending JAV: %v", err)
+	}
+	if err := database.Create(&pendingOther).Error; err != nil {
+		t.Fatalf("create second pending JAV: %v", err)
 	}
 	if err := database.Create(&imported).Error; err != nil {
 		t.Fatalf("create imported JAV: %v", err)
@@ -129,6 +139,12 @@ func TestSearchJavInventoryAPI(t *testing.T) {
 		Stage: models.JavAcquisitionStageMetadataPending,
 	}).Error; err != nil {
 		t.Fatalf("create pending acquisition: %v", err)
+	}
+	if err := database.Create(&models.JavAcquisition{
+		JavID: pendingOther.ID,
+		Stage: models.JavAcquisitionStageMagnetReview,
+	}).Error; err != nil {
+		t.Fatalf("create second pending acquisition: %v", err)
 	}
 	directory := models.Directory{Path: "/media/inventory-api"}
 	video := models.Video{Fingerprint: "inventory-api-video"}
@@ -154,9 +170,12 @@ func TestSearchJavInventoryAPI(t *testing.T) {
 	router := gin.New()
 	router.GET("/jav", searchJav)
 	type inventoryResponse struct {
-		Items        []models.Jav `json:"items"`
-		Total        int64        `json:"total"`
-		PendingTotal int64        `json:"pending_total"`
+		Items               []models.Jav     `json:"items"`
+		Total               int64            `json:"total"`
+		AllTotal            int64            `json:"all_total"`
+		PendingTotal        int64            `json:"pending_total"`
+		ImportedTotal       int64            `json:"imported_total"`
+		WorkflowStageCounts map[string]int64 `json:"workflow_stage_counts"`
 	}
 	request := func(query string) (inventoryResponse, *httptest.ResponseRecorder) {
 		t.Helper()
@@ -172,7 +191,7 @@ func TestSearchJavInventoryAPI(t *testing.T) {
 	}
 
 	all, recorder := request("")
-	if recorder.Code != http.StatusOK || all.Total != 2 || all.PendingTotal != 1 || len(all.Items) != 2 {
+	if recorder.Code != http.StatusOK || all.Total != 3 || all.AllTotal != 3 || all.PendingTotal != 2 || all.ImportedTotal != 1 || len(all.Items) != 3 {
 		t.Fatalf("all inventory status=%d response=%#v body=%s", recorder.Code, all, recorder.Body.String())
 	}
 	states := map[string]models.Jav{}
@@ -189,16 +208,27 @@ func TestSearchJavInventoryAPI(t *testing.T) {
 	}
 
 	pendingOnly, recorder := request("?inventory=pending")
-	if recorder.Code != http.StatusOK || pendingOnly.Total != 1 || pendingOnly.PendingTotal != 1 || len(pendingOnly.Items) != 1 || pendingOnly.Items[0].ID != pending.ID {
+	if recorder.Code != http.StatusOK || pendingOnly.Total != 2 || pendingOnly.AllTotal != 3 || pendingOnly.PendingTotal != 2 || pendingOnly.ImportedTotal != 1 || len(pendingOnly.Items) != 2 {
 		t.Fatalf("pending inventory status=%d response=%#v", recorder.Code, pendingOnly)
 	}
+	if pendingOnly.WorkflowStageCounts[models.JavAcquisitionStageMetadataPending] != 1 || pendingOnly.WorkflowStageCounts[models.JavAcquisitionStageMagnetReview] != 1 {
+		t.Fatalf("pending workflow stage counts = %#v", pendingOnly.WorkflowStageCounts)
+	}
+	stageOnly, recorder := request("?inventory=pending&workflow_stage=metadata_pending")
+	if recorder.Code != http.StatusOK || stageOnly.Total != 1 || stageOnly.PendingTotal != 2 || stageOnly.AllTotal != 3 || stageOnly.ImportedTotal != 1 || len(stageOnly.Items) != 1 || stageOnly.Items[0].ID != pending.ID {
+		t.Fatalf("workflow stage filter status=%d response=%#v", recorder.Code, stageOnly)
+	}
 	importedOnly, recorder := request("?inventory=imported")
-	if recorder.Code != http.StatusOK || importedOnly.Total != 1 || importedOnly.PendingTotal != 1 || len(importedOnly.Items) != 1 || importedOnly.Items[0].ID != imported.ID {
+	if recorder.Code != http.StatusOK || importedOnly.Total != 1 || importedOnly.AllTotal != 3 || importedOnly.PendingTotal != 2 || importedOnly.ImportedTotal != 1 || len(importedOnly.Items) != 1 || importedOnly.Items[0].ID != imported.ID {
 		t.Fatalf("imported inventory status=%d response=%#v", recorder.Code, importedOnly)
 	}
 	_, recorder = request("?inventory=stored")
 	if recorder.Code != http.StatusBadRequest {
 		t.Fatalf("invalid inventory status=%d body=%s", recorder.Code, recorder.Body.String())
+	}
+	_, recorder = request("?workflow_stage=metadata_pending")
+	if recorder.Code != http.StatusBadRequest {
+		t.Fatalf("workflow stage without pending inventory status=%d body=%s", recorder.Code, recorder.Body.String())
 	}
 }
 

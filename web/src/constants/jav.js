@@ -18,6 +18,31 @@ export {
   normalizeJavInventory,
 } from '@/utils/javInventory'
 
+export const JAV_WORKFLOW_STAGE_ALL = ''
+export const JAV_WORKFLOW_STAGE_OPTIONS = [
+  { value: 'metadata_pending', label: ['正在补全元数据', 'Collecting metadata'] },
+  { value: 'code_review', label: ['待核对番号', 'Code review'] },
+  { value: 'magnet_collecting', label: ['正在收集磁链', 'Collecting magnets'] },
+  { value: 'magnet_review', label: ['待筛选磁链', 'Magnet review'] },
+  { value: 'ready_to_download', label: ['等待提交下载', 'Ready to download'] },
+  { value: 'download_submitted', label: ['已提交下载', 'Download submitted'] },
+  { value: 'quality_review', label: ['待质量验收', 'Quality review'] },
+  { value: 'awaiting_scan', label: ['等待扫盘', 'Awaiting scan'] },
+]
+
+const javWorkflowStageValues = new Set([
+  JAV_WORKFLOW_STAGE_ALL,
+  ...JAV_WORKFLOW_STAGE_OPTIONS.map((option) => option.value),
+])
+
+export function normalizeJavWorkflowStage(value, fallback = JAV_WORKFLOW_STAGE_ALL) {
+  const normalized = String(value || '')
+    .trim()
+    .toLowerCase()
+  if (javWorkflowStageValues.has(normalized)) return normalized
+  return javWorkflowStageValues.has(fallback) ? fallback : JAV_WORKFLOW_STAGE_ALL
+}
+
 export const JAV_SORT_OPTIONS = [
   {
     base: 'recent',

@@ -1,9 +1,11 @@
 import {
   createDefaultIdolProfileFilters,
   IDOL_PROFILE_FILTER_DEFINITIONS,
+  JAV_INVENTORY_PENDING,
   normalizeIdolProfileFilters,
   normalizeIdolSort,
   normalizeJavSort,
+  normalizeJavWorkflowStage,
 } from '@/constants/jav'
 import { normalizeVideoSort } from '@/constants/video'
 import {
@@ -127,6 +129,7 @@ export const parseUrlState = (searchString = window.location.search, options = {
     page: parseIntSafe(sp.get('page'), 1),
     search: (sp.get('search') || '').trim(),
     inventory: parseJavInventoryParam(sp),
+    workflowStage: normalizeJavWorkflowStage(sp.get('workflow_stage')),
     idolIds: parseIds(sp.get('idol_ids')),
     tagIds: parseIds(sp.get('tag_ids')),
     studioId: sp.get('studio_unknown') === '1' ? 0 : parseNonNegativeInt(sp.get('studio_id')),
@@ -164,6 +167,14 @@ export const buildUrlFromState = (state, basePath = window.location.pathname) =>
     }
     if (state.jav.search) sp.set('search', state.jav.search)
     writeJavInventoryParam(sp, state.jav.inventory, state.jav.tab === 'list')
+    const workflowStage = normalizeJavWorkflowStage(state.jav.workflowStage)
+    if (
+      state.jav.tab === 'list' &&
+      state.jav.inventory === JAV_INVENTORY_PENDING &&
+      workflowStage
+    ) {
+      sp.set('workflow_stage', workflowStage)
+    }
     if (state.jav.tab === 'list' && state.jav.idolIds?.length) {
       sp.set('idol_ids', state.jav.idolIds.join(','))
     }
@@ -311,6 +322,11 @@ export const normalizeUrlStateFromStore = (store, tagsByName) => {
                 : store.javPage,
       search: (store.javSearchTerm || '').trim(),
       inventory: normalizeJavInventory(store.javInventory),
+      workflowStage:
+        store.javTab === 'list' &&
+        normalizeJavInventory(store.javInventory) === JAV_INVENTORY_PENDING
+          ? normalizeJavWorkflowStage(store.javWorkflowStage)
+          : '',
       idolIds: store.javIdolIds || [],
       tagIds: store.javTags || [],
       studioId: store.javStudioId ?? null,

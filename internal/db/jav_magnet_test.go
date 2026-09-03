@@ -65,6 +65,67 @@ func TestJavMagnetCandidatesAreIdempotentAndSelectionQueuesOnce(t *testing.T) {
 	}
 }
 
+func TestListJavMagnetSamplesReturnsReviewedFactsAndFilteredStats(t *testing.T) {
+	database := openTestDB(t)
+	ctx := context.Background()
+	now := time.Now().UTC()
+	work := models.Jav{Code: "SAMPLE-001", NormalizedCode: "SAMPLE001", Title: "Sample work"}
+	if err := database.Create(&work).Error; err != nil {
+		t.Fatalf("create JAV: %v", err)
+	}
+	clear := true
+	uncensored := true
+	accepted := models.JavMagnetCandidate{
+		JavID: work.ID, InfoHash: "accepted-hash", URI: "magnet:?xt=urn:btih:accepted-hash", Name: "SAMPLE-001 1080p",
+		SizeMiB: 7680, Files: 5, HD: true, CNSub: true, ReviewStatus: models.JavMagnetReviewAccepted,
+		QualityClear: &clear, Confirmed1080P: &clear, IsUncensored: &uncensored, ReviewedAt: &now,
+		FirstSeenAt: now, LastSeenAt: now,
+	}
+	rejected := accepted
+	rejected.ID = 0
+	rejected.InfoHash = "rejected-hash"
+	rejected.URI = "magnet:?xt=urn:btih:rejected-hash"
+	rejected.Name = "SAMPLE-001 low quality"
+	rejected.SizeMiB = 1024
+	rejected.ReviewStatus = models.JavMagnetReviewRejected
+	rejected.QualityClear = nil
+	rejected.Confirmed1080P = nil
+	rejected.IsUncensored = nil
+	rejected.ReviewReasons = "low_clarity"
+	if err := database.Create(&accepted).Error; err != nil {
+		t.Fatalf("create accepted candidate: %v", err)
+	}
+	if err := database.Create(&rejected).Error; err != nil {
+		t.Fatalf("create rejected candidate: %v", err)
+	}
+	if err := database.Create(&models.JavQualityAcceptance{JavID: work.ID, CandidateID: accepted.ID, AcceptedAt: now}).Error; err != nil {
+		t.Fatalf("create acceptance: %v", err)
+	}
+
+	samples, total, stats, err := ListJavMagnetSamples(ctx, "all", "SAMPLE-001", "size", "desc", 40, 0)
+	if err != nil {
+		t.Fatalf("list samples: %v", err)
+	}
+	if total != 2 || len(samples) != 2 || stats.Total != 2 || stats.Accepted != 1 || stats.Rejected != 1 || stats.PreferredSize != 1 {
+		t.Fatalf("samples total=%d items=%#v stats=%#v", total, samples, stats)
+	}
+	if samples[0].ReviewStatus != models.JavMagnetReviewAccepted || samples[0].AcceptedAt == nil {
+		t.Fatalf("accepted sample=%#v", samples[0])
+	}
+
+	samples, total, stats, err = ListJavMagnetSamples(ctx, models.JavMagnetReviewRejected, "", "code", "asc", 40, 0)
+	if err != nil {
+		t.Fatalf("list rejected samples: %v", err)
+	}
+	if total != 1 || len(samples) != 1 || stats.Accepted != 0 || stats.Rejected != 1 || samples[0].ReviewReasons != "low_clarity" {
+		t.Fatalf("rejected samples total=%d items=%#v stats=%#v", total, samples, stats)
+	}
+	_, total, stats, err = ListJavMagnetSamples(ctx, "all", "does-not-exist", "accepted_at", "desc", 40, 0)
+	if err != nil || total != 0 || stats.Total != 0 || stats.Accepted != 0 || stats.Rejected != 0 {
+		t.Fatalf("empty samples total=%d stats=%#v err=%v", total, stats, err)
+	}
+}
+
 func TestQualityApprovalWaitsForFormalLibraryScan(t *testing.T) {
 	database := openTestDB(t)
 	ctx := context.Background()

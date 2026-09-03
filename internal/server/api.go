@@ -100,6 +100,7 @@ func RegisterRoutes(router gin.IRoutes) {
 	router.GET("/jav/quality-review-queue", listJavQualityReviewQueue)
 	router.POST("/jav/quality-review-queue/execute", executeJavQualityReviewBatch)
 	router.GET("/jav/import-days", listJavImportDays)
+	router.GET("/jav/magnet-samples", listJavMagnetSamples)
 	router.POST("/jav/magnet-queue/submit", submitJavDownloadBatch)
 	router.GET("/jav/magnet-queue/batches/:batch_id", getJavDownloadBatch)
 	router.POST("/jav/items/:id/magnets/:candidate_id/review", reviewJavMagnet)

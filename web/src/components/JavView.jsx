@@ -4,10 +4,12 @@ import { useCallback, useEffect, useRef, useState } from 'react'
 import { flushSync } from 'react-dom'
 import JavGrid from '@/components/JavGrid'
 import AppModal from '@/components/AppModal'
+import JavMagnetSamplesButton from '@/components/JavMagnetSamplesModal'
 import Pagination from '@/components/Pagination'
 import WaterfallLoader from '@/components/WaterfallLoader'
 import {
   fetchJavImportDays,
+  fetchJavDownloadBatch,
   fetchJavMagnetQueue,
   fetchJavQualityReviewQueue,
   executeJavQualityReviewBatch,
@@ -77,6 +79,25 @@ function JavViewPresetSwitch({ value, onChange }) {
   )
 }
 
+function summarizeJavDownloadBatch(batch) {
+  const attempts = Array.isArray(batch?.attempts) ? batch.attempts : []
+  const counts = attempts.reduce((result, attempt) => {
+    const status =
+      String(attempt?.status || 'unknown')
+        .trim()
+        .toLowerCase() || 'unknown'
+    result[status] = (result[status] || 0) + 1
+    return result
+  }, {})
+  return {
+    total: attempts.length,
+    awaitingQuality: counts.awaiting_quality || 0,
+    failed: counts.failed || 0,
+    uncertain: counts.uncertain || 0,
+    submitted: (counts.submitted || 0) + (counts.pending || 0) + (counts.downloaded || 0),
+  }
+}
+
 function JavMagnetQueueButton() {
   const [open, setOpen] = useState(false)
   const [items, setItems] = useState([])
@@ -86,6 +107,8 @@ function JavMagnetQueueButton() {
   const [submitting, setSubmitting] = useState(false)
   const [error, setError] = useState('')
   const [message, setMessage] = useState('')
+  const [trackingBatchID, setTrackingBatchID] = useState(0)
+  const [trackingTotal, setTrackingTotal] = useState(0)
 
   const loadQueue = useCallback(async () => {
     setLoading(true)
@@ -114,6 +137,69 @@ function JavMagnetQueueButton() {
     if (open) void loadQueue()
   }, [open, loadQueue])
 
+  useEffect(() => {
+    if (!trackingBatchID) return undefined
+    let active = true
+    let timer
+    let elapsed = 0
+    const poll = async () => {
+      try {
+        const batch = await fetchJavDownloadBatch(trackingBatchID)
+        if (!active) return
+        const summary = summarizeJavDownloadBatch(batch)
+        const totalAttempts = summary.total || trackingTotal
+        if (summary.awaitingQuality + summary.failed === totalAttempts && summary.uncertain === 0) {
+          setMessage(
+            summary.failed > 0
+              ? zh(
+                  `下载结果已返回：${summary.awaitingQuality} 部进入待验收，${summary.failed} 部失败。`,
+                  `Download results received: ${summary.awaitingQuality} awaiting quality review, ${summary.failed} failed.`
+                )
+              : zh(
+                  `下载完成：${summary.awaitingQuality} 部已进入待验收。`,
+                  `Download complete: ${summary.awaitingQuality} work(s) are awaiting quality review.`
+                )
+          )
+          window.dispatchEvent(new CustomEvent('jav-workflow-updated'))
+          setTrackingBatchID(0)
+          return
+        }
+        setMessage(
+          summary.awaitingQuality > 0
+            ? zh(
+                `正在处理：${summary.awaitingQuality}/${totalAttempts} 部已进入待验收${summary.failed ? `，${summary.failed} 部失败` : ''}。`,
+                `Processing: ${summary.awaitingQuality}/${totalAttempts} awaiting quality review${summary.failed ? `, ${summary.failed} failed` : ''}.`
+              )
+            : zh(
+                `已提交 ${totalAttempts} 部，正在等待云下载返回结果…`,
+                `${totalAttempts} submitted; waiting for cloud download results...`
+              )
+        )
+      } catch (requestError) {
+        if (!active) return
+        setError(requestError?.message || String(requestError))
+      }
+      elapsed += 3000
+      if (!active) return
+      if (elapsed >= 10 * 60 * 1000) {
+        setMessage(
+          zh(
+            '云下载仍未返回最终结果；任务没有丢失，可稍后打开待验收或刷新重试。',
+            'Cloud download has not returned a final result yet. The tasks are still recorded; refresh later or check quality review.'
+          )
+        )
+        setTrackingBatchID(0)
+        return
+      }
+      timer = window.setTimeout(poll, 3000)
+    }
+    void poll()
+    return () => {
+      active = false
+      if (timer) window.clearTimeout(timer)
+    }
+  }, [trackingBatchID, trackingTotal])
+
   const toggle = (id) => {
     setSelectedIDs((current) => {
       const next = new Set(current)
@@ -136,24 +222,32 @@ function JavMagnetQueueButton() {
 
   const submit = async () => {
     if (selectedIDs.size === 0 || submitting) return
+    const submittedCount = selectedIDs.size
     setSubmitting(true)
     setError('')
     setMessage('')
     try {
       const result = await submitJavDownloadBatch([...selectedIDs])
+      const batchID = Number(result?.batch?.id) || 0
       setMessage(
         result?.delivery_status === 'submitted'
-          ? zh('已提交云下载。', 'Submitted to cloud download.')
+          ? zh(
+              `已提交 ${submittedCount} 部，云下载已接收，正在等待结果…`,
+              `${submittedCount} submitted; cloud download accepted the batch, waiting for results...`
+            )
           : result?.delivery_status === 'partial'
             ? zh(
-                '部分任务已提交，失败项仍留在待发送队列。',
-                'Some tasks were submitted; failed items remain queued.'
+                `批次已提交，但部分任务即时失败；正在核对 ${submittedCount} 部任务…`,
+                `Batch submitted, but some tasks failed immediately; checking all ${submittedCount} task(s)...`
               )
             : zh(
-                '云下载服务未接收任务，选择仍留在待发送队列。',
-                'The cloud downloader did not accept the tasks; selections remain queued.'
+                `批量提交未确认，正在核对 ${submittedCount} 部任务状态…`,
+                `Batch submission was not confirmed; checking the status of ${submittedCount} task(s)...`
               )
       )
+      setTrackingTotal(submittedCount)
+      setTrackingBatchID(batchID)
+      window.dispatchEvent(new CustomEvent('jav-workflow-updated'))
       setSelectedIDs(new Set())
       await loadQueue()
     } catch (requestError) {
@@ -180,6 +274,25 @@ function JavMagnetQueueButton() {
           {total}
         </span>
       </button>
+      {message ? (
+        <span
+          role="status"
+          aria-live="polite"
+          className="max-w-[18rem] truncate rounded-md border border-stone-200 bg-stone-100 px-2 py-1 text-[11px] font-medium text-stone-700"
+          title={message}
+        >
+          {message}
+        </span>
+      ) : null}
+      {error && !open ? (
+        <span
+          role="alert"
+          className="max-w-[18rem] truncate rounded-md border border-rose-200 bg-rose-50 px-2 py-1 text-[11px] font-medium text-rose-700"
+          title={error}
+        >
+          {error}
+        </span>
+      ) : null}
       {open ? (
         <AppModal
           open
@@ -209,6 +322,23 @@ function JavMagnetQueueButton() {
               </button>
             </header>
             <div className="min-h-0 flex-1 overflow-y-auto p-5">
+              {error ? (
+                <div
+                  role="alert"
+                  className="mb-3 rounded-lg border border-rose-200 bg-rose-50 px-3 py-2 text-xs text-rose-700"
+                >
+                  {error}
+                </div>
+              ) : null}
+              {message ? (
+                <div
+                  role="status"
+                  aria-live="polite"
+                  className="sticky top-0 z-10 mb-3 rounded-lg border border-stone-300 bg-stone-100 px-3 py-2 text-xs font-medium text-stone-800 shadow-sm"
+                >
+                  {message}
+                </div>
+              ) : null}
               {loading ? (
                 <div className="py-10 text-center text-sm text-slate-500">
                   {zh('加载中…', 'Loading...')}
@@ -288,22 +418,6 @@ function JavMagnetQueueButton() {
                     })}
                   </div>
                 </>
-              ) : null}
-              {error ? (
-                <div
-                  role="alert"
-                  className="mt-3 rounded-lg border border-rose-200 bg-rose-50 px-3 py-2 text-xs text-rose-700"
-                >
-                  {error}
-                </div>
-              ) : null}
-              {message ? (
-                <div
-                  role="status"
-                  className="mt-3 rounded-lg border border-stone-200 bg-stone-50 px-3 py-2 text-xs text-stone-700"
-                >
-                  {message}
-                </div>
               ) : null}
             </div>
             <footer className="flex flex-wrap items-center justify-between gap-3 border-t border-slate-200 px-5 py-4">
@@ -470,12 +584,24 @@ function JavQualityReviewQueueButton({ directoryIds = [], gridProps = {} }) {
   }, [directoryIds])
 
   useEffect(() => {
+    // Load the badge once while the dialog is closed. Once opened, keep the
+    // cards stable; an explicit workflow event or manual reopen is enough to
+    // reconcile the queue and avoids replacing every card on a timer tick.
     void loadItems()
-  }, [loadItems])
+    if (open) return undefined
+    const interval = window.setInterval(() => void loadItems(), 30000)
+    return () => window.clearInterval(interval)
+  }, [open, loadItems])
 
   useEffect(() => {
-    if (open) void loadItems()
-  }, [open, loadItems])
+    const handleWorkflowUpdated = () => {
+      void loadItems()
+    }
+    window.addEventListener('jav-workflow-updated', handleWorkflowUpdated)
+    return () => {
+      window.removeEventListener('jav-workflow-updated', handleWorkflowUpdated)
+    }
+  }, [loadItems])
 
   const decidedItems = items.filter((item) => {
     const decision = String(item?.quality_review?.decision || '').trim()
@@ -577,13 +703,23 @@ function JavQualityReviewQueueButton({ directoryIds = [], gridProps = {} }) {
                   )}
                 </p>
               </div>
-              <button
-                type="button"
-                onClick={() => setOpen(false)}
-                className="rounded-lg px-2 py-1 text-sm text-slate-500 hover:bg-slate-100"
-              >
-                {zh('关闭', 'Close')}
-              </button>
+              <div className="flex shrink-0 items-center gap-1">
+                <button
+                  type="button"
+                  onClick={() => void loadItems()}
+                  disabled={loading}
+                  className="rounded-lg px-2 py-1 text-sm text-slate-500 hover:bg-slate-100 disabled:cursor-wait disabled:opacity-50"
+                >
+                  {loading ? zh('刷新中…', 'Refreshing…') : zh('刷新', 'Refresh')}
+                </button>
+                <button
+                  type="button"
+                  onClick={() => setOpen(false)}
+                  className="rounded-lg px-2 py-1 text-sm text-slate-500 hover:bg-slate-100"
+                >
+                  {zh('关闭', 'Close')}
+                </button>
+              </div>
             </header>
             <div className="min-h-0 flex-1 overflow-y-auto p-5" aria-busy={executing}>
               {error ? (
@@ -892,6 +1028,7 @@ export default function JavView({
               gridProps={workflowGridProps}
             />
             <JavImportHistoryButton directoryIds={directoryIds} gridProps={workflowGridProps} />
+            <JavMagnetSamplesButton />
             <JavViewPresetSwitch value={javViewPreset} onChange={changeJavViewPreset} />
             <div className="pagination-sort-group flex items-center">
               <span className="pagination-sort-label text-gray-500">{zh('排序', 'Sort')}</span>

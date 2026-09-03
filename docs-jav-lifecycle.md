@@ -129,6 +129,12 @@ JavBoss 只保存批次、幂等键和回调状态。
 陈列馆继续使用同一套作品列表、卡片和详情，只提供显眼的库存切换：`全部 / 未入库 / 已入库`。
 未入库不是新的侧栏实体或页面。
 
+进入 `未入库` 后，工具栏会出现第二层“流程阶段”筛选。它按当前搜索、女优、片商、系列、番号、
+收藏等条件统计并显示每个阶段的数量，至少覆盖 `待筛选磁链`（`magnet_review`）和 `等待提交下载`
+（`ready_to_download`），也包含元数据、番号核对、磁链收集、下载提交、质量验收和等待扫盘等阶段。
+阶段筛选只作用于未入库列表；切换到 `全部` 或 `已入库` 会清除阶段条件，当前阶段会保存在 URL 的
+`workflow_stage` 参数中，刷新页面后仍可恢复。
+
 番号索引也遵循同一语义：它基于完整的 `jav` 作品集合聚合，逐项显示总数、未入库数和已入库数，
 并提供独立的库存筛选。点击番号后应把当前库存条件带入作品列表，不能因为入口是番号而退回只看真实文件的旧逻辑。
 
@@ -184,6 +190,12 @@ Bot 只针对本批“通过”作品所属的任务目录先执行一次与 `/c
 包含扫盘确认后的作品。每日记录按
 `jav_quality_acceptance.accepted_at` 汇总，空日期不产生占位记录。
 
+陈列馆工具栏的“磁链样本”入口集中呈现已经完成正式验收的候选磁链。默认打开“已通过”正样本，也可切换
+“不合格”负样本或“全部样本”进行对照；列表同时显示大小、文件数、HD、中字、清晰度、1080P、广告、水印、
+跑马灯、无码/有码、来源日期、验收日期和 Hash。统计数字随筛选结果变化，并支持按番号、标题、名称或 Hash
+搜索、按验收时间/大小/文件数/番号排序，以及导出当前筛选结果 CSV。仅保存了验收决定但尚未完成正式扫盘转正的
+作品不会进入“已通过”样本，待判断候选仍在作品详情页处理。
+
 相关持久化表：`jav_code_alias`、`jav_magnet_candidate`、`jav_magnet_selection`、`jav_download_batch`、
 `jav_download_attempt`、`jav_quality_acceptance`。主要接口：
 `GET /jav/items/:id`、`POST /jav/items/:id/magnets/collect`、`PUT /jav/items/:id/magnet-selection`、
@@ -191,6 +203,8 @@ Bot 只针对本批“通过”作品所属的任务目录先执行一次与 `/c
 `GET /jav/magnet-queue`、`POST /jav/magnet-queue/submit`、`GET /jav/quality-review-queue`、
 `POST /jav/items/:id/magnets/:candidate_id/review-decision`、`POST /jav/quality-review-queue/execute`、
 `POST /jav/items/:id/magnets/:candidate_id/review`（兼容旧调用）和 `GET /jav/import-days`。
+磁链样本库使用 `GET /jav/magnet-samples`，支持 `status=all|accepted|rejected`、`search`、`sort`、`direction`、
+`page_size` 和 `offset` 参数，响应同时返回当前筛选的 `stats`。
 
 外部云下载服务接收的请求形状：
 

@@ -38,6 +38,27 @@ type javFilterQuery struct {
 	FavoriteRatingMin *float64
 	FavoriteRatingMax *float64
 	Inventory         string
+	WorkflowStage     string
+}
+
+var javWorkflowStages = []string{
+	models.JavAcquisitionStageMetadataPending,
+	models.JavAcquisitionStageCodeReview,
+	models.JavAcquisitionStageMagnetCollecting,
+	models.JavAcquisitionStageMagnetReview,
+	models.JavAcquisitionStageReadyToDownload,
+	models.JavAcquisitionStageDownloadSubmitted,
+	models.JavAcquisitionStageQualityReview,
+	models.JavAcquisitionStageAwaitingScan,
+}
+
+func isValidJavWorkflowStage(stage string) bool {
+	for _, candidate := range javWorkflowStages {
+		if stage == candidate {
+			return true
+		}
+	}
+	return false
 }
 
 func parseJavFilterQuery(c *gin.Context) (javFilterQuery, bool) {
@@ -59,6 +80,17 @@ func parseJavFilterQuery(c *gin.Context) (javFilterQuery, bool) {
 			respondLocalizedError(c, http.StatusBadRequest, "库存状态无效", "Invalid inventory state")
 			return query, false
 		}
+	}
+	if workflowStage := strings.ToLower(strings.TrimSpace(c.Query("workflow_stage"))); workflowStage != "" {
+		if !isValidJavWorkflowStage(workflowStage) {
+			respondLocalizedError(c, http.StatusBadRequest, "作品阶段无效", "Invalid JAV workflow stage")
+			return query, false
+		}
+		if query.Inventory != models.JavInventoryPending {
+			respondLocalizedError(c, http.StatusBadRequest, "作品阶段只能用于未入库列表", "Workflow stage requires the pending inventory")
+			return query, false
+		}
+		query.WorkflowStage = workflowStage
 	}
 	if studioParam := strings.TrimSpace(c.Query("studio_id")); studioParam != "" {
 		parsed, err := strconv.ParseInt(studioParam, 10, 64)
@@ -130,6 +162,7 @@ func searchJav(c *gin.Context) {
 		FavoriteRatingMin: filterQuery.FavoriteRatingMin,
 		FavoriteRatingMax: filterQuery.FavoriteRatingMax,
 		Inventory:         filterQuery.Inventory,
+		WorkflowStage:     filterQuery.WorkflowStage,
 	}
 	items, total, err := dbpkg.SearchJavWithPrefixFilters(c.Request.Context(), filterQuery.IdolIDs, filterQuery.TagIDs, filterQuery.Search, filterQuery.Prefix, sort, limit, offset, seed, filterQuery.DirectoryIDs, filters)
 	if err != nil {
@@ -137,9 +170,19 @@ func searchJav(c *gin.Context) {
 		respondLocalizedError(c, http.StatusInternalServerError, "搜索 JAV 作品失败", "Failed to search JAV items")
 		return
 	}
-	pendingTotal := total
-	if filterQuery.Inventory != models.JavInventoryPending {
-		pendingFilters := filters
+	// Keep the three inventory counters independent from the currently selected
+	// tab. The toolbar uses these values to make the complete collection visible
+	// at a glance, while `total` remains the count for the requested tab.
+	// A workflow stage narrows only the pending result list; it must not change
+	// the inventory totals shown beside the three inventory tabs.
+	inventoryCountFilters := filters
+	inventoryCountFilters.WorkflowStage = ""
+	allTotal := total
+	pendingTotal := int64(0)
+	importedTotal := int64(0)
+	switch filterQuery.Inventory {
+	case models.JavInventoryPending:
+		pendingFilters := inventoryCountFilters
 		pendingFilters.Inventory = models.JavInventoryPending
 		pendingTotal, err = dbpkg.CountJavWithPrefixFilters(c.Request.Context(), filterQuery.IdolIDs, filterQuery.TagIDs, filterQuery.Search, filterQuery.Prefix, filterQuery.DirectoryIDs, pendingFilters)
 		if err != nil {
@@ -147,12 +190,68 @@ func searchJav(c *gin.Context) {
 			respondLocalizedError(c, http.StatusInternalServerError, "统计未入库作品失败", "Failed to count pending JAV items")
 			return
 		}
+		allFilters := inventoryCountFilters
+		allFilters.Inventory = models.JavInventoryAll
+		allTotal, err = dbpkg.CountJavWithPrefixFilters(c.Request.Context(), filterQuery.IdolIDs, filterQuery.TagIDs, filterQuery.Search, filterQuery.Prefix, filterQuery.DirectoryIDs, allFilters)
+		if err != nil {
+			logging.Error("CountAllJav: %v", err)
+			respondLocalizedError(c, http.StatusInternalServerError, "统计全部作品失败", "Failed to count all JAV items")
+			return
+		}
+		importedTotal = maxNonNegativeCount(allTotal - pendingTotal)
+	case models.JavInventoryImported:
+		importedTotal = total
+		pendingFilters := inventoryCountFilters
+		pendingFilters.Inventory = models.JavInventoryPending
+		pendingTotal, err = dbpkg.CountJavWithPrefixFilters(c.Request.Context(), filterQuery.IdolIDs, filterQuery.TagIDs, filterQuery.Search, filterQuery.Prefix, filterQuery.DirectoryIDs, pendingFilters)
+		if err != nil {
+			logging.Error("CountPendingJav: %v", err)
+			respondLocalizedError(c, http.StatusInternalServerError, "统计未入库作品失败", "Failed to count pending JAV items")
+			return
+		}
+		allTotal = pendingTotal + importedTotal
+	default:
+		allTotal = total
+		pendingFilters := inventoryCountFilters
+		pendingFilters.Inventory = models.JavInventoryPending
+		pendingTotal, err = dbpkg.CountJavWithPrefixFilters(c.Request.Context(), filterQuery.IdolIDs, filterQuery.TagIDs, filterQuery.Search, filterQuery.Prefix, filterQuery.DirectoryIDs, pendingFilters)
+		if err != nil {
+			logging.Error("CountPendingJav: %v", err)
+			respondLocalizedError(c, http.StatusInternalServerError, "统计未入库作品失败", "Failed to count pending JAV items")
+			return
+		}
+		importedTotal = maxNonNegativeCount(allTotal - pendingTotal)
+	}
+	workflowStageCounts := map[string]int64{}
+	if filterQuery.Inventory == models.JavInventoryPending {
+		stageFilters := filters
+		stageFilters.Inventory = models.JavInventoryPending
+		stageFilters.WorkflowStage = ""
+		groupedCounts, countErr := dbpkg.CountJavWorkflowStages(c.Request.Context(), filterQuery.IdolIDs, filterQuery.TagIDs, filterQuery.Search, filterQuery.Prefix, filterQuery.DirectoryIDs, stageFilters)
+		if countErr != nil {
+			logging.Error("CountJavWorkflowStages: %v", countErr)
+			respondLocalizedError(c, http.StatusInternalServerError, "统计作品阶段失败", "Failed to count JAV workflow stages")
+			return
+		}
+		for _, stage := range javWorkflowStages {
+			workflowStageCounts[stage] = groupedCounts[stage]
+		}
 	}
 	c.JSON(http.StatusOK, gin.H{
-		"items":         items,
-		"total":         total,
-		"pending_total": pendingTotal,
+		"items":                 items,
+		"total":                 total,
+		"all_total":             allTotal,
+		"pending_total":         pendingTotal,
+		"imported_total":        importedTotal,
+		"workflow_stage_counts": workflowStageCounts,
 	})
+}
+
+func maxNonNegativeCount(value int64) int64 {
+	if value < 0 {
+		return 0
+	}
+	return value
 }
 
 func listJavFilterOptions(c *gin.Context) {
@@ -175,6 +274,7 @@ func listJavFilterOptions(c *gin.Context) {
 			FavoriteRatingMin: filterQuery.FavoriteRatingMin,
 			FavoriteRatingMax: filterQuery.FavoriteRatingMax,
 			Inventory:         filterQuery.Inventory,
+			WorkflowStage:     filterQuery.WorkflowStage,
 		},
 		dbpkg.JavFilterOptionSearches{
 			Prefix: strings.TrimSpace(c.Query("prefix_search")),

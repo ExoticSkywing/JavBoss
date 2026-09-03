@@ -75,6 +75,7 @@ import {
   normalizeIdolProfileFilters,
   normalizeIdolSort,
   normalizeJavInventory,
+  normalizeJavWorkflowStage,
   normalizeJavSort,
   normalizeJavSortRules,
   resolveJavSort,
@@ -196,6 +197,8 @@ export default function App() {
     javSearchTerm,
     javInventory,
     setJavInventory,
+    javWorkflowStage,
+    setJavWorkflowStage,
     javIdolIds,
     javTags,
     javStudioId,
@@ -222,7 +225,10 @@ export default function App() {
     loadMoreJavs,
     javItems,
     javTotal,
+    javAllTotal,
     javPendingTotal,
+    javImportedTotal,
+    javWorkflowStageCounts,
     javLoading,
     javLoadingMore,
     javError,
@@ -409,6 +415,7 @@ export default function App() {
   const javSortResolution = resolveJavSort({
     javSearchTerm,
     javInventory,
+    javWorkflowStage,
     javIdolIds,
     javTags,
     javStudioId,
@@ -1115,6 +1122,10 @@ export default function App() {
           javSearchTerm: jav.search,
           javInventory:
             jav.tab === 'list' ? normalizeJavInventory(jav.inventory) : JAV_INVENTORY_ALL,
+          javWorkflowStage:
+            jav.tab === 'list' && normalizeJavInventory(jav.inventory) === JAV_INVENTORY_PENDING
+              ? jav.workflowStage
+              : '',
           javIdolIds: jav.tab === 'list' ? jav.idolIds : [],
           javTags: jav.tab === 'list' ? jav.tagIds : [],
           javStudioId: jav.tab === 'list' ? jav.studioId : null,
@@ -1196,6 +1207,7 @@ export default function App() {
           javPage,
           javSearchTerm,
           javInventory,
+          javWorkflowStage,
           javIdolIds,
           javTags,
           javStudioId,
@@ -1238,6 +1250,7 @@ export default function App() {
       seriesPage,
       javIdolIds,
       javInventory,
+      javWorkflowStage,
       javStudioId,
       javSeriesId,
       javPrefix,
@@ -1350,6 +1363,7 @@ export default function App() {
         page: pageOverride,
         search: searchOverride,
         inventory: inventoryOverride,
+        workflowStage: workflowStageOverride,
         tab: tabOverride,
         idolIds: idolIdsOverride,
         studioId: studioIdOverride,
@@ -1381,6 +1395,10 @@ export default function App() {
       const inventory = normalizeJavInventory(inventoryOverride ?? javInventory)
       if (tab === 'list' && inventory !== JAV_INVENTORY_ALL) {
         sp.set('inventory', inventory)
+      }
+      const workflowStage = normalizeJavWorkflowStage(workflowStageOverride ?? javWorkflowStage)
+      if (tab === 'list' && inventory === JAV_INVENTORY_PENDING && workflowStage) {
+        sp.set('workflow_stage', workflowStage)
       }
       const idolIdList = idolIdsOverride ?? javIdolIds
       if (tab === 'list' && idolIdList && idolIdList.length > 0) {
@@ -1507,6 +1525,7 @@ export default function App() {
       idolTempSort,
       javFavoriteGroupId,
       javInventory,
+      javWorkflowStage,
       pathname,
       studioFavoriteGroupId,
       seriesFavoriteGroupId,
@@ -1641,6 +1660,7 @@ export default function App() {
     javPageSize,
     javSearchTerm,
     javInventory,
+    javWorkflowStage,
     javIdolIds,
     javTags,
     javStudioId,
@@ -2215,6 +2235,17 @@ export default function App() {
     [javInventory, saveScrollBeforeUrlStateChange, setJavInventory]
   )
 
+  const handleJavWorkflowStageChange = useCallback(
+    (stage) => {
+      const next = normalizeJavWorkflowStage(stage)
+      if (next === javWorkflowStage) return
+      saveScrollBeforeUrlStateChange()
+      setJavWorkflowStage(next)
+      window.scrollTo({ top: 0, behavior: 'smooth' })
+    },
+    [javWorkflowStage, saveScrollBeforeUrlStateChange, setJavWorkflowStage]
+  )
+
   const handleViewPendingJavs = useCallback(() => {
     saveScrollBeforeUrlStateChange()
     setJavInputOpen(false)
@@ -2224,6 +2255,7 @@ export default function App() {
       videoTempSort: '',
       javTab: 'list',
       javInventory: JAV_INVENTORY_PENDING,
+      javWorkflowStage: '',
       javSearchTerm: '',
       javIdolIds: [],
       javTags: [],
@@ -2465,6 +2497,7 @@ export default function App() {
         javRandomMode: false,
         javRandomSeed: null,
         javInventory: JAV_INVENTORY_ALL,
+        javWorkflowStage: '',
       })
     } else if (javTab === 'idol') {
       Object.assign(updates, {
@@ -3070,6 +3103,7 @@ export default function App() {
         javRandomMode: false,
         javRandomSeed: null,
         javInventory: JAV_INVENTORY_ALL,
+        javWorkflowStage: '',
         javIdolIds: [],
         javTags: [],
         javStudioId: null,
@@ -3140,6 +3174,7 @@ export default function App() {
       javRandomMode: nextRandomMode,
       javRandomSeed: nextRandomSeed,
       javInventory: JAV_INVENTORY_ALL,
+      javWorkflowStage: '',
       javPage: 1,
       idolPage: 1,
       studioPage: 1,
@@ -3675,6 +3710,7 @@ export default function App() {
       javSeriesName: '',
       javPrefix: prefix,
       ...(hasInventoryOverride ? { javInventory: inventoryOverride } : {}),
+      javWorkflowStage: '',
       javSoloOnly: false,
       javFavoriteRatingEnabled: false,
       javFavoriteRatingMin: 0.5,
@@ -4019,7 +4055,11 @@ export default function App() {
         javSearchHref={javSearchHref}
         javSearchInput={javSearchInput}
         javInventory={javInventory}
+        javAllTotal={javAllTotal}
         javPendingTotal={javPendingTotal}
+        javImportedTotal={javImportedTotal}
+        javWorkflowStage={javWorkflowStage}
+        javWorkflowStageCounts={javWorkflowStageCounts}
         javTab={javTab}
         onClearFilters={handleClearActiveFilters}
         onFavoriteGroupSelect={(groupId) =>
@@ -4029,6 +4069,7 @@ export default function App() {
         onFavoriteRatingRangeChange={handleFavoriteRatingRangeChange}
         onIdolProfileFilterChange={handleIdolProfileFilterChange}
         onJavInventoryChange={handleJavInventoryChange}
+        onJavWorkflowStageChange={handleJavWorkflowStageChange}
         onHome={handleHomeClick}
         onOpenFavoriteGroups={() =>
           loadJavFavoriteGroups(activeFavoriteEntityType, { force: true })
@@ -4280,6 +4321,7 @@ export default function App() {
         favoriteRatingMin={javFavoriteRatingMin}
         favoriteRatingMax={javFavoriteRatingMax}
         inventory={javInventory}
+        workflowStage={javWorkflowStage}
       />
 
       <VideoSettingsModal

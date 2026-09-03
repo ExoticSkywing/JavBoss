@@ -136,6 +136,29 @@ func listJavImportDays(c *gin.Context) {
 	c.JSON(http.StatusOK, gin.H{"items": items, "total": total})
 }
 
+func listJavMagnetSamples(c *gin.Context) {
+	status := strings.ToLower(strings.TrimSpace(c.Query("status")))
+	if status != "" && status != "all" && status != models.JavMagnetReviewAccepted && status != models.JavMagnetReviewRejected {
+		respondLocalizedError(c, http.StatusBadRequest, "磁链样本状态无效", "Invalid magnet sample status")
+		return
+	}
+	items, total, stats, err := db.ListJavMagnetSamples(
+		c.Request.Context(),
+		status,
+		c.Query("search"),
+		c.Query("sort"),
+		c.Query("direction"),
+		positiveIntQuery(c.Query("page_size"), 40),
+		queryInt(c, "offset", 0),
+	)
+	if err != nil {
+		writeJavMagnetError(c, err, "读取磁链样本失败", "Failed to load magnet samples")
+		return
+	}
+	c.Header("Cache-Control", "no-store")
+	c.JSON(http.StatusOK, gin.H{"items": items, "total": total, "stats": stats})
+}
+
 func listJavQualityReviewQueue(c *gin.Context) {
 	items, total, err := db.ListJavQualityReviewQueue(c.Request.Context(), positiveIntQuery(c.Query("page_size"), 50), queryInt(c, "offset", 0), parseDirectoryIDs(c.Query("directory_ids")))
 	if err != nil {

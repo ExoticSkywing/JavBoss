@@ -16,6 +16,9 @@ import {
   JAV_INVENTORY_ALL,
   JAV_INVENTORY_IMPORTED,
   JAV_INVENTORY_PENDING,
+  JAV_WORKFLOW_STAGE_ALL,
+  JAV_WORKFLOW_STAGE_OPTIONS,
+  normalizeJavWorkflowStage,
   normalizeIdolProfileFilters,
   normalizeJavInventory,
 } from '@/constants/jav'
@@ -48,9 +51,17 @@ function FilterChip({ label, onRemove }) {
   )
 }
 
-function JavInventoryFilter({ value, pendingCount = 0, onChange }) {
+function JavInventoryFilter({
+  value,
+  allCount = 0,
+  pendingCount = 0,
+  importedCount = 0,
+  onChange,
+}) {
   const selected = normalizeJavInventory(value)
+  const normalizedAllCount = Math.max(0, Math.floor(Number(allCount) || 0))
   const normalizedPendingCount = Math.max(0, Math.floor(Number(pendingCount) || 0))
+  const normalizedImportedCount = Math.max(0, Math.floor(Number(importedCount) || 0))
   const options = [
     { value: JAV_INVENTORY_ALL, label: zh('全部', 'All') },
     { value: JAV_INVENTORY_PENDING, label: zh('未入库', 'Pending') },
@@ -78,18 +89,71 @@ function JavInventoryFilter({ value, pendingCount = 0, onChange }) {
             onClick={() => onChange?.(option.value)}
           >
             <span>{option.label}</span>
-            {option.value === JAV_INVENTORY_PENDING ? (
-              <span
-                className={`inline-flex h-5 min-w-5 items-center justify-center rounded-md px-1.5 text-[11px] font-bold tabular-nums leading-none ${
-                  active ? 'bg-indigo-100 text-indigo-700' : 'bg-violet-100 text-violet-700'
-                }`}
-              >
-                {normalizedPendingCount}
-              </span>
-            ) : null}
+            <span
+              className={`inline-flex h-5 min-w-5 items-center justify-center rounded-md px-1.5 text-[11px] font-bold tabular-nums leading-none ${
+                active ? 'bg-indigo-100 text-indigo-700' : 'bg-slate-200 text-slate-600'
+              }`}
+            >
+              {option.value === JAV_INVENTORY_ALL
+                ? normalizedAllCount
+                : option.value === JAV_INVENTORY_PENDING
+                  ? normalizedPendingCount
+                  : normalizedImportedCount}
+            </span>
           </button>
         )
       })}
+    </div>
+  )
+}
+
+function JavWorkflowFilter({ value, counts = {}, onChange }) {
+  const selected = normalizeJavWorkflowStage(value)
+  const normalizedCounts = counts && typeof counts === 'object' ? counts : {}
+  const options = [
+    { value: JAV_WORKFLOW_STAGE_ALL, label: zh('全部阶段', 'All stages') },
+    ...JAV_WORKFLOW_STAGE_OPTIONS.map((option) => ({
+      ...option,
+      label: zh(option.label[0], option.label[1]),
+    })),
+  ]
+
+  return (
+    <div className="jav-workflow-filter">
+      <div className="jav-workflow-filter__heading">
+        <span className="jav-workflow-filter__eyebrow">{zh('未入库流程', 'Pending workflow')}</span>
+        <span className="jav-workflow-filter__summary">
+          {zh('按阶段处理作品', 'Process works by stage')}
+        </span>
+      </div>
+      <div
+        className="jav-workflow-filter__options"
+        role="group"
+        aria-label={zh('作品流程阶段', 'Workflow stage')}
+      >
+        {options.map((option) => {
+          const active = option.value === selected
+          const count =
+            option.value === JAV_WORKFLOW_STAGE_ALL
+              ? Object.values(normalizedCounts).reduce(
+                  (sum, value) => sum + (Number(value) || 0),
+                  0
+                )
+              : Math.max(0, Math.floor(Number(normalizedCounts[option.value]) || 0))
+          return (
+            <button
+              key={option.value || 'all'}
+              type="button"
+              className={`jav-workflow-filter__option ${active ? 'jav-workflow-filter__option--active' : ''}`}
+              aria-pressed={active}
+              onClick={() => onChange?.(option.value)}
+            >
+              <span>{option.label}</span>
+              <span className="jav-workflow-filter__count">{count}</span>
+            </button>
+          )
+        })}
+      </div>
     </div>
   )
 }
@@ -368,7 +432,11 @@ export default function TopBar({
   javSearchHref,
   javSearchInput,
   javInventory,
+  javAllTotal = 0,
   javPendingTotal = 0,
+  javImportedTotal = 0,
+  javWorkflowStage = JAV_WORKFLOW_STAGE_ALL,
+  javWorkflowStageCounts = {},
   javTab,
   onClearFilters,
   onFavoriteGroupSelect,
@@ -376,6 +444,7 @@ export default function TopBar({
   onFavoriteRatingRangeChange,
   onIdolProfileFilterChange,
   onJavInventoryChange,
+  onJavWorkflowStageChange,
   onHome,
   onRandomClick,
   onOpenFavoriteGroups,
@@ -519,7 +588,9 @@ export default function TopBar({
           {isJavMode && javTab === 'list' ? (
             <JavInventoryFilter
               value={javInventory}
+              allCount={javAllTotal}
               pendingCount={javPendingTotal}
+              importedCount={javImportedTotal}
               onChange={onJavInventoryChange}
             />
           ) : null}
@@ -660,6 +731,13 @@ export default function TopBar({
           </div>
         </div>
       </div>
+      {isJavMode && javTab === 'list' && javInventory === JAV_INVENTORY_PENDING ? (
+        <JavWorkflowFilter
+          value={javWorkflowStage}
+          counts={javWorkflowStageCounts}
+          onChange={onJavWorkflowStageChange}
+        />
+      ) : null}
     </header>
   )
 }
